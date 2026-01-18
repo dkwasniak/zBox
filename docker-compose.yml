@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  musicbox:
+    build: .
+    container_name: musicbox
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./music:/app/music
+      - ./data:/app/data
+      - ./server/web:/app/web
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Warsaw
