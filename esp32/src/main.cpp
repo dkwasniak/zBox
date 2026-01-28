@@ -32,7 +32,10 @@
 
 // Tryb testowy - wbudowany DAC (słuchawki na GPIO25/26)
 // true = internal DAC, false = external I2S DAC (PCM5102A)
-#define USE_INTERNAL_DAC true
+#define USE_INTERNAL_DAC false
+
+// Tryb testowy - auto-play bez NFC
+#define TEST_MODE false
 
 // Przyciski
 #define BTN_VOL_UP    32
@@ -58,16 +61,16 @@
 
 #define LONG_PRESS_MS      2000
 #define DEBOUNCE_MS        50
-#define NFC_READ_INTERVAL  2000  // 2 sekundy między odczytami
+#define NFC_READ_INTERVAL  300   // 300ms między odczytami (szybka reakcja)
 #define NFC_ERROR_THRESHOLD 10
-#define NO_TAG_THRESHOLD   2
+#define NO_TAG_THRESHOLD   1     // Natychmiastowy stop po zdjęciu tagu
 
 // =============================================================================
 // OBIEKTY
 // =============================================================================
 
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);  // Software SPI
-Audio audio(USE_INTERNAL_DAC);  // true = internal DAC (GPIO25/26), false = I2S
+Audio audio;  // Konfiguracja pinów w setup()
 Preferences preferences;
 WiFiManager wifiManager;
 
@@ -192,6 +195,36 @@ String readNfcTag() {
 // SERVER / AUDIO
 // =============================================================================
 
+void playSystemSound(String soundName) {
+    if (serverIP.isEmpty()) resolveMdns();
+
+    String url = "http://" + serverIP + ":" + SERVER_PORT + "/api/system_sounds/" + soundName;
+    Serial.print("Playing system sound: ");
+    Serial.println(soundName);
+
+    int prevVolume = currentVolume;
+    //audio.setVolume(3);  // Ciche odtwarzanie (głośność 3)
+    audio.stopSong();
+
+    bool connected = audio.connecttohost(url.c_str());
+    if (!connected) {
+        Serial.println("Failed to connect to system sound!");
+        audio.setVolume(prevVolume);
+        return;
+    }
+
+    // Czekamy na zakończenie krótkiego dźwięku (max 1s wystarczy)
+    unsigned long start = millis();
+    while (millis() - start < 1000) {  // Max 1 sekunda
+        audio.loop();
+        delay(10);
+    }
+
+    audio.stopSong();
+    audio.setVolume(prevVolume);  // Przywróć poprzednią głośność
+    delay(100);  // Krótka przerwa przed kolejnym audio
+}
+
 String getStreamUrl(String uid) {
     if (serverIP.isEmpty()) resolveMdns();
 
@@ -235,10 +268,13 @@ String getStreamUrl(String uid) {
 }
 
 void startPlayback(String uid) {
+    // Odtwórz dźwięk powitalny przy wykryciu tagu
+    playSystemSound("start");
+
     Serial.println("--- Rozpoczynam odtwarzanie ---");
     String url = getStreamUrl(uid);
     if (!url.isEmpty()) {
-        audio.stopSong();
+        // audio.stopSong() już było w playSystemSound()
         audio.connecttohost(url.c_str());
         isPlaying = true;
         lastNfcUid = uid;
@@ -334,16 +370,37 @@ void setup() {
         blinkLed(10, 100);
     }
 
-    // Audio
+    // Audio I2S
+    Serial.println("Initializing Audio I2S...");
     #if USE_INTERNAL_DAC
-        Serial.println("Audio: Internal DAC (GPIO25/GPIO26)");
+        Serial.println("  Mode: Internal DAC (GPIO25/GPIO26)");
+        // Internal DAC nie wymaga setPinout
     #else
+        Serial.println("  Mode: External I2S DAC (PCM5102A)");
+        Serial.print("    BCK=GPIO");  Serial.println(I2S_BCK);
+        Serial.print("    LCK=GPIO");  Serial.println(I2S_LCK);
+        Serial.print("    DOUT=GPIO"); Serial.println(I2S_DOUT);
         audio.setPinout(I2S_BCK, I2S_LCK, I2S_DOUT);
-        Serial.println("Audio: External I2S DAC (BCK=26, LCK=25, DOUT=27)");
     #endif
     audio.setVolume(currentVolume);
+    Serial.print("  Volume: "); Serial.println(currentVolume);
+
+    // Zwiększ bufor dla stabilnego streamu
+    audio.setConnectionTimeout(500, 2700);  // timeout (ms), response timeout (ms)
+    audio.setBufsize(20000, 512000);  // InBuff (bytes), OutBuff (bytes) - większy bufor
 
     blinkLed(2, 200);
+
+    #if TEST_MODE
+    // TEST: Automatyczne odtwarzanie przy starcie
+    Serial.println("\n=== TEST MODE: Auto-playing Simba ===");
+    delay(1000);
+    startPlayback("04:8A:C7:22:BD:39:81");
+    #else
+    Serial.println("\nReady! Place NFC tag to play music.");
+    // Odtwórz dźwięk gotowości
+    playSystemSound("ready");
+    #endif
 }
 
 // =============================================================================
@@ -354,18 +411,22 @@ void loop() {
     audio.loop();
     handleButtons();
 
+    #if !TEST_MODE
     if (millis() - lastNfcRead > NFC_READ_INTERVAL) {
         lastNfcRead = millis();
 
         currentNfcUid = readNfcTag();
         if (!currentNfcUid.isEmpty()) {
+            noTagCount = 0;  // Reset licznika gdy tag jest obecny
             if (currentNfcUid != lastNfcUid) {
                 startPlayback(currentNfcUid);
             }
         } else if (isPlaying && ++noTagCount >= NO_TAG_THRESHOLD) {
             stopPlayback();
+            noTagCount = 0;  // Reset po zatrzymaniu
         }
     }
+    #endif
 }
 
 // =============================================================================

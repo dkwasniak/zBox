@@ -27,14 +27,18 @@ Firmware dla ESP32 do projektu MusicBox - muzycznego pudełka dla dzieci.
 **Ważne:** Ustaw przełączniki na PN532 w tryb SPI (zazwyczaj: SEL0=OFF, SEL1=ON)
 
 ### PCM5102A (DAC) → ESP32 (I2S)
-| PCM5102A | ESP32 |
-|----------|-------|
-| VIN      | 5V    |
-| GND      | GND   |
-| BCK      | GPIO26 |
-| LCK      | GPIO25 |
-| DIN      | GPIO22 |
-| SCK      | GND    |
+| PCM5102A | ESP32 | Uwagi |
+|----------|-------|-------|
+| VIN      | 5V    | Zasilanie |
+| GND      | GND   | Masa cyfrowa |
+| BCK      | GPIO26 | Bit Clock |
+| LRCK     | GPIO25 | Left/Right Clock |
+| DIN      | GPIO27 | Data In |
+| SCK      | GND    | System Clock (ustawia tryb pracy) |
+
+**Pozostałe piny** (FLT, DEMP, XSMT, FMT, AGND) - niepodłączone
+
+**Audio:** Kabel mini jack 3.5mm z gniazda na płytce PCM5102A → wejście AUX w JBL Go
 
 ### Przyciski
 | Przycisk | ESP32 | Drugi pin |
@@ -114,6 +118,13 @@ pio device monitor
 - Postaw figurkę z tagiem NFC → muzyka zaczyna grać
 - Zdejmij figurkę → muzyka się zatrzymuje
 
+### Dźwięki systemowe
+ESP32 odtwarza ciche dźwięki ambientowe w dwóch sytuacjach:
+- **ready.mp3** - Po uruchomieniu, gdy urządzenie jest gotowe do pracy
+- **start.mp3** - Przy wykryciu tagu NFC, tuż przed rozpoczęciem muzyki
+
+Pliki muszą znajdować się w `music/system/` na serwerze. Głośność: 3/21 (ciche).
+
 ## Rozwiązywanie problemów
 
 ### "PN532 not found!"
@@ -136,6 +147,11 @@ pio device monitor
 - Trzymaj ESP32 bliżej routera
 - Upewnij się, że sieć to 2.4GHz (ESP32 nie obsługuje 5GHz)
 - Sflashuj ponownie aby zresetować ustawienia WiFi
+
+### Dźwięki systemowe się nie odtwarzają
+- Sprawdź czy pliki `ready.mp3` i `start.mp3` istnieją w folderze `music/system/` na serwerze
+- Sprawdź logi ESP32 (serial monitor) - powinny pokazać błąd 404 jeśli plików brak
+- Dźwięki są opcjonalne - ich brak nie blokuje działania głównego odtwarzania
 
 ## Konfiguracja
 

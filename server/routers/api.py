@@ -13,6 +13,7 @@ from models import PlayResponse
 router = APIRouter(prefix="/api", tags=["ESP32 API"])
 
 MUSIC_DIR = Path("./music")
+SYSTEM_SOUNDS_DIR = Path("./music/system")
 
 
 @router.get("/play/{nfc_uid}", response_model=PlayResponse)
@@ -67,3 +68,32 @@ def stream_track(track_id: int, db: Session = Depends(get_db)):
 def health_check():
     """Endpoint do sprawdzania czy serwer działa."""
     return {"status": "ok", "service": "musicbox"}
+
+
+@router.get("/system_sounds/{sound_name}")
+def stream_system_sound(sound_name: str):
+    """
+    Streamuje dźwięki systemowe (ready, start, itp.).
+    Pliki powinny znajdować się w katalogu music/system/
+    """
+    # Walidacja nazwy (tylko alfanumeryczne + podkreślnik)
+    if not sound_name.replace("_", "").isalnum():
+        raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa dźwięku")
+
+    # Dodaj .mp3 jeśli nie ma rozszerzenia
+    if not sound_name.endswith(".mp3"):
+        sound_name = f"{sound_name}.mp3"
+
+    file_path = SYSTEM_SOUNDS_DIR / sound_name
+
+    if not file_path.exists():
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dźwięk systemowy nie istnieje. Umieść plik {sound_name} w folderze music/system/"
+        )
+
+    return FileResponse(
+        path=file_path,
+        media_type="audio/mpeg",
+        filename=sound_name,
+    )

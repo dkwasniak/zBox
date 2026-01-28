@@ -2,6 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Instalacja ffmpeg i yt-dlp (do konwersji MP3 i pobierania z YouTube)
+RUN apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir yt-dlp
+
 # Instalacja zależności
 COPY server/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt

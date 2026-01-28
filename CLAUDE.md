@@ -57,14 +57,17 @@ Muzyczne pudełko które odtwarza muzykę po postawieniu figurki z naklejką NFC
 | SS    | GPIO5  |
 
 **Okablowanie PCM5102A → ESP32 (I2S):**
-| PCM5102A | ESP32 |
-|----------|-------|
-| VIN      | 5V    |
-| GND      | GND   |
-| BCK      | GPIO26 |
-| LCK      | GPIO25 |
-| DIN      | GPIO22 |
-| SCK      | GND    |
+| PCM5102A | ESP32 | Uwagi |
+|----------|-------|-------|
+| VIN      | 5V    | Zasilanie |
+| GND      | GND   | Masa cyfrowa |
+| BCK      | GPIO26 | Bit Clock |
+| LRCK     | GPIO25 | Left/Right Clock |
+| DIN      | GPIO27 | Data In |
+| SCK      | GND    | System Clock (ustawia tryb pracy) |
+
+Pozostałe piny PCM5102A (FLT, DEMP, XSMT, FMT, AGND) - niepodłączone.
+Audio: Kabel mini jack 3.5mm z gniazda na płytce PCM5102A → wejście AUX w JBL Go.
 
 **Okablowanie przycisków:**
 | Przycisk | ESP32 | Drugi pin |
@@ -93,6 +96,12 @@ Kabel mini jack 3.5mm z wyjścia audio PCM5102A do wejścia AUX JBL Go.
 - Figurka postawiona → odtwarzaj muzykę
 - Figurka zdjęta → zatrzymaj muzykę
 
+**Dźwięki systemowe:**
+- Dźwięk "ready" (cichy, ambientowy) - odtwarzany po uruchomieniu urządzenia, sygnalizuje gotowość do pracy
+- Dźwięk "start" (cichy, ambientowy) - odtwarzany przy wykryciu tagu NFC, tuż przed rozpoczęciem muzyki
+- Pliki muszą być umieszczone w `music/system/ready.mp3` i `music/system/start.mp3` na serwerze
+- Głośność: 3 (ciche odtwarzanie, niezależnie od ustawionej głośności głównej)
+
 ## API Endpoints
 
 ### Dla ESP32
@@ -100,6 +109,7 @@ Kabel mini jack 3.5mm z wyjścia audio PCM5102A do wejścia AUX JBL Go.
 |----------|------|
 | `GET /api/play/{nfc_uid}` | Zwraca `{stream_url, track_title, figurine_name}` |
 | `GET /api/stream/{track_id}` | Stream MP3 |
+| `GET /api/system_sounds/{sound_name}` | Stream dźwięków systemowych (ready, start) z folderu `music/system/` |
 | `GET /api/health` | Health check |
 
 ### Dla Panelu Admin
@@ -127,6 +137,7 @@ musicbox/
 │       ├── api.py           # Endpointy dla ESP32
 │       └── admin.py         # Endpointy dla panelu
 ├── music/                   # Pliki MP3 (Docker volume)
+│   └── system/              # Dźwięki systemowe (ready.mp3, start.mp3)
 ├── data/                    # Baza SQLite (Docker volume)
 └── web/
     └── index.html           # Panel administracyjny
