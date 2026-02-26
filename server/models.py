@@ -47,6 +47,39 @@ class FigurineResponse(FigurineBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+# System sound schemas
+class SystemSoundResponse(BaseModel):
+    id: int
+    name: str
+    filename: Optional[str]
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Sync schemas
+class SyncFigurine(BaseModel):
+    nfc_uid: str
+    track_filename: str
+    track_title: str
+
+
+class SyncTrack(BaseModel):
+    filename: str
+    title: str
+
+
+class SyncSystemSound(BaseModel):
+    name: str
+    filename: str
+
+
+class SyncResponse(BaseModel):
+    figurines: list[SyncFigurine]
+    tracks: list[SyncTrack]
+    system_sounds: list[SyncSystemSound]
+
+
 # ESP32 API response
 class PlayResponse(BaseModel):
     stream_url: str

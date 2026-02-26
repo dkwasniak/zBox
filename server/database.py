@@ -36,6 +36,17 @@ class Track(Base):
     )
 
 
+class SystemSound(Base):
+    __tablename__ = "system_sounds"
+
+    id: Mapped[int] = mapped_column(primary_key=True, index=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    filename: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, nullable=False
+    )
+
+
 class Figurine(Base):
     __tablename__ = "figurines"
 

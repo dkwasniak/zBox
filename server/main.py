@@ -6,16 +6,35 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
-from database import create_tables
+from database import create_tables, SessionLocal, SystemSound
 from routers import api, admin
 
 
 # Utwórz katalogi jeśli nie istnieją
 Path("./music").mkdir(parents=True, exist_ok=True)
+Path("./music/system").mkdir(parents=True, exist_ok=True)
 Path("./data").mkdir(parents=True, exist_ok=True)
 
 # Inicjalizacja bazy danych
 create_tables()
+
+SYSTEM_SOUND_NAMES = ["vol_up", "vol_down", "power_on", "power_off", "sync", "ready"]
+
+
+def seed_system_sounds():
+    """Tworzy 6 slotów dźwięków systemowych jeśli nie istnieją."""
+    db = SessionLocal()
+    try:
+        for name in SYSTEM_SOUND_NAMES:
+            existing = db.query(SystemSound).filter(SystemSound.name == name).first()
+            if not existing:
+                db.add(SystemSound(name=name))
+        db.commit()
+    finally:
+        db.close()
+
+
+seed_system_sounds()
 
 # Aplikacja FastAPI
 app = FastAPI(

@@ -12,18 +12,22 @@ from typing import List, Dict
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.orm import Session, joinedload
 
-from database import get_db, Track, Figurine
+from database import get_db, Track, Figurine, SystemSound
 from models import (
     TrackResponse,
     FigurineCreate,
     FigurineUpdate,
     FigurineResponse,
+    SystemSoundResponse,
 )
 
 
 router = APIRouter(prefix="/admin", tags=["Panel administracyjny"])
 
 MUSIC_DIR = Path("./music")
+SYSTEM_SOUNDS_DIR = Path("./music/system")
+
+VALID_SYSTEM_SOUNDS = {"vol_up", "vol_down", "power_on", "power_off", "sync", "ready"}
 
 # Globalny dict do trzymania progressu zadań YouTube
 youtube_tasks: Dict[str, dict] = {}
@@ -435,3 +439,96 @@ def delete_figurine(figurine_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Figurka usunięta", "id": figurine_id}
+
+
+# === System Sounds (Dźwięki systemowe) ===
+
+
+@router.get("/system_sounds", response_model=List[SystemSoundResponse])
+def list_system_sounds(db: Session = Depends(get_db)):
+    """Zwraca listę wszystkich slotów dźwięków systemowych."""
+    sounds = db.query(SystemSound).order_by(SystemSound.name).all()
+    return sounds
+
+
+@router.post("/system_sounds/{name}", response_model=SystemSoundResponse)
+async def upload_system_sound(
+    name: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Upload pliku MP3 dla dźwięku systemowego."""
+    if name not in VALID_SYSTEM_SOUNDS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Nieprawidłowa nazwa. Dozwolone: {', '.join(sorted(VALID_SYSTEM_SOUNDS))}"
+        )
+
+    if not file.filename.lower().endswith(".mp3"):
+        raise HTTPException(status_code=400, detail="Dozwolone tylko pliki MP3")
+
+    sound = db.query(SystemSound).filter(SystemSound.name == name).first()
+    if not sound:
+        raise HTTPException(status_code=404, detail="Slot dźwięku nie istnieje")
+
+    SYSTEM_SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+
+    filename = f"{name}.mp3"
+    final_path = SYSTEM_SOUNDS_DIR / filename
+
+    # Zapisz plik tymczasowy i konwertuj do 64kbps
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_input:
+        temp_input.write(content)
+        temp_input_path = temp_input.name
+
+    try:
+        result = subprocess.run(
+            [
+                "ffmpeg",
+                "-i", temp_input_path,
+                "-b:a", "64k",
+                "-ar", "44100",
+                "-ac", "2",
+                "-y",
+                str(final_path),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+
+        if result.returncode != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Błąd konwersji MP3: {result.stderr}"
+            )
+    finally:
+        os.unlink(temp_input_path)
+
+    sound.filename = filename
+    db.commit()
+    db.refresh(sound)
+
+    return sound
+
+
+@router.delete("/system_sounds/{name}")
+def delete_system_sound(name: str, db: Session = Depends(get_db)):
+    """Usuwa plik dźwięku systemowego (slot pozostaje)."""
+    if name not in VALID_SYSTEM_SOUNDS:
+        raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa")
+
+    sound = db.query(SystemSound).filter(SystemSound.name == name).first()
+    if not sound:
+        raise HTTPException(status_code=404, detail="Slot dźwięku nie istnieje")
+
+    if sound.filename:
+        file_path = SYSTEM_SOUNDS_DIR / sound.filename
+        if file_path.exists():
+            os.remove(file_path)
+
+    sound.filename = None
+    db.commit()
+
+    return {"message": "Dźwięk usunięty", "name": name}

@@ -36,6 +36,12 @@
                     class="px-4 py-2 rounded-lg font-medium transition-colors">
                     Figurki
                 </button>
+                <button
+                    @click="activeTab = 'sounds'"
+                    :class="activeTab === 'sounds' ? 'bg-blue-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
+                    class="px-4 py-2 rounded-lg font-medium transition-colors">
+                    Dzwieki
+                </button>
             </nav>
         </div>
 
@@ -304,6 +310,58 @@
             </div>
         </div>
 
+        <!-- System Sounds Tab -->
+        <div x-show="activeTab === 'sounds'" x-cloak>
+            <div class="bg-white rounded-lg shadow">
+                <div class="p-4 border-b">
+                    <h2 class="text-lg font-semibold">Dzwieki systemowe</h2>
+                    <p class="text-sm text-gray-500 mt-1">Dzwieki odtwarzane przez ESP32 przy roznych akcjach</p>
+                </div>
+                <div class="divide-y">
+                    <template x-for="sound in systemSounds" :key="sound.name">
+                        <div class="p-4 flex items-center justify-between hover:bg-gray-50">
+                            <div class="flex items-center gap-3">
+                                <span class="text-2xl" x-text="soundIcons[sound.name] || '🔊'"></span>
+                                <div>
+                                    <div class="font-medium" x-text="soundLabels[sound.name] || sound.name"></div>
+                                    <div class="text-sm" :class="sound.filename ? 'text-green-600' : 'text-gray-400'"
+                                         x-text="sound.filename || '(brak pliku)'"></div>
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <template x-if="sound.filename">
+                                    <button
+                                        @click="togglePlaySystemSound(sound)"
+                                        class="p-2 text-gray-600 hover:text-blue-500 hover:bg-blue-50 rounded-lg"
+                                        :title="playingSoundName === sound.name ? 'Zatrzymaj' : 'Odtworz'">
+                                        <span x-show="playingSoundName !== sound.name">&#9654;&#65039;</span>
+                                        <span x-show="playingSoundName === sound.name">&#9208;&#65039;</span>
+                                    </button>
+                                </template>
+                                <label class="cursor-pointer p-2 text-gray-600 hover:text-green-500 hover:bg-green-50 rounded-lg" title="Upload MP3">
+                                    &#128228;
+                                    <input type="file" accept=".mp3" class="hidden"
+                                           @change="uploadSystemSound(sound.name, $event.target.files[0]); $event.target.value = ''">
+                                </label>
+                                <template x-if="sound.filename">
+                                    <button
+                                        @click="deleteSystemSound(sound.name)"
+                                        class="p-2 text-gray-600 hover:text-red-500 hover:bg-red-50 rounded-lg"
+                                        title="Usun">
+                                        &#128465;&#65039;
+                                    </button>
+                                </template>
+                            </div>
+                        </div>
+                    </template>
+                </div>
+            </div>
+            <audio x-ref="soundPlayer"
+                   @ended="playingSoundName = null"
+                   @pause="playingSoundName = null"
+                   class="hidden"></audio>
+        </div>
+
         <!-- Figurines Tab -->
         <div x-show="activeTab === 'figurines'" x-cloak>
             <!-- Add Figurine Form -->
@@ -441,6 +499,24 @@
                 uploadMethod: 'file',
                 tracks: [],
                 figurines: [],
+                systemSounds: [],
+                playingSoundName: null,
+                soundLabels: {
+                    vol_up: 'Glosniej',
+                    vol_down: 'Ciszej',
+                    power_on: 'Wlaczenie',
+                    power_off: 'Wylaczenie',
+                    sync: 'Synchronizacja',
+                    ready: 'Gotowy'
+                },
+                soundIcons: {
+                    vol_up: '🔊',
+                    vol_down: '🔉',
+                    power_on: '⚡',
+                    power_off: '💤',
+                    sync: '🔄',
+                    ready: '✅'
+                },
                 newTrack: { title: '', file: null },
                 youtubeTrack: { title: '', url: '' },
                 newFigurine: { name: '', nfc_uid: '', track_id: '' },
@@ -471,6 +547,7 @@
                 async init() {
                     await this.loadTracks();
                     await this.loadFigurines();
+                    await this.loadSystemSounds();
                 },
 
                 showNotification(message, type = 'success') {
@@ -749,6 +826,66 @@
                         }
                     } catch (e) {
                         this.showNotification('Błąd połączenia', 'error');
+                    }
+                },
+
+                // System Sounds Functions
+                async loadSystemSounds() {
+                    try {
+                        const res = await fetch('/admin/system_sounds');
+                        this.systemSounds = await res.json();
+                    } catch (e) {
+                        this.showNotification('Blad ladowania dzwiekow', 'error');
+                    }
+                },
+
+                togglePlaySystemSound(sound) {
+                    const audio = this.$refs.soundPlayer;
+                    if (this.playingSoundName === sound.name) {
+                        audio.pause();
+                        audio.currentTime = 0;
+                        this.playingSoundName = null;
+                    } else {
+                        audio.src = `/api/system_sounds/${sound.name}`;
+                        audio.play();
+                        this.playingSoundName = sound.name;
+                    }
+                },
+
+                async uploadSystemSound(name, file) {
+                    if (!file) return;
+                    const formData = new FormData();
+                    formData.append('file', file);
+
+                    try {
+                        const res = await fetch(`/admin/system_sounds/${name}`, {
+                            method: 'POST',
+                            body: formData
+                        });
+                        if (res.ok) {
+                            this.showNotification('Dzwiek przypisany');
+                            await this.loadSystemSounds();
+                        } else {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad uploadu', 'error');
+                        }
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia', 'error');
+                    }
+                },
+
+                async deleteSystemSound(name) {
+                    if (!confirm(`Usunac dzwiek "${this.soundLabels[name]}"?`)) return;
+                    try {
+                        const res = await fetch(`/admin/system_sounds/${name}`, { method: 'DELETE' });
+                        if (res.ok) {
+                            this.showNotification('Dzwiek usuniety');
+                            await this.loadSystemSounds();
+                        } else {
+                            this.showNotification('Blad usuwania', 'error');
+                        }
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia', 'error');
                     }
                 },
 

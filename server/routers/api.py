@@ -1,13 +1,14 @@
 """API endpoints dla ESP32."""
 
 from pathlib import Path
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import FileResponse
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
-from database import get_db, Figurine, Track
-from models import PlayResponse
+from database import get_db, Figurine, Track, SystemSound
+from models import PlayResponse, SyncResponse, SyncFigurine, SyncTrack, SyncSystemSound
 
 
 router = APIRouter(prefix="/api", tags=["ESP32 API"])
@@ -64,6 +65,70 @@ def stream_track(track_id: int, db: Session = Depends(get_db)):
     )
 
 
+@router.get("/stream/file/{filename}")
+def stream_file(filename: str):
+    """
+    Streamuje plik MP3 po nazwie pliku.
+    Używane przez ESP32 do synchronizacji.
+    """
+    # Blokuj path traversal, resztę przepuszczaj (polskie znaki, spacje)
+    if ".." in filename or "/" in filename or "\\" in filename:
+        raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa pliku")
+
+    # Szukaj w music/ i music/system/
+    file_path = MUSIC_DIR / filename
+    if not file_path.exists():
+        file_path = SYSTEM_SOUNDS_DIR / filename
+    if not file_path.exists():
+        raise HTTPException(status_code=404, detail="Plik nie istnieje")
+
+    return FileResponse(
+        path=file_path,
+        media_type="audio/mpeg",
+        filename=filename,
+    )
+
+
+@router.get("/sync", response_model=SyncResponse)
+def sync_manifest(db: Session = Depends(get_db)):
+    """
+    Zwraca manifest synchronizacji dla ESP32.
+    Zawiera listę figurek z przypisanymi utworami, listę utworów i dźwięki systemowe.
+    """
+    # Figurki z przypisanymi utworami
+    figurines_db = (
+        db.query(Figurine)
+        .options(joinedload(Figurine.track))
+        .filter(Figurine.track_id.isnot(None))
+        .all()
+    )
+
+    figurines = []
+    for f in figurines_db:
+        if f.track:
+            figurines.append(SyncFigurine(
+                nfc_uid=f.nfc_uid,
+                track_filename=f.track.filename,
+                track_title=f.track.title,
+            ))
+
+    # Wszystkie utwory
+    tracks_db = db.query(Track).all()
+    tracks = [SyncTrack(filename=t.filename, title=t.title) for t in tracks_db]
+
+    # Dźwięki systemowe z przypisanymi plikami
+    sounds_db = db.query(SystemSound).filter(SystemSound.filename.isnot(None)).all()
+    system_sounds = [
+        SyncSystemSound(name=s.name, filename=s.filename) for s in sounds_db
+    ]
+
+    return SyncResponse(
+        figurines=figurines,
+        tracks=tracks,
+        system_sounds=system_sounds,
+    )
+
+
 @router.get("/health")
 def health_check():
     """Endpoint do sprawdzania czy serwer działa."""
@@ -71,29 +136,30 @@ def health_check():
 
 
 @router.get("/system_sounds/{sound_name}")
-def stream_system_sound(sound_name: str):
+def stream_system_sound(sound_name: str, db: Session = Depends(get_db)):
     """
-    Streamuje dźwięki systemowe (ready, start, itp.).
-    Pliki powinny znajdować się w katalogu music/system/
+    Streamuje dźwięki systemowe z bazy SystemSound.
     """
-    # Walidacja nazwy (tylko alfanumeryczne + podkreślnik)
     if not sound_name.replace("_", "").isalnum():
         raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa dźwięku")
 
-    # Dodaj .mp3 jeśli nie ma rozszerzenia
-    if not sound_name.endswith(".mp3"):
-        sound_name = f"{sound_name}.mp3"
+    sound = db.query(SystemSound).filter(SystemSound.name == sound_name).first()
+    if not sound or not sound.filename:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Dźwięk systemowy '{sound_name}' nie jest przypisany"
+        )
 
-    file_path = SYSTEM_SOUNDS_DIR / sound_name
+    file_path = SYSTEM_SOUNDS_DIR / sound.filename
 
     if not file_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Dźwięk systemowy nie istnieje. Umieść plik {sound_name} w folderze music/system/"
+            detail=f"Plik dźwięku systemowego nie istnieje"
         )
 
     return FileResponse(
         path=file_path,
         media_type="audio/mpeg",
-        filename=sound_name,
+        filename=sound.filename,
     )
