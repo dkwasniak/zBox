@@ -29,8 +29,8 @@
 // PN532 NFC (Software SPI - piny nie mogą kolidować z SD!)
 #define PN532_SCK  22
 #define PN532_MISO 21
-#define PN532_MOSI 17
-#define PN532_SS   16
+#define PN532_MOSI 12
+#define PN532_SS   5
 
 // PCM5102A DAC (I2S)
 #define I2S_BCK   26
@@ -41,9 +41,24 @@
 #define BTN_A     32   // VOL+
 #define BTN_B     33   // VOL-
 
+// Sterowanie JBL Go (przez tranzystory NPN BC547)
+// Collector -> lewa nóżka przycisku JBL (ta z napięciem ~4V)
+// Emitter  -> prawa nóżka przycisku JBL (0V)
+// Base     -> rezystor 2.2kΩ -> GPIO ESP32
+// GND ESP32 musi być połączony z GND JBL (star ground z zewnętrznego PSU)
+#define JBL_POWER    13   // Tranzystor -> przycisk POWER na JBL
+#define JBL_VOL_UP   14   // Tranzystor -> przycisk VOL+ na JBL
+#define JBL_VOL_DOWN 15   // Tranzystor -> przycisk VOL- na JBL (wymaga pull-down 10kΩ do GND!)
+#define JBL_STATUS   34   // ADC input - linia statusowa JBL (~4V gdy włączony, przez dzielnik 10k/22k)
+
+#define JBL_BTN_PRESS_MS     80    // Czas symulacji naciśnięcia przycisku JBL
+#define JBL_POWER_PRESS_MS   500   // Czas naciśnięcia power on/off
+#define JBL_STATUS_THRESHOLD 2000  // Próg ADC (~2.0V po dzielniku = JBL włączony)
+#define JBL_BOOT_WAIT_MS     3000  // Czas czekania na uruchomienie JBL po włączeniu
+
 // Tryb testowy - auto-play z SD (loop)
-#define TEST_AUDIO_MODE false
-#define TEST_SD_FILE "/music/test.mp3"
+#define TEST_AUDIO_MODE true
+#define TEST_SD_FILE "/music/9383471d_babajaga.mp3"
 
 // =============================================================================
 // KONFIGURACJA
@@ -56,9 +71,7 @@
 #define WIFI_AP_NAME      "MusicBox-Setup"
 #define WIFI_AP_PASSWORD  ""
 
-#define VOLUME_MIN     0
-#define VOLUME_MAX     21
-#define VOLUME_DEFAULT 10
+#define VOLUME_FIXED   21  // Stała głośność na DAC (max), regulacja fizycznie przez JBL
 
 #define LONG_PRESS_MS      2000
 #define DEBOUNCE_MS        50
@@ -79,7 +92,6 @@ WiFiManager wifiManager;
 // STAN
 // =============================================================================
 
-int currentVolume = VOLUME_DEFAULT;
 String currentNfcUid = "";
 String lastNfcUid = "";
 bool isPlaying = false;
@@ -163,24 +175,65 @@ bool resolveMdns() {
     return true;
 }
 
-void saveVolume() {
-    preferences.putInt("volume", currentVolume);
-}
-
-void loadVolume() {
-    currentVolume = preferences.getInt("volume", VOLUME_DEFAULT);
-}
-
-void setVolume(int vol) {
-    currentVolume = constrain(vol, VOLUME_MIN, VOLUME_MAX);
-    audio.setVolume(currentVolume);
-    saveVolume();
-}
-
 void blinkLed(int times, int delayMs) {
     // LED wyłączony - GPIO4 zajęty przez SD na Lolin D32 Pro
     (void)times;
     (void)delayMs;
+}
+
+// =============================================================================
+// JBL GO CONTROL (przez tranzystory)
+// =============================================================================
+
+void jblPressButton(int pin, int durationMs) {
+    digitalWrite(pin, HIGH);
+    delay(durationMs);
+    digitalWrite(pin, LOW);
+}
+
+bool isJblOn() {
+    int adcValue = analogRead(JBL_STATUS);
+    Serial.print("[JBL] Status ADC: ");
+    Serial.println(adcValue);
+    return adcValue > JBL_STATUS_THRESHOLD;
+}
+
+void jblPowerOn() {
+    if (isJblOn()) {
+        Serial.println("[JBL] Already ON");
+        return;
+    }
+    Serial.println("[JBL] Powering ON...");
+    jblPressButton(JBL_POWER, JBL_POWER_PRESS_MS);
+    unsigned long start = millis();
+    while (millis() - start < JBL_BOOT_WAIT_MS) {
+        delay(200);
+        if (isJblOn()) {
+            Serial.println("[JBL] ON - ready");
+            return;
+        }
+    }
+    Serial.println("[JBL] WARNING: Power on timeout");
+}
+
+void jblPowerOff() {
+    if (!isJblOn()) {
+        Serial.println("[JBL] Already OFF");
+        return;
+    }
+    Serial.println("[JBL] Powering OFF...");
+    jblPressButton(JBL_POWER, JBL_POWER_PRESS_MS);
+    delay(500);
+}
+
+void jblVolumeUp() {
+    Serial.println("[JBL] VOL+");
+    jblPressButton(JBL_VOL_UP, JBL_BTN_PRESS_MS);
+}
+
+void jblVolumeDown() {
+    Serial.println("[JBL] VOL-");
+    jblPressButton(JBL_VOL_DOWN, JBL_BTN_PRESS_MS);
 }
 
 // =============================================================================
@@ -454,9 +507,10 @@ void stopPlayback() {
 
 void enterDeepSleep() {
     audio.stopSong();
-    playSystemSound("power_off");
-    saveVolume();
-    blinkLed(3, 100);
+    delay(100);
+    jblPowerOff();
+    Serial.println("Entering deep sleep...");
+    Serial.flush();
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_A, LOW);
     esp_deep_sleep_start();
 }
@@ -742,16 +796,20 @@ void handleButtons() {
     bool a = digitalRead(BTN_A) == LOW;
     bool b = digitalRead(BTN_B) == LOW;
 
-    // ISR ustawiło flagę -> zapamiętaj czas
+    // ISR ustawiło flagę -> zapamiętaj czas + natychmiastowa akcja VOL
     if (btnAPressed && btnAPressTime == 0) {
         btnAPressTime = now;
         btnAHandled = false;
         Serial.println("[BTN] A (VOL+) pressed");
+        jblVolumeUp();
+        btnAHandled = true;
     }
     if (btnBPressed && btnBPressTime == 0) {
         btnBPressTime = now;
         btnBHandled = false;
         Serial.println("[BTN] B (VOL-) pressed");
+        jblVolumeDown();
+        btnBHandled = true;
     }
 
     // Both buttons held for 2s -> sync
@@ -759,42 +817,27 @@ void handleButtons() {
         unsigned long earliest = (btnAPressTime < btnBPressTime) ? btnBPressTime : btnAPressTime;
         if (earliest > 0 && now - earliest >= LONG_PRESS_MS) {
             bothHandled = true;
-            btnAHandled = true;
-            btnBHandled = true;
             Serial.println("\n>>> Oba przyciski przytrzymane 2s -> SYNC");
             syncFromServer();
         }
     }
 
     // Long press BTN_B only (2s) -> deep sleep
-    if (b && !a && !btnBHandled && btnBPressTime > 0 && now - btnBPressTime >= LONG_PRESS_MS) {
-        btnBHandled = true;
+    if (b && !a && btnBPressTime > 0 && now - btnBPressTime >= LONG_PRESS_MS) {
         Serial.println("\n>>> BTN_B przytrzymany 2s -> DEEP SLEEP");
         enterDeepSleep();
     }
 
-    // Release BTN_A -> short press = VOL+
+    // Release BTN_A
     if (!a && btnAPressed) {
-        if (!btnAHandled) {
-            setVolume(currentVolume + 1);
-            Serial.print("VOL+ -> ");
-            Serial.println(currentVolume);
-            playSystemSound("vol_up");
-        }
         btnAPressed = false;
         btnAPressTime = 0;
         btnAHandled = false;
         if (!b) bothHandled = false;
     }
 
-    // Release BTN_B -> short press = VOL-
+    // Release BTN_B
     if (!b && btnBPressed) {
-        if (!btnBHandled) {
-            setVolume(currentVolume - 1);
-            Serial.print("VOL- -> ");
-            Serial.println(currentVolume);
-            playSystemSound("vol_down");
-        }
         btnBPressed = false;
         btnBPressTime = 0;
         btnBHandled = false;
@@ -810,14 +853,22 @@ void setup() {
     Serial.begin(115200);
     Serial.println("\n\n=== MusicBox (Offline Mode) ===");
 
-    // LED wyłączony - GPIO4 zajęty przez SD na Lolin D32 Pro
+    // Przyciski ESP32
     pinMode(BTN_A, INPUT_PULLUP);
     pinMode(BTN_B, INPUT_PULLUP);
     attachInterrupt(digitalPinToInterrupt(BTN_A), btnAISR, FALLING);
     attachInterrupt(digitalPinToInterrupt(BTN_B), btnBISR, FALLING);
 
+    // JBL Go - piny sterujące (LOW = tranzystor wyłączony = przycisk nie wciśnięty)
+    pinMode(JBL_POWER, OUTPUT);
+    digitalWrite(JBL_POWER, LOW);
+    pinMode(JBL_VOL_UP, OUTPUT);
+    digitalWrite(JBL_VOL_UP, LOW);
+    pinMode(JBL_VOL_DOWN, OUTPUT);
+    digitalWrite(JBL_VOL_DOWN, LOW);
+    pinMode(JBL_STATUS, INPUT);
+
     preferences.begin("musicbox", false);
-    loadVolume();
 
     // SD Card (zawsze potrzebna)
     sdReady = initSD();
@@ -861,20 +912,23 @@ void setup() {
     Serial.print(" PSRAM: ");
     Serial.println(ESP.getFreePsram());
     audio.setPinout(I2S_BCK, I2S_LCK, I2S_DOUT);
-    audio.setVolume(currentVolume);
-    Serial.print("Volume: ");
-    Serial.println(currentVolume);
+    audio.setVolume(VOLUME_FIXED);
+    Serial.print("Volume (fixed): ");
+    Serial.println(VOLUME_FIXED);
 
     // Load mappings from SD
     if (sdReady) {
         loadMappings();
     }
 
-    // Check wake reason
+    // Check wake reason + power on JBL
     esp_sleep_wakeup_cause_t wakeReason = esp_sleep_get_wakeup_cause();
     if (wakeReason == ESP_SLEEP_WAKEUP_EXT0) {
         Serial.println("Woke from deep sleep (BTN_A)");
-        playSystemSound("power_on");
+        jblPowerOn();
+    } else {
+        // Cold boot - upewnij się że JBL jest włączony
+        jblPowerOn();
     }
 
     blinkLed(2, 200);
