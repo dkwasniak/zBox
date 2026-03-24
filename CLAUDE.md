@@ -90,21 +90,31 @@ GPIO18/19/23 są wewnętrznie połączone ze slotem SD (routing na PCB). Choć w
 
 (Wewnętrzne pull-up, GPIO32/33 obsługują RTC wake-up z deep sleep)
 
-**Sterowanie JBL Go (przez tranzystory NPN BC547):**
+**Sterowanie JBL Go (przez tranzystor NPN BC547):**
 
-Przyciski JBL są normalnie otwarte (NO) - wciśnięcie zwiera kontakty.
-Każdy przycisk JBL ma dwie nóżki: lewa (~4V), prawa (0V/GND).
+Przycisk POWER JBL jest normalnie otwarty (NO) - wciśnięcie zwiera kontakty.
+Przycisk ma dwie nóżki: lewa (~4V), prawa (0V/GND).
 Tranzystor NPN zwiera nóżki przycisku gdy GPIO jest HIGH.
+Głośność sterowana przez Bluetooth AVRCP (nie tranzystory).
 
 | Funkcja | GPIO ESP32 | Tranzystor | Rezystor |
 |---------|-----------|------------|----------|
 | JBL POWER | GPIO13 | Collector→lewa nóżka POWER, Emitter→prawa nóżka | 2.2kΩ Base→GPIO13 |
-| JBL VOL+  | GPIO14 | Collector→lewa nóżka VOL+, Emitter→prawa nóżka  | 2.2kΩ Base→GPIO14 |
-| JBL VOL-  | GPIO15 | Collector→lewa nóżka VOL-, Emitter→prawa nóżka  | 2.2kΩ Base→GPIO15 |
 
-**WAŻNE:** GPIO15 wymaga pull-down 10kΩ do GND (strapping pin - bez tego może przypadkowo wyzwolić tranzystor przy bootowaniu).
+**WAŻNE:** GPIO15 wymaga pull-down 10kΩ do GND (strapping pin - wpływa na boot mode ESP32).
 
 **GND ESP32 musi być połączony z GND JBL** (minus baterii na płytce JBL).
+
+**Pasek LED WS2812B (5 diod):**
+| WS2812B | ESP32/Zasilanie | Uwagi |
+|---------|-----------------|-------|
+| VCC | 5V (VBUS) | Wspólne zasilanie |
+| GND | GND | Star ground |
+| DIN | GPIO14 | 3.3V logic, OK na krótkim kablu |
+
+Scenariusze LED: boot progress (niebieski), idle/breathing (zielony), playing/fala (cyan),
+volume (biały, 1-5 diod), sync WiFi (żółte miganie), sync progress (niebieski pasek),
+sukces/błąd (zielony/czerwony flash), shutdown (fioletowa sekwencja), brak mappingu (pomarańczowy flash).
 
 **Odczyt statusu JBL (czy włączony):**
 | Z | Do | Uwagi |
@@ -128,10 +138,11 @@ Kabel mini jack 3.5mm z wyjścia audio PCM5102A do wejścia AUX JBL Go.
 - WiFiManager (konfiguracja WiFi dla sync)
 - ArduinoJson (parsowanie mappings)
 - Preferences (flaga sync)
+- FastLED (WS2812B LED strip)
 
 **Logika przycisków:**
-- Krótkie VOL+ → puls na GPIO14 (JBL VOL+, 80ms)
-- Krótkie VOL- → puls na GPIO15 (JBL VOL-, 80ms)
+- Krótkie VOL+ → głośność BT AVRCP +5%
+- Krótkie VOL- → głośność BT AVRCP -5%
 - Akcja na naciśnięcie (nie na puszczenie) - szybka reakcja
 - Przytrzymanie VOL+ (2s) → wybudź z deep sleep
 - Przytrzymanie VOL- (2s) → wyłącz JBL + deep sleep
@@ -152,8 +163,7 @@ Kabel mini jack 3.5mm z wyjścia audio PCM5102A do wejścia AUX JBL Go.
 | 5 | PN532 SS | Output (SW SPI) | Strapping pin - pull-up OK |
 | 12 | PN532 MOSI | Output (SW SPI) | Strapping pin - musi być LOW przy boot |
 | 13 | JBL POWER | Output | Tranzystor NPN, 2.2kΩ na bazie |
-| 14 | JBL VOL+ | Output | Tranzystor NPN, 2.2kΩ na bazie |
-| 15 | JBL VOL- | Output | Strapping pin - wymaga pull-down 10kΩ |
+| 14 | LED WS2812B | Output | DIN paska LED (5 diod) |
 | 18 | SD SCK | HW SPI (wewnętrzny) | ZAJĘTY - nie używać! |
 | 19 | SD MISO | HW SPI (wewnętrzny) | ZAJĘTY - nie używać! |
 | 21 | PN532 MISO | Input (SW SPI) | Domyślny I2C SDA - I2C niedostępny |
@@ -166,8 +176,8 @@ Kabel mini jack 3.5mm z wyjścia audio PCM5102A do wejścia AUX JBL Go.
 | 33 | BTN_B (VOL-) | Input (pull-up) | RTC wake-up z deep sleep |
 | 34 | JBL STATUS | Input (ADC) | Tylko input, dzielnik 10kΩ/22kΩ |
 
-Wolne GPIO (dostępne do rozbudowy): 0*, 2*, 16, 17, 35*, 36*, 39*
-(*) z ograniczeniami: 0/2 = strapping pins, 35/36/39 = tylko input (brak pull-up)
+Wolne GPIO (dostępne do rozbudowy): 0*, 2*, 15*, 17, 35*, 36*, 39*
+(*) z ograniczeniami: 0/2 = strapping pins, 15 = strapping pin (pull-down 10kΩ), 35/36/39 = tylko input (brak pull-up)
 
 **Synchronizacja z serwerem:**
 - Oba przyciski 2s → zapisuje flagę sync_pending → restart ESP32
@@ -252,12 +262,14 @@ ssh rpi@<musicbox-server> "cd ~/musicbox && docker compose restart"
 
 **Custom PCB (zrealizowane):**
 - Wejście zasilania USB-C (J1)
-- Złącza pin header: PN532 (J3, 6-pin), PCM5102A (J4, 5-pin), przyciski (J7, 4-pin), JBL (J10, 7-pin)
+- Złącza pin header: PN532 (J3, 6-pin), PCM5102A (J4, 5-pin), przyciski (J7, 4-pin), JBL (J10, 4-pin: POWER/STATUS/GND/VCC), LED (J11, 3-pin: DIN/VCC/GND)
 - Złącze JST-PH 2-pin (J2) na dodatkowe GND
 - Gniazda ESP32 Lolin D32 Pro (J8 lewy, J9 prawy - 16 pinów każdy)
-- Tranzystory BC547 (Q1-Q3) + rezystory 2.2kΩ (R3-R5) na płytce
+- Tranzystor BC547 (Q1) + rezystor 2.2kΩ (R3) na płytce (tylko JBL POWER)
 - Rezystory pull-up 5.1kΩ (R1, R2) na CC1/CC2 USB-C
 - Rezystor 10kΩ (R6) na linii JBL_STATUS
+- Pull-down 10kΩ na GPIO15 (strapping pin)
+- Usunięte: Q2 (VOL+), Q3 (VOL-), R4, R5 - głośność sterowana przez BT AVRCP
 
 **TODO:** Złącze J4 ma 5 pinów - brakuje SCK. Nie jest potrzebny (na module podciągnięty do GND), ale dla kompletności można dodać 6-pin w następnej rewizji.
 
