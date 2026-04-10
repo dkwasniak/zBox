@@ -51,8 +51,11 @@
 #define LED_COUNT   5
 #define LED_BRIGHTNESS 40
 
-#define BTN_A       32   // VOL+
-#define BTN_B       33   // VOL-
+#define BTN_A       32   // VOL+   (RTC, wake-up z deep sleep przez ext0)
+#define BTN_B       33   // VOL-   (RTC)
+#define BTN_C       25   // rezerwa (RTC, wolny po rezygnacji z I2S)
+#define BTN_D       26   // rezerwa (RTC, wolny po rezygnacji z I2S)
+#define BTN_COUNT   4
 
 #define JBL_POWER   13   // Tranzystor NPN -> przycisk POWER na JBL
 #define JBL_STATUS  34   // ADC - linia statusowa JBL (dzielnik 10k/22k)
@@ -76,7 +79,7 @@
 // JBL
 #define JBL_POWER_PRESS_MS   500
 #define JBL_STATUS_THRESHOLD 180
-#define JBL_BOOT_WAIT_MS     3000
+#define JBL_BOOT_WAIT_MS     5000   // timeout na cold boot JBL + A2DP reconnect
 
 // Głośność Bluetooth (AVRCP)
 #define BT_VOL_STEP          5
@@ -109,6 +112,7 @@ uint8_t audioBuf[AUDIO_BUF_SIZE];
 
 CRGB leds[LED_COUNT];
 TaskHandle_t ledTaskHandle = NULL;
+bool fastLedInitialized = false;
 
 enum LedMode {
     LED_OFF,
@@ -141,16 +145,25 @@ int btVolume = BT_VOL_DEFAULT;
 bool btVolumeApplied = false;
 
 unsigned long lastNfcRead = 0;
-unsigned long btnAPressTime = 0;
-unsigned long btnBPressTime = 0;
 
-volatile bool btnAPressed = false;
-volatile bool btnBPressed = false;
-bool btnAHandled = false;
-bool btnBHandled = false;
-bool bothHandled = false;
-volatile unsigned long lastBtnAInterrupt = 0;
-volatile unsigned long lastBtnBInterrupt = 0;
+// --- Buttons (generic, 4x) ---
+struct Button {
+    uint8_t pin;
+    const char* name;
+    volatile bool pressed;                  // ISR flag, czyszczone w handleButtons po release
+    volatile unsigned long lastInterrupt;   // debounce timestamp (ISR)
+    unsigned long pressStart;               // millis() pierwszego naciśnięcia, 0 gdy zwolniony
+    bool longHandled;                       // akcja long-press już wystrzeliła
+};
+
+Button buttons[BTN_COUNT] = {
+    {BTN_A, "A(VOL+)", false, 0, 0, false},
+    {BTN_B, "B(VOL-)", false, 0, 0, false},
+    {BTN_C, "C",       false, 0, 0, false},
+    {BTN_D, "D",       false, 0, 0, false},
+};
+
+bool bothABHandled = false;   // flaga dla kombinacji A+B (sync)
 
 int noTagCount = 0;
 int nfcErrorCount = 0;
@@ -169,19 +182,14 @@ bool bootTimingDone = false;
 // ISR
 // =============================================================================
 
-void IRAM_ATTR btnAISR() {
+// Jedna wspólna ISR dla wszystkich przycisków, parametryzowana przez wskaźnik
+// na strukturę Button (attachInterruptArg).
+void IRAM_ATTR btnISR(void* arg) {
+    Button* b = (Button*)arg;
     unsigned long now = millis();
-    if (now - lastBtnAInterrupt > DEBOUNCE_MS) {
-        btnAPressed = true;
-        lastBtnAInterrupt = now;
-    }
-}
-
-void IRAM_ATTR btnBISR() {
-    unsigned long now = millis();
-    if (now - lastBtnBInterrupt > DEBOUNCE_MS) {
-        btnBPressed = true;
-        lastBtnBInterrupt = now;
+    if (now - b->lastInterrupt > DEBOUNCE_MS) {
+        b->pressed = true;
+        b->lastInterrupt = now;
     }
 }
 
@@ -224,8 +232,11 @@ String uidToString(uint8_t* uid, uint8_t uidLength) {
 void ledTaskFunc(void* param);  // forward declaration
 
 void initLeds() {
-    FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
-    FastLED.setBrightness(LED_BRIGHTNESS);
+    if (!fastLedInitialized) {
+        FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
+        FastLED.setBrightness(LED_BRIGHTNESS);
+        fastLedInitialized = true;
+    }
     FastLED.clear();
     FastLED.show();
     ledMode = LED_OFF;
@@ -422,17 +433,9 @@ bool isJblOn() {
     return maxVal > JBL_STATUS_THRESHOLD;
 }
 
-// Włączanie JBL - puls GPIO13 przez JBL_POWER_PRESS_MS
-// Puls startuje wcześnie w setup(), inne operacje (NFC init, mappings)
-// wypełniają czas pulsu, na końcu dopełniamy delay do 500ms
-void jblPowerOn() {
-    if (isJblOn()) {
-        Serial.println("[JBL] Already ON");
-        return;
-    }
-    Serial.println("[JBL] Powering ON...");
-    jblPressButtonBlocking(JBL_POWER, JBL_POWER_PRESS_MS);
-}
+// UWAGA: włączanie JBL przy boot jest robione inline w setup() (nieblokująco,
+// puls interleaved z NFC init). Runtime recovery (auto-power-off JBL po
+// bezczynności) obsługuje ensureJblReady() w sekcji PLAYBACK.
 
 // Blokujące wyłączanie - używane tylko przed deep sleep
 void jblPowerOff() {
@@ -610,6 +613,46 @@ String readNfcTag() {
 // PLAYBACK
 // =============================================================================
 
+// Zapewnia że JBL jest ON (ADC) i A2DP jest podłączone.
+// Wywoływane przed każdym odtworzeniem - obsługuje scenariusz:
+// 1. JBL wyłączył się sam po bezczynności (auto-power-off po ~15 min)
+// 2. BT się rozłączyło i auto_reconnect jeszcze się nie wpiął
+// Zwraca true gdy wszystko gotowe, false gdy przekroczono timeout.
+bool ensureJblReady() {
+    bool adcOn = isJblOn();
+    bool btConn = a2dp.source().is_connected();
+
+    // Szybka ścieżka - wszystko działa, wracamy od razu
+    if (adcOn && btConn) return true;
+
+    // JBL wyłączony wg ADC - wciśnij power (blokujące, 500ms)
+    if (!adcOn) {
+        Serial.println("[JBL] ADC says OFF - pressing power");
+        digitalWrite(JBL_POWER, HIGH);
+        delay(JBL_POWER_PRESS_MS);
+        digitalWrite(JBL_POWER, LOW);
+        // JBL potrzebuje ~1-2s na boot zanim zacznie akceptować BT
+    }
+
+    // Poczekaj na A2DP (auto_reconnect zadziała w tle)
+    Serial.println("[JBL] Waiting for A2DP reconnect...");
+    ledSetWaitBt();
+    unsigned long start = millis();
+    while (!a2dp.source().is_connected()) {
+        if (millis() - start > JBL_BOOT_WAIT_MS) {
+            Serial.printf("[JBL] A2DP reconnect timeout after %lu ms\n", millis() - start);
+            return false;
+        }
+        delay(50);
+    }
+    Serial.printf("[JBL] Ready after %lu ms\n", millis() - start);
+
+    // Po reconnect trzeba ponownie zaaplikować głośność
+    applyBtVolume();
+    btVolumeApplied = true;
+    return true;
+}
+
 void startPlayback(const String& uid) {
     if (!sdReady) {
         Serial.println("SD not ready");
@@ -626,6 +669,14 @@ void startPlayback(const String& uid) {
     String path = "/music/" + it->second;
     if (!SD.exists(path)) {
         Serial.printf("File missing: %s\n", path.c_str());
+        ledFlashWarning();
+        return;
+    }
+
+    // Auto-recovery: JBL mógł się sam wyłączyć po bezczynności.
+    // ensureJblReady() sprawdza ADC, w razie potrzeby wciska power i czeka na A2DP.
+    if (!ensureJblReady()) {
+        Serial.println("[PLAY] JBL not ready - aborting playback");
         ledFlashWarning();
         return;
     }
@@ -666,6 +717,72 @@ void enterDeepSleep() {
     jblPowerOff();
     Serial.println("Entering deep sleep...");
     Serial.flush();
+    // Wake tylko na BTN_A (VOL+). ESP32 classic nie wspiera oficjalnie
+    // ext1 ANY_LOW, a wszystkie przyciski są pull-up do GND. BTN_C/D działają
+    // tylko gdy urządzenie jest awake - nie wybudzają z deep sleep.
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_A, LOW);
+    esp_deep_sleep_start();
+}
+
+// Wybudzanie z deep sleep wymaga przytrzymania BTN_A przez LONG_PRESS_MS.
+// ESP32 ext0 wybudza się natychmiast po wykryciu LOW, więc "hold-to-wake"
+// musi być zaimplementowane w software: tu odpytujemy przycisk i wracamy
+// do snu jeśli zostanie puszczony za wcześnie. Animacja LED (skalowana do
+// LED_COUNT) pokazuje postęp przytrzymania. Funkcja musi być wywołana na
+// samym początku setup(), PRZED initLeds() (które uruchamia FreeRTOS task).
+void handleWakeFromDeepSleep() {
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0) return;
+
+    Serial.println("[WAKE] Hold BTN_A to confirm wake-up...");
+
+    pinMode(BTN_A, INPUT_PULLUP);
+
+    // Minimalny init FastLED bez taska animacji - sam panel + jasność.
+    // initLeds() później pominie addLeds dzięki fastLedInitialized.
+    FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
+    FastLED.setBrightness(LED_BRIGHTNESS);
+    FastLED.clear();
+    FastLED.show();
+    fastLedInitialized = true;
+
+    // Debounce po wybudzeniu - kontaktron mechaniczny może bouncować do ~30ms.
+    // 50ms daje bezpieczny margines żeby pierwszy glitch nie ubił legalnego holdu.
+    delay(50);
+
+    const unsigned long holdStart = millis();
+    while (true) {
+        bool pressed = (digitalRead(BTN_A) == LOW);
+        if (!pressed) {
+            // Potwierdź zwolnienie po krótkim opóźnieniu (debounce)
+            delay(10);
+            if (digitalRead(BTN_A) != LOW) break;  // naprawdę puszczony
+        }
+
+        unsigned long elapsed = millis() - holdStart;
+        if (elapsed >= LONG_PRESS_MS) {
+            // Przytrzymanie kompletne - kontynuuj normalny boot.
+            // LEDy zostaną nadpisane przez initLeds()/ledSetBootProgress().
+            Serial.println("[WAKE] Hold confirmed - booting");
+            return;
+        }
+
+        // Pasek postępu skalowany do dowolnej liczby diod.
+        // Lerp od 1 do LED_COUNT w zależności od czasu trzymania.
+        int lit = (int)((elapsed * (unsigned long)LED_COUNT) / LONG_PRESS_MS);
+        if (lit < 1) lit = 1;
+        if (lit > LED_COUNT) lit = LED_COUNT;
+        for (int i = 0; i < LED_COUNT; i++) {
+            leds[i] = (i < lit) ? CRGB(80, 40, 0) : CRGB::Black;  // ciepłe pomarańczowe
+        }
+        FastLED.show();
+        delay(20);
+    }
+
+    // Puszczony za wcześnie - cicho z powrotem do deep sleep.
+    Serial.println("[WAKE] Released too early - back to deep sleep");
+    Serial.flush();
+    FastLED.clear();
+    FastLED.show();
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_A, LOW);
     esp_deep_sleep_start();
 }
@@ -973,30 +1090,53 @@ void runSyncMode() {
 // =============================================================================
 // BUTTONS
 // =============================================================================
+//
+// Mapowanie akcji:
+//   BTN_A (VOL+)  krótki → BT volume +5%
+//   BTN_B (VOL-)  krótki → BT volume -5%
+//   BTN_B         długi 2s (sam) → deep sleep
+//   BTN_A + BTN_B długie 2s → sync mode
+//   BTN_C         TODO - akcja nieprzypisana (obecnie tylko log)
+//   BTN_D         TODO - akcja nieprzypisana (obecnie tylko log)
+//
+// Akcje krótkie wykonywane natychmiast na naciśnięcie (nie na puszczenie) -
+// szybka reakcja. Długie dopiero po przytrzymaniu przez LONG_PRESS_MS.
 
 void handleButtons() {
     unsigned long now = millis();
 
-    bool a = digitalRead(BTN_A) == LOW;
-    bool b = digitalRead(BTN_B) == LOW;
-
-    // Krótkie naciśnięcie
-    if (btnAPressed && btnAPressTime == 0) {
-        btnAPressTime = now;
-        btnAHandled = false;
-        volumeUp();
-    }
-    if (btnBPressed && btnBPressTime == 0) {
-        btnBPressTime = now;
-        btnBHandled = false;
-        volumeDown();
+    // Odczyt aktualnego surowego stanu
+    bool down[BTN_COUNT];
+    for (int i = 0; i < BTN_COUNT; i++) {
+        down[i] = (digitalRead(buttons[i].pin) == LOW);
     }
 
-    // Oba przyciski 2s -> SYNC
-    if (a && b && !bothHandled) {
-        unsigned long earliest = max(btnAPressTime, btnBPressTime);
-        if (earliest > 0 && now - earliest >= LONG_PRESS_MS) {
-            bothHandled = true;
+    // Obsłuż flagi ISR - rozpocznij timing + fire krótkich akcji
+    for (int i = 0; i < BTN_COUNT; i++) {
+        Button& b = buttons[i];
+        if (b.pressed && b.pressStart == 0) {
+            b.pressStart = now;
+            b.longHandled = false;
+            // Akcje krótkie (natychmiast)
+            switch (i) {
+                case 0: volumeUp(); break;    // BTN_A
+                case 1: volumeDown(); break;  // BTN_B
+                case 2:                       // BTN_C
+                case 3:                       // BTN_D
+                    Serial.printf("[BTN] Short press: %s (no action)\n", b.name);
+                    break;
+            }
+        }
+    }
+
+    // Combo: BTN_A + BTN_B trzymane LONG_PRESS_MS -> SYNC MODE.
+    // Wymagamy pressStart>0 dla OBU - inaczej trzymanie BTN_A z hold-to-wake
+    // (które omija ISR) + późniejsze BTN_B mogłyby fałszywie wejść w sync.
+    if (down[0] && down[1] && !bothABHandled &&
+        buttons[0].pressStart > 0 && buttons[1].pressStart > 0) {
+        unsigned long earliest = max(buttons[0].pressStart, buttons[1].pressStart);
+        if (now - earliest >= LONG_PRESS_MS) {
+            bothABHandled = true;
             Serial.println("\n>>> SYNC MODE");
 
             if (currentAudioFile) currentAudioFile.close();
@@ -1010,26 +1150,25 @@ void handleButtons() {
         }
     }
 
-    // Długie BTN_B -> deep sleep
-    if (b && !a && btnBPressTime > 0 && now - btnBPressTime >= LONG_PRESS_MS) {
+    // Długie BTN_B (bez BTN_A) -> deep sleep
+    if (down[1] && !down[0] && buttons[1].pressStart > 0 &&
+        now - buttons[1].pressStart >= LONG_PRESS_MS && !buttons[1].longHandled) {
+        buttons[1].longHandled = true;
         Serial.println("\n>>> DEEP SLEEP");
         enterDeepSleep();
     }
 
     // Zwolnienie przycisków
-    if (!a && btnAPressed) {
-        btnAPressed = false;
-        btnAPressTime = 0;
-        btnAHandled = false;
-        if (!b) bothHandled = false;
+    for (int i = 0; i < BTN_COUNT; i++) {
+        Button& b = buttons[i];
+        if (!down[i] && b.pressed) {
+            b.pressed = false;
+            b.pressStart = 0;
+            b.longHandled = false;
+        }
     }
-
-    if (!b && btnBPressed) {
-        btnBPressed = false;
-        btnBPressTime = 0;
-        btnBHandled = false;
-        if (!a) bothHandled = false;
-    }
+    // Flaga combo resetuje się gdy którykolwiek z A/B zostanie puszczony
+    if (!down[0] || !down[1]) bothABHandled = false;
 }
 
 // =============================================================================
@@ -1054,16 +1193,25 @@ void setup() {
     Serial.println("\n\n=== MusicBox ===");
     Serial.printf("[T+%4lu] Boot start\n", 0UL);
 
+    // Hold-to-wake: jeśli boot pochodzi z deep sleep, wymaga przytrzymania
+    // BTN_A przez LONG_PRESS_MS. Inicjalizuje minimalnie LEDy do animacji
+    // postępu i wraca do snu jeśli przycisk puszczony za wcześnie.
+    handleWakeFromDeepSleep();
+    // Reset bootStart - hold-to-wake może zabrać ~2s, nie chcemy żeby
+    // wszystkie późniejsze logi [T+...] były przesunięte o czas trzymania.
+    bootStart = millis();
+
     // LED - jako pierwsze, żeby pokazać że urządzenie żyje
     initLeds();
     fill_solid(leds, LED_COUNT, CRGB(0, 0, 30));
     FastLED.show();
 
     // GPIO - natychmiast
-    pinMode(BTN_A, INPUT_PULLUP);
-    pinMode(BTN_B, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BTN_A), btnAISR, FALLING);
-    attachInterrupt(digitalPinToInterrupt(BTN_B), btnBISR, FALLING);
+    for (int i = 0; i < BTN_COUNT; i++) {
+        pinMode(buttons[i].pin, INPUT_PULLUP);
+        attachInterruptArg(digitalPinToInterrupt(buttons[i].pin),
+                           btnISR, &buttons[i], FALLING);
+    }
 
     pinMode(JBL_POWER, OUTPUT);
     digitalWrite(JBL_POWER, LOW);
