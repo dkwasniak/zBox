@@ -45,12 +45,12 @@
 | 23 | SD MOSI | HW SPI (wewnętrzny) | ZAJĘTY - nie używać! |
 | 25 | BTN_C | Input (pull-up) | RTC, wolny po rezygnacji z PCM5102A |
 | 26 | BTN_D | Input (pull-up) | RTC, wolny po rezygnacji z PCM5102A |
-| 27 | - | - | *Wolny, RTC-capable, historycznie I2S DOUT* |
+| 27 | LED_EN | Output | LOW = LEDy ON, HIGH = LEDy OFF (steruje Q2 P-MOSFET) |
 | 32 | BTN_A (VOL+) | Input (pull-up) | RTC, wake-up z deep sleep przez ext0 |
 | 33 | BTN_B (VOL-) | Input (pull-up) | RTC |
 | 34 | JBL STATUS | Input (ADC) | Tylko input, dzielnik 10kΩ/22kΩ |
 
-**Wolne GPIO do rozbudowy:** 0\*, 2\*, 15\*, 17, 27, 35\*, 36\*, 39\*
+**Wolne GPIO do rozbudowy:** 0\*, 2\*, 15\*, 17, 35\*, 36\*, 39\*
 (\*) z ograniczeniami: 0/2 = strapping pins, 15 = strapping pin (pull-down 10kΩ wymagany), 35/36/39 = tylko input (brak pull-up)
 
 ## Okablowanie PN532 → ESP32 (Software SPI)
@@ -88,9 +88,32 @@ Wewnętrzny pull-up ESP32 wystarcza, zewnętrzne rezystory nie są potrzebne.
 
 | WS2812B | ESP32/Zasilanie | Uwagi |
 |---------|-----------------|-------|
-| VCC | 5V (VBUS) | Wspólne zasilanie |
+| VCC | 5V (z MT3608) | Zasilanie przez step-up, sterowane GPIO27 |
 | GND | GND | Star ground |
 | DIN | GPIO14 | 3.3V logic, OK na krótkim kablu |
+
+### Zasilanie LEDów (Q2 + MT3608)
+
+LEDy WS2812B wymagają 5V. Zasilanie jest podawane przez step-up MT3608 (U2), który jest włączany/wyłączany P-MOSFETem AO3401 (Q2) sterowanym z GPIO27 (LED_EN).
+
+```
+GPIO27 (LED_EN)
+    │
+    ├── R8 (100kΩ pull-up do VIN) ← domyślnie Gate = HIGH = OFF
+    │
+    └── Q2 Gate (AO3401 P-MOSFET)
+         Source ← VIN (bateria/zasilanie)
+         Drain  → U2 VIN (MT3608 step-up)
+                          │
+                       VOUT → 5V → WS2812B VCC
+```
+
+| Stan GPIO27 | Q2 | MT3608 | LEDy |
+|-------------|-----|--------|------|
+| LOW | ON | zasilany | świecą |
+| HIGH / floating | OFF | odcięty | wyłączone |
+
+R8 (100kΩ) zapewnia, że LEDy są domyślnie wyłączone (przy boot / deep sleep / reset GPIO jest w stanie Hi-Z).
 
 Animacje w firmware: boot progress, wait-for-BT, idle, playing, volume, sync wifi, sync progress, success/error flash, shutdown. Szczegóły: `docs/esp32-firmware.md`.
 
@@ -138,7 +161,7 @@ Nie zasilać z USB ESP32 (za mało prądu przy pracy WS2812B + BT + peak).
 ## Custom PCB
 
 - Wejście zasilania USB-C (J1) z rezystorami pull-up 5.1kΩ (R1, R2) na CC1/CC2
-- Złącze JST-PH 2-pin (J2) na dodatkowe GND
+- Złącze JST-PH 2-pin (J2) na akumulator LiPo (pad do wlutowania baterii - pin 1 = BAT+ do pinu BAT Lolina, pin 2 = GND). Ładowanie obsługuje wbudowana ładowarka TP4054 na Lolin D32 Pro (ładowanie z USB-C)
 - Pin header PN532 (J3, 6-pin)
 - Pin header PCM5102A (J4, 5-pin) - *nieużywany w obecnym firmware*
 - Pin header przycisków (J7, 4-pin) - *obecnie tylko BTN_A/BTN_B; BTN_C/BTN_D wymagają nowej rewizji PCB albo tymczasowego podłączenia przewodami do listew L/P Lolina (GPIO25/26)*
