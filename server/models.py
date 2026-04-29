@@ -67,6 +67,8 @@ class SyncFigurine(BaseModel):
 class SyncTrack(BaseModel):
     filename: str
     title: str
+    mtime: int
+    size: int
 
 
 class SyncSystemSound(BaseModel):

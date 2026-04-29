@@ -1,5 +1,6 @@
 """API endpoints dla ESP32."""
 
+import time
 from pathlib import Path
 from typing import List
 
@@ -90,10 +91,11 @@ def stream_file(filename: str):
 
 
 @router.get("/sync", response_model=SyncResponse)
-def sync_manifest(db: Session = Depends(get_db)):
+def sync_manifest(db: Session = Depends(get_db), force: bool = False):
     """
     Zwraca manifest synchronizacji dla ESP32.
     Zawiera listę figurek z przypisanymi utworami, listę utworów i dźwięki systemowe.
+    ?force=true — wymusza pobranie przez ESP32 (mtime przesunięty o +1)
     """
     # Figurki z przypisanymi utworami
     figurines_db = (
@@ -114,7 +116,17 @@ def sync_manifest(db: Session = Depends(get_db)):
 
     # Wszystkie utwory
     tracks_db = db.query(Track).all()
-    tracks = [SyncTrack(filename=t.filename, title=t.title) for t in tracks_db]
+    tracks = []
+    for t in tracks_db:
+        file_path = MUSIC_DIR / t.filename
+        try:
+            stat = file_path.stat()
+            mtime = int(time.time()) if force else int(stat.st_mtime)
+            size = stat.st_size
+        except OSError:
+            mtime = 0
+            size = 0
+        tracks.append(SyncTrack(filename=t.filename, title=t.title, mtime=mtime, size=size))
 
     # Dźwięki systemowe z przypisanymi plikami
     sounds_db = db.query(SystemSound).filter(SystemSound.filename.isnot(None)).all()

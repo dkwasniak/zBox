@@ -22,7 +22,10 @@
 #include <SPI.h>
 #include <Adafruit_PN532.h>
 #include <SD.h>
+#define ENABLE_LEDS false // wyłączone podczas debug BT, wrócimy później
+#if ENABLE_LEDS
 #include <FastLED.h>
+#endif
 #include <map>
 #include <set>
 
@@ -34,6 +37,12 @@
 #include <WiFi.h>
 #include <WiFiClient.h>
 #include <WiFiManager.h>
+#include <esp_wifi.h>
+#include <esp_bt.h>
+
+// Logging z timestampem (ms od bootu)
+#define LOG(fmt, ...) Serial.printf("<%lu> " fmt, millis(), ##__VA_ARGS__)
+#define LOGLN(msg) LOG(msg "\n")
 
 // =============================================================================
 // PINY
@@ -74,7 +83,7 @@
 #define NFC_READ_INTERVAL 1000 // było 300 - szybsza detekcja tagu
 #define NFC_ERROR_THRESHOLD 10
 #define NO_TAG_THRESHOLD 2
-#define AUDIO_BUF_SIZE 512
+#define AUDIO_BUF_SIZE 2048
 
 // JBL
 #define JBL_POWER_PRESS_MS 500
@@ -91,11 +100,21 @@
 #define SERVER_HOST "<musicbox-server-ip>"
 #define SERVER_PORT 8000
 #define HTTP_TIMEOUT 15000
-#define DOWNLOAD_BUF_SIZE 4096
+#define DOWNLOAD_BUF_SIZE 16384
 
 // =============================================================================
 // OBIEKTY
 // =============================================================================
+
+struct AudioInfoLogger : public AudioInfoSupport {
+    AudioInfo lastInfo;
+    void setAudioInfo(AudioInfo info) override {
+        lastInfo = info;
+        LOG("[AUDIO] Decoder: SR=%d Hz, Ch=%d, Bits=%d\n",
+            info.sample_rate, info.channels, info.bits_per_sample);
+    }
+    AudioInfo audioInfo() override { return lastInfo; }
+} audioInfoLogger;
 
 Adafruit_PN532 nfc(PN532_SCK, PN532_MISO, PN532_MOSI, PN532_SS);
 Preferences preferences;
@@ -103,13 +122,12 @@ Preferences preferences;
 A2DPStream a2dp;
 MP3DecoderHelix mp3Decoder;
 EncodedAudioStream decoderStream(&a2dp, &mp3Decoder);
-File currentAudioFile;
-uint8_t audioBuf[AUDIO_BUF_SIZE];
 
 // =============================================================================
 // LED
 // =============================================================================
 
+#if ENABLE_LEDS
 CRGB leds[LED_COUNT];
 TaskHandle_t ledTaskHandle = NULL;
 bool fastLedInitialized = false;
@@ -132,18 +150,20 @@ int ledAnimStep = 0;
 int ledBootStep = -1;
 unsigned long ledVolumeShowTime = 0;
 int ledSyncLit = 0; // ile diod zapalonych w pasku postępu
+#endif
 
 // =============================================================================
 // STAN
 // =============================================================================
 
 String currentNfcUid;
-String lastNfcUid;
-bool isPlaying = false;
+volatile char lastNfcUid[30] = {};
+volatile bool isPlaying = false;
 bool nfcReady = false;
 bool sdReady = false;
 int btVolume = BT_VOL_DEFAULT;
 bool btVolumeApplied = false;
+volatile bool g_btConnected = false;
 
 unsigned long lastNfcRead = 0;
 
@@ -179,6 +199,23 @@ String pendingPlaybackUid;
 // Timing - pomiar czasu startu
 unsigned long bootStart = 0;
 bool bootTimingDone = false;
+
+// NFC events queue (nfc task → main loop)
+struct NfcEvent
+{
+    bool tagPresent;
+    char uid[30];
+};
+QueueHandle_t nfcQueue = NULL;
+
+// Audio task
+enum class AudioCmdType : uint8_t { PLAY, STOP };
+struct AudioCmd {
+    AudioCmdType type;
+    char path[256];
+};
+QueueHandle_t audioQueue = NULL;
+TaskHandle_t audioTaskHandle = NULL;
 
 // =============================================================================
 // ISR
@@ -241,6 +278,8 @@ String uidToString(uint8_t *uid, uint8_t uidLength)
 // =============================================================================
 // LED FUNCTIONS
 // =============================================================================
+
+#if ENABLE_LEDS
 
 void ledTaskFunc(void *param); // forward declaration
 
@@ -473,6 +512,22 @@ void ledTaskFunc(void *param)
     }
 }
 
+#else // !ENABLE_LEDS — stubs, wszystkie wywołania w kodzie pozostają bez zmian
+
+inline void initLeds() {}
+inline void ledSetBootProgress(int) {}
+inline void ledSetWaitBt() {}
+inline void ledSetIdle() {}
+inline void ledSetPlaying() {}
+inline void ledShowVolume(int) {}
+inline void ledSetSyncWifi() {}
+inline void ledSetSyncProgress(int, int) {}
+inline void ledFlashResult(bool) {}
+inline void ledFlashWarning() {}
+inline void ledShutdownAnim() {}
+
+#endif // ENABLE_LEDS
+
 // =============================================================================
 // JBL GO CONTROL
 // =============================================================================
@@ -492,9 +547,9 @@ bool isJblOn()
         int v = analogRead(JBL_STATUS);
         if (v > maxVal)
             maxVal = v;
-        delay(10);
+        delayMicroseconds(200);
     }
-    Serial.printf("[JBL] Status ADC: %d\n", maxVal);
+    LOG("[JBL] Status ADC: %d\n", maxVal);
     return maxVal > JBL_STATUS_THRESHOLD;
 }
 
@@ -507,10 +562,10 @@ void jblPowerOff()
 {
     if (!isJblOn())
     {
-        Serial.println("[JBL] Already OFF");
+        LOGLN("[JBL] Already OFF");
         return;
     }
-    Serial.println("[JBL] Powering OFF...");
+    LOGLN("[JBL] Powering OFF...");
     jblPressButtonBlocking(JBL_POWER, JBL_POWER_PRESS_MS);
     delay(500);
 }
@@ -531,13 +586,21 @@ void loadBtVolume()
     preferences.begin("musicbox", true);
     btVolume = preferences.getInt("bt_volume", BT_VOL_DEFAULT);
     preferences.end();
-    Serial.printf("[VOL] Restored: %d%%\n", btVolume);
+    LOG("[VOL] Restored: %d%%\n", btVolume);
 }
 
 void applyBtVolume()
 {
+    static unsigned long lastApply = 0;
+    unsigned long now = millis();
+    if (now - lastApply < 500)
+    {
+        LOG("[VOL] Skipped (throttle): %d%%\n", btVolume);
+        return;
+    }
+    lastApply = now;
     a2dp.setVolume(btVolume / 100.0);
-    Serial.printf("[VOL] Applied: %d%%\n", btVolume);
+    LOG("[VOL] Applied: %d%%\n", btVolume);
 }
 
 void volumeUp()
@@ -562,17 +625,17 @@ void volumeDown()
 
 bool initSD()
 {
-    Serial.println("Initializing SD card...");
+    LOGLN("Initializing SD card...");
     SPI.begin(18, 19, 23, SD_CS);
     // Usunięto delay(100) - SPI.begin() i SD.begin() obsługują timing wewnętrznie
 
     if (!SD.begin(SD_CS))
     {
-        Serial.println("ERROR: SD mount failed!");
+        LOGLN("ERROR: SD mount failed!");
         return false;
     }
 
-    Serial.printf("SD Card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
+    LOG("SD Card size: %llu MB\n", SD.cardSize() / (1024 * 1024));
 
     if (!SD.exists("/music"))
         SD.mkdir("/music");
@@ -592,14 +655,14 @@ bool loadMappings()
 
     if (!SD.exists("/data/mappings.json"))
     {
-        Serial.println("No mappings.json on SD");
+        LOGLN("No mappings.json on SD");
         return false;
     }
 
     File f = SD.open("/data/mappings.json", FILE_READ);
     if (!f)
     {
-        Serial.println("Failed to open mappings.json");
+        LOGLN("Failed to open mappings.json");
         return false;
     }
 
@@ -609,7 +672,7 @@ bool loadMappings()
 
     if (err)
     {
-        Serial.printf("mappings.json parse error: %s\n", err.c_str());
+        LOG("mappings.json parse error: %s\n", err.c_str());
         return false;
     }
 
@@ -621,11 +684,11 @@ bool loadMappings()
             String uid = kv.key().c_str();
             String file = kv.value()["file"].as<String>();
             figurineMap[uid] = file;
-            Serial.printf("  %s -> %s\n", uid.c_str(), file.c_str());
+            LOG("  %s -> %s\n", uid.c_str(), file.c_str());
         }
     }
 
-    Serial.printf("Loaded %d figurines\n", figurineMap.size());
+    LOG("Loaded %d figurines\n", figurineMap.size());
     return true;
 }
 
@@ -633,32 +696,93 @@ bool loadMappings()
 // AUDIO (SD -> MP3 -> Bluetooth A2DP)
 // =============================================================================
 
-void audioLoop()
+void audioTaskFunc(void *param)
 {
-    if (!currentAudioFile)
-        return;
+    File f;
+    static uint8_t audioBuf[AUDIO_BUF_SIZE];
 
-    if (currentAudioFile.available())
+    // Telemetria — aktywna przez pierwsze 30s każdego tracka (6 okien po 5s)
+    uint32_t telSdBytes = 0, telWrittenBytes = 0, telDrops = 0;
+    unsigned long telWindowStart = 0;
+    int telWindows = 0;
+
+    for (;;)
     {
-        int bytesRead = currentAudioFile.read(audioBuf, AUDIO_BUF_SIZE);
-        if (bytesRead > 0)
+        AudioCmd cmd;
+        if (xQueueReceive(audioQueue, &cmd, 0) == pdTRUE)
         {
-            decoderStream.write(audioBuf, bytesRead);
+            if (f) f.close();
+            if (cmd.type == AudioCmdType::PLAY)
+            {
+                f = SD.open(cmd.path);
+                if (f)
+                {
+                    isPlaying = true;
+                    ledSetPlaying();
+                    LOG("[AUDIO] Playing: %s\n", cmd.path);
+                    telSdBytes = telWrittenBytes = telDrops = 0;
+                    telWindowStart = millis();
+                    telWindows = 0;
+                }
+                else
+                {
+                    LOG("[AUDIO] Open failed: %s\n", cmd.path);
+                    a2dp.clear();
+                }
+            }
+            else
+            {
+                isPlaying = false;
+                ledSetIdle();
+                LOGLN("[AUDIO] Stopped");
+                telWindows = 6; // wyłącz telemetrię po stopie
+                a2dp.clear();
+            }
         }
-    }
-    else
-    {
-        currentAudioFile.close();
-#if TEST_AUDIO_MODE
-        Serial.println("Track ended, restarting (loop mode)...");
-        if (sdReady)
+
+        if (f && f.available())
         {
-            currentAudioFile = SD.open(TEST_SD_FILE);
+            int n = f.read(audioBuf, AUDIO_BUF_SIZE);
+            if (n > 0)
+            {
+                telSdBytes += n;
+                size_t written = decoderStream.write(audioBuf, n);
+                telWrittenBytes += written;
+                if ((int)written < n) telDrops++;
+
+                // Log co 5s przez pierwsze 30s tracka
+                if (telWindows < 6)
+                {
+                    unsigned long now = millis();
+                    if (now - telWindowStart >= 5000)
+                    {
+                        float s = (now - telWindowStart) / 1000.0f;
+                        LOG("[AUDIO_TEL] SD=%u B/s dec_in=%u B/s drops=%u (write<n)\n",
+                            (uint32_t)(telSdBytes / s),
+                            (uint32_t)(telWrittenBytes / s),
+                            telDrops);
+                        telSdBytes = telWrittenBytes = telDrops = 0;
+                        telWindowStart = now;
+                        telWindows++;
+                    }
+                }
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
         }
-#else
-        Serial.println("Track ended");
-        isPlaying = false;
-#endif
+        else if (f && !f.available())
+        {
+            f.close();
+            isPlaying = false;
+            lastNfcUid[0] = '\0';
+            ledSetIdle();
+            LOGLN("[AUDIO] Track ended");
+            telWindows = 6;
+            a2dp.clear();
+        }
+        else
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
     }
 }
 
@@ -696,14 +820,52 @@ String readNfcTag()
     uint8_t uid[7];
     uint8_t uidLength;
 
-    if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 50))
+    if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 20))
     {
         noTagCount = 0;
         String uidStr = uidToString(uid, uidLength);
-        Serial.printf("\nNFC Tag: %s\n", uidStr.c_str());
+        LOG("\nNFC Tag: %s\n", uidStr.c_str());
         return uidStr;
     }
     return "";
+}
+
+// =============================================================================
+// NFC TASK (core 1, prio 1 - razem z audio task, ale audio ma prio 5)
+// =============================================================================
+
+void nfcTaskFunc(void *param)
+{
+    int localNoTagCount = 0;
+    char localLastUid[30] = {};
+
+    for (;;)
+    {
+        String uid = readNfcTag();
+
+        if (!uid.isEmpty())
+        {
+            localNoTagCount = 0;
+            if (strcmp(uid.c_str(), localLastUid) != 0)
+            {
+                strlcpy(localLastUid, uid.c_str(), sizeof(localLastUid));
+                NfcEvent evt = {true, {}};
+                strlcpy(evt.uid, uid.c_str(), sizeof(evt.uid));
+                xQueueSend(nfcQueue, &evt, 0);
+            }
+        }
+        else
+        {
+            if (++localNoTagCount >= NO_TAG_THRESHOLD && localLastUid[0] != '\0')
+            {
+                localLastUid[0] = '\0';
+                localNoTagCount = 0;
+                NfcEvent evt = {false, {}};
+                xQueueSend(nfcQueue, &evt, 0);
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(NFC_READ_INTERVAL));
+    }
 }
 
 // =============================================================================
@@ -718,7 +880,7 @@ String readNfcTag()
 bool ensureJblReady()
 {
     bool adcOn = isJblOn();
-    bool btConn = a2dp.source().is_connected();
+    bool btConn = g_btConnected;
 
     // Szybka ścieżka - wszystko działa, wracamy od razu
     if (adcOn && btConn)
@@ -727,7 +889,7 @@ bool ensureJblReady()
     // JBL wyłączony wg ADC - wciśnij power (blokujące, 500ms)
     if (!adcOn)
     {
-        Serial.println("[JBL] ADC says OFF - pressing power");
+        LOGLN("[JBL] ADC says OFF - pressing power");
         digitalWrite(JBL_POWER, HIGH);
         delay(JBL_POWER_PRESS_MS);
         digitalWrite(JBL_POWER, LOW);
@@ -735,19 +897,19 @@ bool ensureJblReady()
     }
 
     // Poczekaj na A2DP (auto_reconnect zadziała w tle)
-    Serial.println("[JBL] Waiting for A2DP reconnect...");
+    LOGLN("[JBL] Waiting for A2DP reconnect...");
     ledSetWaitBt();
     unsigned long start = millis();
-    while (!a2dp.source().is_connected())
+    while (!g_btConnected)
     {
         if (millis() - start > JBL_BOOT_WAIT_MS)
         {
-            Serial.printf("[JBL] A2DP reconnect timeout after %lu ms\n", millis() - start);
+            LOG("[JBL] A2DP reconnect timeout after %lu ms\n", millis() - start);
             return false;
         }
         delay(50);
     }
-    Serial.printf("[JBL] Ready after %lu ms\n", millis() - start);
+    LOG("[JBL] Ready after %lu ms\n", millis() - start);
 
     // Po reconnect trzeba ponownie zaaplikować głośność
     applyBtVolume();
@@ -759,14 +921,14 @@ void startPlayback(const String &uid)
 {
     if (!sdReady)
     {
-        Serial.println("SD not ready");
+        LOGLN("SD not ready");
         return;
     }
 
     auto it = figurineMap.find(uid);
     if (it == figurineMap.end())
     {
-        Serial.printf("No mapping for UID: %s\n", uid.c_str());
+        LOG("No mapping for UID: %s\n", uid.c_str());
         ledFlashWarning();
         return;
     }
@@ -774,7 +936,7 @@ void startPlayback(const String &uid)
     String path = "/music/" + it->second;
     if (!SD.exists(path))
     {
-        Serial.printf("File missing: %s\n", path.c_str());
+        LOG("File missing: %s\n", path.c_str());
         ledFlashWarning();
         return;
     }
@@ -783,41 +945,31 @@ void startPlayback(const String &uid)
     // ensureJblReady() sprawdza ADC, w razie potrzeby wciska power i czeka na A2DP.
     if (!ensureJblReady())
     {
-        Serial.println("[PLAY] JBL not ready - aborting playback");
+        LOGLN("[PLAY] JBL not ready - aborting playback");
         ledFlashWarning();
         return;
     }
 
-    if (currentAudioFile)
-        currentAudioFile.close();
-    currentAudioFile = SD.open(path);
-    if (currentAudioFile)
+    AudioCmd cmd;
+    cmd.type = AudioCmdType::PLAY;
+    strlcpy(cmd.path, path.c_str(), sizeof(cmd.path));
+    xQueueSend(audioQueue, &cmd, 0);
+    strlcpy((char*)lastNfcUid, uid.c_str(), sizeof(lastNfcUid));
+    isPlaying = true;
+    if (!bootTimingDone)
     {
-        isPlaying = true;
-        lastNfcUid = uid;
-        ledSetPlaying();
-        Serial.printf("Playing: %s\n", path.c_str());
-        if (!bootTimingDone)
-        {
-            Serial.printf("[T+%4lu] >>> PLAYBACK START (NFC trigger)\n", millis() - bootStart);
-            Serial.printf("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
-            bootTimingDone = true;
-        }
-    }
-    else
-    {
-        Serial.printf("Failed to open: %s\n", path.c_str());
+        LOG("[T+%4lu] >>> PLAYBACK START (NFC trigger)\n", millis() - bootStart);
+        LOG("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
+        bootTimingDone = true;
     }
 }
 
 void stopPlayback()
 {
-    Serial.println("Stopping playback");
-    if (currentAudioFile)
-        currentAudioFile.close();
-    isPlaying = false;
-    lastNfcUid = "";
-    ledSetIdle();
+    LOGLN("Stopping playback");
+    AudioCmd cmd = { AudioCmdType::STOP, {} };
+    xQueueSend(audioQueue, &cmd, 0);
+    lastNfcUid[0] = '\0';
 }
 
 // =============================================================================
@@ -826,12 +978,22 @@ void stopPlayback()
 
 void enterDeepSleep()
 {
-    if (currentAudioFile)
-        currentAudioFile.close();
+    if (audioQueue)
+    {
+        AudioCmd cmd = { AudioCmdType::STOP, {} };
+        xQueueSend(audioQueue, &cmd, 0);
+    }
+#if ENABLE_LEDS
+    // Zatrzymaj LED task zanim animacja - inaczej task nadpisuje leds[] co 15ms
+    ledMode = LED_OFF;
+    if (ledTaskHandle)
+        vTaskSuspend(ledTaskHandle);
+    delay(20); // daj taskowi skończyć bieżącą iterację
     ledShutdownAnim();
+#endif
     delay(100);
     jblPowerOff();
-    Serial.println("Entering deep sleep...");
+    LOGLN("Entering deep sleep...");
     Serial.flush();
     // Wake tylko na BTN_A (VOL+). ESP32 classic nie wspiera oficjalnie
     // ext1 ANY_LOW, a wszystkie przyciski są pull-up do GND. BTN_C/D działają
@@ -851,10 +1013,11 @@ void handleWakeFromDeepSleep()
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
         return;
 
-    Serial.println("[WAKE] Hold BTN_A to confirm wake-up...");
+    LOGLN("[WAKE] Hold BTN_A to confirm wake-up...");
 
     pinMode(BTN_A, INPUT_PULLUP);
 
+#if ENABLE_LEDS
     // Minimalny init FastLED bez taska animacji - sam panel + jasność.
     // initLeds() później pominie addLeds dzięki fastLedInitialized.
     FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
@@ -862,6 +1025,7 @@ void handleWakeFromDeepSleep()
     FastLED.clear();
     FastLED.show();
     fastLedInitialized = true;
+#endif
 
     // Debounce po wybudzeniu - kontaktron mechaniczny może bouncować do ~30ms.
     // 50ms daje bezpieczny margines żeby pierwszy glitch nie ubił legalnego holdu.
@@ -884,10 +1048,11 @@ void handleWakeFromDeepSleep()
         {
             // Przytrzymanie kompletne - kontynuuj normalny boot.
             // LEDy zostaną nadpisane przez initLeds()/ledSetBootProgress().
-            Serial.println("[WAKE] Hold confirmed - booting");
+            LOGLN("[WAKE] Hold confirmed - booting");
             return;
         }
 
+#if ENABLE_LEDS
         // Pasek postępu skalowany do dowolnej liczby diod.
         // Lerp od 1 do LED_COUNT w zależności od czasu trzymania.
         int lit = (int)((elapsed * (unsigned long)LED_COUNT) / LONG_PRESS_MS);
@@ -900,14 +1065,17 @@ void handleWakeFromDeepSleep()
             leds[i] = (i < lit) ? CRGB(80, 40, 0) : CRGB::Black; // ciepłe pomarańczowe
         }
         FastLED.show();
+#endif
         delay(20);
     }
 
     // Puszczony za wcześnie - cicho z powrotem do deep sleep.
-    Serial.println("[WAKE] Released too early - back to deep sleep");
+    LOGLN("[WAKE] Released too early - back to deep sleep");
     Serial.flush();
+#if ENABLE_LEDS
     FastLED.clear();
     FastLED.show();
+#endif
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_A, LOW);
     esp_deep_sleep_start();
 }
@@ -918,18 +1086,62 @@ void handleWakeFromDeepSleep()
 
 String syncServerIP;
 
-String httpGet(const String &path)
+void loadSyncMeta(std::map<String, uint32_t> &meta)
 {
-    WiFiClient client;
-    client.setTimeout(HTTP_TIMEOUT / 1000);
-
-    if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
+    meta.clear();
+    if (!SD.exists("/data/sync_meta.json")) return;
+    File f = SD.open("/data/sync_meta.json", FILE_READ);
+    if (!f) return;
+    JsonDocument doc;
+    if (deserializeJson(doc, f) == DeserializationError::Ok)
     {
-        Serial.printf("[SYNC] Connection failed: %s:%d\n", syncServerIP.c_str(), SERVER_PORT);
-        return "";
+        for (JsonPair kv : doc.as<JsonObject>())
+            meta[kv.key().c_str()] = kv.value().as<uint32_t>();
+    }
+    f.close();
+}
+
+void saveSyncMeta(const std::map<String, uint32_t> &meta)
+{
+    if (SD.exists("/data/sync_meta.json")) SD.remove("/data/sync_meta.json");
+    File f = SD.open("/data/sync_meta.json", FILE_WRITE);
+    if (!f) return;
+    JsonDocument doc;
+    JsonObject obj = doc.to<JsonObject>();
+    for (auto &kv : meta) obj[kv.first] = kv.second;
+    serializeJson(doc, f);
+    f.close();
+}
+
+bool readHttpHeaders(WiFiClient &client, int &outContentLength)
+{
+    String statusLine = client.readStringUntil('\n');
+    if (statusLine.indexOf("200") < 0) return false;
+    outContentLength = -1;
+    while (client.connected())
+    {
+        String line = client.readStringUntil('\n');
+        if (line.startsWith("Content-Length:") || line.startsWith("content-length:"))
+            outContentLength = line.substring(line.indexOf(':') + 1).toInt();
+        if (line == "\r" || line.length() == 0) break;
+    }
+    return true;
+}
+
+String httpGet(WiFiClient &client, const String &path)
+{
+    if (!client.connected())
+    {
+        if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
+        {
+            LOG("[SYNC] Reconnect failed for GET %s\n", path.c_str());
+            return "";
+        }
+        client.setNoDelay(true);
+        client.setTimeout(HTTP_TIMEOUT);
     }
 
-    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n",
                   path.c_str(), syncServerIP.c_str());
 
     unsigned long start = millis();
@@ -937,31 +1149,19 @@ String httpGet(const String &path)
     {
         if (millis() - start > HTTP_TIMEOUT)
         {
-            Serial.println("[SYNC] Timeout");
+            LOGLN("[SYNC] Timeout waiting for response");
             client.stop();
             return "";
         }
         delay(10);
     }
 
-    String statusLine = client.readStringUntil('\n');
-    if (statusLine.indexOf("200") < 0)
+    int contentLength = -1;
+    if (!readHttpHeaders(client, contentLength))
     {
-        Serial.printf("[SYNC] HTTP error: %s\n", statusLine.c_str());
+        LOG("[SYNC] HTTP error on GET %s\n", path.c_str());
         client.stop();
         return "";
-    }
-
-    int contentLength = -1;
-    while (client.connected())
-    {
-        String line = client.readStringUntil('\n');
-        if (line.startsWith("Content-Length:") || line.startsWith("content-length:"))
-        {
-            contentLength = line.substring(line.indexOf(':') + 1).toInt();
-        }
-        if (line == "\r" || line.length() == 0)
-            break;
     }
 
     String body;
@@ -970,11 +1170,13 @@ String httpGet(const String &path)
         body.reserve(contentLength);
         int bytesRead = 0;
         uint8_t buf[512];
-        while (bytesRead < contentLength && (client.connected() || client.available()))
+        unsigned long lastData = millis();
+        while (bytesRead < contentLength)
         {
             int avail = client.available();
             if (avail > 0)
             {
+                lastData = millis();
                 int toRead = min(avail, min((int)sizeof(buf), contentLength - bytesRead));
                 int got = client.readBytes(buf, toRead);
                 body.concat((char *)buf, got);
@@ -982,6 +1184,7 @@ String httpGet(const String &path)
             }
             else
             {
+                if (millis() - lastData > HTTP_TIMEOUT) break;
                 delay(1);
             }
         }
@@ -991,102 +1194,151 @@ String httpGet(const String &path)
         body = client.readString();
     }
 
-    client.stop();
     return body;
 }
 
-bool syncDownloadFile(const String &urlPath, const String &sdPath)
+bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &sdPath,
+                      uint32_t totalExpectedBytes, uint32_t &syncBytesDownloaded, uint32_t &lastLedUpdate)
 {
-    Serial.printf("[SYNC] Download: %s\n", sdPath.c_str());
+    LOG("[SYNC] Download: %s\n", sdPath.c_str());
 
-    WiFiClient client;
-    client.setTimeout(HTTP_TIMEOUT / 1000);
-
-    if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
+    if (!client.connected())
     {
-        Serial.println("[SYNC] Connection failed");
-        return false;
+        if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
+        {
+            LOGLN("[SYNC] Reconnect failed");
+            return false;
+        }
+        client.setNoDelay(true);
+        client.setTimeout(HTTP_TIMEOUT);
     }
 
-    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
-                  urlPath.c_str(), syncServerIP.c_str());
-
     unsigned long dlStart = millis();
+    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n",
+                  urlPath.c_str(), syncServerIP.c_str());
     while (client.connected() && !client.available())
     {
         if (millis() - dlStart > HTTP_TIMEOUT)
         {
-            Serial.println("[SYNC] Timeout");
+            LOGLN("[SYNC] Timeout waiting for response");
             client.stop();
             return false;
         }
         delay(10);
     }
 
-    String statusLine = client.readStringUntil('\n');
-    if (statusLine.indexOf("200") < 0)
-    {
-        Serial.printf("[SYNC] HTTP error: %s\n", statusLine.c_str());
-        client.stop();
-        return false;
-    }
-
     int contentLength = -1;
-    while (client.connected())
+    if (!readHttpHeaders(client, contentLength))
     {
-        String line = client.readStringUntil('\n');
-        if (line.startsWith("Content-Length:") || line.startsWith("content-length:"))
-        {
-            contentLength = line.substring(line.indexOf(':') + 1).toInt();
-        }
-        if (line == "\r" || line.length() == 0)
-            break;
-    }
-
-    Serial.printf("[SYNC] Size: %d bytes\n", contentLength);
-
-    if (SD.exists(sdPath))
-        SD.remove(sdPath);
-
-    File f = SD.open(sdPath, FILE_WRITE);
-    if (!f)
-    {
-        Serial.printf("[SYNC] Cannot create %s\n", sdPath.c_str());
+        LOG("[SYNC] HTTP error downloading %s\n", sdPath.c_str());
         client.stop();
         return false;
     }
 
-    uint8_t buf[DOWNLOAD_BUF_SIZE];
+    LOG("[SYNC] Size: %d bytes\n", contentLength);
+
+    // TEMP DEBUG: SD bypass
+    // if (SD.exists(sdPath)) SD.remove(sdPath);
+    // File f = SD.open(sdPath, FILE_WRITE);
+    // if (!f) { LOG("[SYNC] Cannot create %s\n", sdPath.c_str()); client.stop(); return false; }
+
+    static uint8_t buf[DOWNLOAD_BUF_SIZE];
+    int bufPos = 0;
     int totalWritten = 0;
+    int lastLoggedKB = 0;
+    unsigned long lastDataMs = millis();
+    unsigned long timeReading = 0;
+    unsigned long timeWriting = 0;
+    unsigned long timeWaiting = 0;
+
+    uint32_t zeroAvailCount = 0;
+    uint32_t nonZeroAvailCount = 0;
+    uint32_t minAvail = UINT32_MAX;
+    uint32_t maxAvail = 0;
+    unsigned long lastDataReceivedMs = 0;
+    unsigned long maxGapMs = 0;
 
     while (client.connected() || client.available())
     {
         int available = client.available();
         if (available > 0)
         {
-            int toRead = min(available, (int)DOWNLOAD_BUF_SIZE);
-            int got = client.readBytes(buf, toRead);
-            f.write(buf, got);
+            lastDataMs = millis();
+            nonZeroAvailCount++;
+            if ((uint32_t)available < minAvail) minAvail = (uint32_t)available;
+            if ((uint32_t)available > maxAvail) maxAvail = (uint32_t)available;
+            unsigned long _now = millis();
+            if (lastDataReceivedMs > 0 && _now - lastDataReceivedMs > maxGapMs)
+                maxGapMs = _now - lastDataReceivedMs;
+            lastDataReceivedMs = _now;
+            int toRead = min(available, DOWNLOAD_BUF_SIZE - bufPos);
+            unsigned long t0 = millis();
+            int got = client.readBytes((char *)(buf + bufPos), toRead);
+            timeReading += millis() - t0;
+            bufPos += got;
             totalWritten += got;
+
+            // Byte-based LED progress
+            syncBytesDownloaded += got;
+            if (totalExpectedBytes > 0 && syncBytesDownloaded / 32768 > lastLedUpdate / 32768)
+            {
+                lastLedUpdate = syncBytesDownloaded;
+                ledSetSyncProgress(syncBytesDownloaded, totalExpectedBytes);
+            }
+
+            if (bufPos >= DOWNLOAD_BUF_SIZE)
+            {
+                // TEMP DEBUG: discard, no SD write
+                bufPos = 0;
+            }
 
             if (contentLength > 0 && totalWritten >= contentLength)
                 break;
 
-            if (totalWritten % (100 * 1024) < DOWNLOAD_BUF_SIZE)
+            int currentKB = totalWritten / 1024;
+            if (currentKB / 500 > lastLoggedKB / 500)
             {
-                Serial.printf("[SYNC] %d KB...\n", totalWritten / 1024);
+                lastLoggedKB = currentKB;
+                if (contentLength > 0)
+                    LOG("[SYNC] %d / %d KB\n", currentKB, contentLength / 1024);
+                else
+                    LOG("[SYNC] %d KB\n", currentKB);
             }
         }
         else
         {
-            delay(1);
+            if (millis() - lastDataMs > HTTP_TIMEOUT)
+            {
+                LOG("[SYNC] Data timeout after %d bytes\n", totalWritten);
+                break;
+            }
+            zeroAvailCount++;
+            unsigned long tw = millis();
+            taskYIELD();
+            timeWaiting += millis() - tw;
         }
     }
 
-    f.close();
-    client.stop();
+    // TEMP DEBUG: SD bypass
+    // if (bufPos > 0) f.write(buf, bufPos);
+    // f.close();
 
-    Serial.printf("[SYNC] OK: %d bytes\n", totalWritten);
+    if (contentLength > 0 && totalWritten != contentLength)
+    {
+        LOG("[SYNC] Size mismatch: got %d, expected %d\n", totalWritten, contentLength);
+        // TEMP DEBUG: SD bypass — nie usuwaj pliku, nie przerywaj
+        // SD.remove(sdPath);
+        // client.stop();
+        // return false;
+    }
+
+    unsigned long dlMs = millis() - dlStart;
+    uint32_t kbs = dlMs > 0 ? (uint32_t)((uint64_t)totalWritten * 1000 / dlMs / 1024) : 0;
+    LOG("[SYNC] avail stats: zero=%lu nonzero=%lu min=%lu max=%lu maxGap=%lu ms\n",
+        zeroAvailCount, nonZeroAvailCount, minAvail == UINT32_MAX ? 0 : minAvail, maxAvail, maxGapMs);
+    LOG("[SYNC] Timing: read=%lums write=%lums wait=%lums total=%lums\n",
+        timeReading, timeWriting, timeWaiting, dlMs);
+    LOG("[SYNC] OK: %d bytes in %lu ms (%lu KB/s)\n", totalWritten, dlMs, kbs);
     return totalWritten > 0;
 }
 
@@ -1109,7 +1361,7 @@ void syncCleanDir(const String &dirPath, std::set<String> &expected)
             if (expected.find(name) == expected.end())
             {
                 String fullPath = dirPath + "/" + name;
-                Serial.printf("[SYNC] Removing: %s\n", fullPath.c_str());
+                LOG("[SYNC] Removing: %s\n", fullPath.c_str());
                 SD.remove(fullPath);
             }
         }
@@ -1120,12 +1372,22 @@ void syncCleanDir(const String &dirPath, std::set<String> &expected)
 
 bool performSync()
 {
-    Serial.println("\n[SYNC] Fetching manifest...");
+    LOGLN("\n[SYNC] Fetching manifest...");
 
-    String payload = httpGet("/api/sync");
+    WiFiClient client;
+    if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
+    {
+        LOG("[SYNC] Connection failed: %s:%d\n", syncServerIP.c_str(), SERVER_PORT);
+        return false;
+    }
+    client.setNoDelay(true);
+    client.setTimeout(HTTP_TIMEOUT);
+
+    String payload = httpGet(client, "/api/sync?force=true");
     if (payload.isEmpty())
     {
-        Serial.println("[SYNC] Failed to fetch manifest");
+        LOGLN("[SYNC] Failed to fetch manifest");
+        client.stop();
         return false;
     }
 
@@ -1133,62 +1395,112 @@ bool performSync()
     DeserializationError err = deserializeJson(doc, payload);
     if (err)
     {
-        Serial.printf("[SYNC] JSON error: %s\n", err.c_str());
+        LOG("[SYNC] JSON error: %s\n", err.c_str());
+        client.stop();
         return false;
     }
 
     JsonArray figurines = doc["figurines"].as<JsonArray>();
     JsonArray tracks = doc["tracks"].as<JsonArray>();
 
-    Serial.printf("[SYNC] Manifest: %d figurines, %d tracks\n",
+    LOG("[SYNC] Manifest: %d figurines, %d tracks\n",
                   figurines.size(), tracks.size());
+
+    std::map<String, uint32_t> localMtime;
+    loadSyncMeta(localMtime);
 
     std::set<String> expectedMusic;
     for (JsonObject t : tracks)
-    {
         expectedMusic.insert(t["filename"].as<String>());
-    }
 
-    // Pobierz brakujące pliki
-    Serial.println("[SYNC] Checking music files...");
-    int downloaded = 0, skipped = 0, failed = 0;
-
-    // Policz ile plików do pobrania (do paska postępu)
-    int toDownload = 0;
-    for (const String &filename : expectedMusic)
+    // Policz oczekiwane bajty tylko dla plików do pobrania (do LED progress)
+    uint32_t totalExpectedBytes = 0;
+    for (JsonObject t : tracks)
     {
+        String filename = t["filename"].as<String>();
+        uint32_t remoteMtime = t["mtime"].as<uint32_t>();
         String sdPath = "/music/" + filename;
-        if (!SD.exists(sdPath))
-            toDownload++;
-    }
-
-    int downloadIdx = 0;
-    for (const String &filename : expectedMusic)
-    {
-        String sdPath = "/music/" + filename;
+        bool needsDownload = true;
         if (SD.exists(sdPath))
+        {
+            auto it = localMtime.find(filename);
+            if (it != localMtime.end() && it->second == remoteMtime)
+                needsDownload = false;
+        }
+        if (needsDownload)
+            totalExpectedBytes += t["size"].as<uint32_t>();
+    }
+
+    LOGLN("[SYNC] Checking music files...");
+    int downloaded = 0, skipped = 0, failed = 0;
+    uint32_t syncBytesDownloaded = 0;
+    uint32_t lastLedUpdate = 0;
+
+    for (JsonObject t : tracks)
+    {
+        String filename = t["filename"].as<String>();
+        uint32_t remoteMtime = t["mtime"].as<uint32_t>();
+        String sdPath = "/music/" + filename;
+        String urlPath = "/api/stream/file/" + urlEncode(filename);
+
+        bool needsDownload = true;
+        if (SD.exists(sdPath))
+        {
+            auto it = localMtime.find(filename);
+            if (it != localMtime.end() && it->second == remoteMtime)
+                needsDownload = false;
+        }
+        if (!needsDownload)
         {
             skipped++;
             continue;
         }
-        ledSetSyncProgress(downloadIdx, toDownload);
-        String urlPath = "/api/stream/file/" + urlEncode(filename);
-        if (syncDownloadFile(urlPath, sdPath))
-            downloaded++;
-        else
-            failed++;
-        downloadIdx++;
-    }
-    if (toDownload > 0)
-        ledSetSyncProgress(toDownload, toDownload);
-    Serial.printf("[SYNC] Music: %d new, %d existing, %d failed\n", downloaded, skipped, failed);
 
-    // Usuń nieaktualne
-    Serial.println("[SYNC] Cleaning obsolete files...");
+        bool ok = false;
+        for (int attempt = 0; attempt < 3 && !ok; attempt++)
+        {
+            if (attempt > 0)
+            {
+                LOG("[SYNC] Retry %d/3 for %s\n", attempt + 1, filename.c_str());
+                delay(1000);
+                if (!client.connected())
+                    client.connect(syncServerIP.c_str(), SERVER_PORT);
+            }
+            ok = syncDownloadFile(client, urlPath, sdPath, totalExpectedBytes, syncBytesDownloaded, lastLedUpdate);
+        }
+
+        if (ok)
+        {
+            downloaded++;
+            localMtime[filename] = remoteMtime;
+            saveSyncMeta(localMtime);
+        }
+        else
+        {
+            failed++;
+        }
+    }
+
+    if (totalExpectedBytes > 0)
+        ledSetSyncProgress(totalExpectedBytes, totalExpectedBytes);
+    LOG("[SYNC] Music: %d new, %d existing, %d failed\n", downloaded, skipped, failed);
+
+    // Usuń nieaktualne pliki
+    LOGLN("[SYNC] Cleaning obsolete files...");
     syncCleanDir("/music", expectedMusic);
 
+    // Usuń z localMtime pliki których nie ma już w expectedMusic
+    for (auto it = localMtime.begin(); it != localMtime.end(); )
+    {
+        if (expectedMusic.find(it->first) == expectedMusic.end())
+            it = localMtime.erase(it);
+        else
+            ++it;
+    }
+    saveSyncMeta(localMtime);
+
     // Wygeneruj mappings.json
-    Serial.println("[SYNC] Generating mappings.json...");
+    LOGLN("[SYNC] Generating mappings.json...");
 
     JsonDocument mappingsDoc;
     JsonObject mFigurines = mappingsDoc["figurines"].to<JsonObject>();
@@ -1205,28 +1517,35 @@ bool performSync()
     File mf = SD.open("/data/mappings.json", FILE_WRITE);
     if (!mf)
     {
-        Serial.println("[SYNC] Cannot write mappings.json");
+        LOGLN("[SYNC] Cannot write mappings.json");
+        client.stop();
         return false;
     }
 
-    serializeJsonPretty(mappingsDoc, mf);
+    serializeJson(mappingsDoc, mf);
     mf.close();
-    Serial.println("[SYNC] mappings.json saved!");
+    LOGLN("[SYNC] mappings.json saved!");
 
-    return true;
+    client.stop();
+    return failed == 0;
 }
 
 void clearSyncFlag()
 {
-    preferences.begin("musicbox", false);
-    preferences.remove("sync_pending");
-    preferences.end();
+    if (SD.exists("/data/sync_pending"))
+        SD.remove("/data/sync_pending");
 }
 
 void runSyncMode()
 {
-    Serial.println("\n=== MusicBox SYNC MODE ===\n");
+    LOGLN("\n=== MusicBox SYNC MODE ===\n");
     ledSetSyncWifi();
+
+    // Wyłącz BT kontroler żeby zwolnić radio dla WiFi (koegzystencja BT/WiFi)
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+    esp_bt_mem_release(ESP_BT_MODE_BTDM);
+    LOGLN("[SYNC] BT controller released");
 
     WiFiManager wm;
     wm.setConfigPortalTimeout(180);
@@ -1234,20 +1553,26 @@ void runSyncMode()
 
     if (!wm.autoConnect("MusicBox-Setup"))
     {
-        Serial.println("[SYNC] WiFi not connected!");
+        LOGLN("[SYNC] WiFi not connected!");
         ledFlashResult(false);
         clearSyncFlag();
         delay(3000);
         ESP.restart();
     }
 
-    Serial.printf("[SYNC] WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    LOG("[SYNC] WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    esp_err_t psResult = esp_wifi_set_ps(WIFI_PS_NONE);
+    LOG("[SYNC] esp_wifi_set_ps(NONE) -> %d\n", psResult);
+
+    wifi_ps_type_t psMode;
+    esp_wifi_get_ps(&psMode);
+    LOG("[SYNC] Verified PS mode: %d (0=NONE, 1=MIN, 2=MAX)\n", psMode);
 
     syncServerIP = SERVER_HOST;
     WiFiClient testClient;
     if (!testClient.connect(syncServerIP.c_str(), SERVER_PORT))
     {
-        Serial.println("[SYNC] Cannot reach server!");
+        LOGLN("[SYNC] Cannot reach server!");
         testClient.stop();
         ledFlashResult(false);
         clearSyncFlag();
@@ -1255,7 +1580,7 @@ void runSyncMode()
         ESP.restart();
     }
     testClient.stop();
-    Serial.println("[SYNC] Server reachable!");
+    LOGLN("[SYNC] Server reachable!");
     ledSetSyncProgress(0, 1);
 
     bool success = performSync();
@@ -1263,7 +1588,7 @@ void runSyncMode()
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
-    Serial.println(success ? "\n[SYNC] COMPLETE!" : "\n[SYNC] FAILED");
+    LOG("%s\n", success ? "\n[SYNC] COMPLETE!" : "\n[SYNC] FAILED");
     ledFlashResult(success);
 
     clearSyncFlag();
@@ -1316,7 +1641,7 @@ void handleButtons()
                 break; // BTN_B
             case 2:    // BTN_C
             case 3:    // BTN_D
-                Serial.printf("[BTN] Short press: %s (no action)\n", b.name);
+                LOG("[BTN] Short press: %s (no action)\n", b.name);
                 break;
             }
         }
@@ -1332,22 +1657,20 @@ void handleButtons()
         if (now - earliest >= LONG_PRESS_MS)
         {
             bothABHandled = true;
-            Serial.println("\n>>> SYNC MODE");
+            LOGLN("\n>>> SYNC MODE");
 
-            if (currentAudioFile)
-                currentAudioFile.close();
+            if (audioQueue)
+            {
+                AudioCmd cmd = { AudioCmdType::STOP, {} };
+                xQueueSend(audioQueue, &cmd, 0);
+            }
 
-            preferences.begin("musicbox", false);
-            preferences.putBool("sync_pending", true);
-            preferences.end();
-
-            preferences.begin("musicbox", true);
-            bool verify = preferences.getBool("sync_pending", false);
-            preferences.end();
-            Serial.printf(">>> Sync flag written & verified: %d\n", verify);
-
-            delay(100);
-            ESP.restart();
+            {
+                File f = SD.open("/data/sync_pending", FILE_WRITE);
+                bool written = (bool)f;
+                if (f) f.close();
+                LOG(">>> Sync flag written & verified: %d\n", written);
+            }
 
             delay(100);
             ESP.restart();
@@ -1359,7 +1682,7 @@ void handleButtons()
         now - buttons[1].pressStart >= LONG_PRESS_MS && !buttons[1].longHandled)
     {
         buttons[1].longHandled = true;
-        Serial.println("\n>>> DEEP SLEEP");
+        LOGLN("\n>>> DEEP SLEEP");
         enterDeepSleep();
     }
 
@@ -1395,12 +1718,18 @@ void handleButtons()
 // Jeśli figurka stoi na padzie - plik gotowy do odtwarzania od razu po BT connect.
 //
 
+void onBtStateChange(esp_a2d_connection_state_t state, void *)
+{
+    g_btConnected = (state == ESP_A2D_CONNECTION_STATE_CONNECTED);
+    LOG("[BT] connection state=%d connected=%d\n", (int)state, (int)g_btConnected);
+}
+
 void setup()
 {
     bootStart = millis();
     Serial.begin(115200);
-    Serial.println("\n\n=== MusicBox ===");
-    Serial.printf("[T+%4lu] Boot start\n", 0UL);
+    LOGLN("\n\n=== MusicBox ===");
+    LOG("[T+%4lu] Boot start\n", 0UL);
 
     // Hold-to-wake: jeśli boot pochodzi z deep sleep, wymaga przytrzymania
     // BTN_A przez LONG_PRESS_MS. Inicjalizuje minimalnie LEDy do animacji
@@ -1412,8 +1741,10 @@ void setup()
 
     // LED - jako pierwsze, żeby pokazać że urządzenie żyje
     initLeds();
+#if ENABLE_LEDS
     fill_solid(leds, LED_COUNT, CRGB(0, 0, 30));
     FastLED.show();
+#endif
 
     // GPIO - natychmiast
     for (int i = 0; i < BTN_COUNT; i++)
@@ -1426,23 +1757,20 @@ void setup()
     pinMode(JBL_POWER, OUTPUT);
     digitalWrite(JBL_POWER, LOW);
     pinMode(JBL_STATUS, INPUT);
-    Serial.printf("[T+%4lu] GPIO ready\n", millis() - bootStart);
+    LOG("[T+%4lu] GPIO ready\n", millis() - bootStart);
 
     // SD Card - bez delay
     sdReady = initSD();
     if (!sdReady)
     {
-        Serial.println("WARNING: No SD card");
+        LOGLN("WARNING: No SD card");
     }
-    Serial.printf("[T+%4lu] SD %s\n", millis() - bootStart, sdReady ? "OK" : "FAIL");
+    LOG("[T+%4lu] SD %s\n", millis() - bootStart, sdReady ? "OK" : "FAIL");
     ledSetBootProgress(0); // SD done
 
     // Sprawdź flagę sync PRZED inicjalizacją BT
-    preferences.begin("musicbox", true);
-    bool syncPending = preferences.getBool("sync_pending", false);
-    preferences.end();
-
-    Serial.printf("[BOOT] sync_pending flag: %d\n", syncPending);
+    bool syncPending = SD.exists("/data/sync_pending");
+    LOG("[BOOT] sync_pending flag: %d\n", syncPending);
 
     if (syncPending)
     {
@@ -1451,7 +1779,7 @@ void setup()
     }
 
     // === Normalny tryb ===
-    Serial.println("\n--- Normal mode (fast boot) ---");
+    LOGLN("\n--- Normal mode (fast boot) ---");
 
     // --- JBL Power ON: puls startuje tutaj, inne operacje wypełniają czas ---
     // Sprawdzamy status i startujemy puls PRZED NFC/mappings,
@@ -1460,13 +1788,13 @@ void setup()
     unsigned long jblPulseStart = 0;
     if (jblNeedsPower)
     {
-        Serial.printf("[T+%4lu] JBL OFF - starting power pulse\n", millis() - bootStart);
+        LOG("[T+%4lu] JBL OFF - starting power pulse\n", millis() - bootStart);
         digitalWrite(JBL_POWER, HIGH);
         jblPulseStart = millis();
     }
     else
     {
-        Serial.printf("[T+%4lu] JBL already ON\n", millis() - bootStart);
+        LOG("[T+%4lu] JBL already ON\n", millis() - bootStart);
     }
 
     // NFC - oryginalny delay 1000ms, PN532 bywa wolny na cold boot
@@ -1482,9 +1810,9 @@ void setup()
     }
     else
     {
-        Serial.println("ERROR: PN532 not found!");
+        LOGLN("ERROR: PN532 not found!");
     }
-    Serial.printf("[T+%4lu] NFC %s\n", millis() - bootStart, nfcReady ? "OK" : "FAIL");
+    LOG("[T+%4lu] NFC %s\n", millis() - bootStart, nfcReady ? "OK" : "FAIL");
     ledSetBootProgress(1); // NFC done
 
     // Mappings - ładowane wcześniej (potrzebne do NFC pre-scan)
@@ -1492,7 +1820,7 @@ void setup()
     {
         loadMappings();
     }
-    Serial.printf("[T+%4lu] Mappings loaded (%d)\n", millis() - bootStart, figurineMap.size());
+    LOG("[T+%4lu] Mappings loaded (%d)\n", millis() - bootStart, figurineMap.size());
     ledSetBootProgress(2); // Mappings done
 
 // NFC pre-scan - sprawdź czy figurka już stoi na padzie
@@ -1505,7 +1833,7 @@ void setup()
         if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 50))
         {
             String preUid = uidToString(uid, uidLength);
-            Serial.printf("[T+%4lu] NFC pre-scan: %s\n", millis() - bootStart, preUid.c_str());
+            LOG("[T+%4lu] NFC pre-scan: %s\n", millis() - bootStart, preUid.c_str());
 
             auto it = figurineMap.find(preUid);
             if (it != figurineMap.end())
@@ -1515,13 +1843,13 @@ void setup()
                 {
                     pendingPlaybackPath = path;
                     pendingPlaybackUid = preUid;
-                    Serial.printf("[T+%4lu] Queued: %s\n", millis() - bootStart, path.c_str());
+                    LOG("[T+%4lu] Queued: %s\n", millis() - bootStart, path.c_str());
                 }
             }
         }
         else
         {
-            Serial.printf("[T+%4lu] NFC pre-scan: no tag\n", millis() - bootStart);
+            LOG("[T+%4lu] NFC pre-scan: no tag\n", millis() - bootStart);
         }
     }
 #else
@@ -1529,7 +1857,7 @@ void setup()
     if (sdReady && SD.exists(TEST_SD_FILE))
     {
         pendingPlaybackPath = TEST_SD_FILE;
-        Serial.printf("[T+%4lu] Test file queued: %s\n", millis() - bootStart, TEST_SD_FILE);
+        LOG("[T+%4lu] Test file queued: %s\n", millis() - bootStart, TEST_SD_FILE);
     }
 #endif
 
@@ -1542,7 +1870,7 @@ void setup()
             delay(JBL_POWER_PRESS_MS - elapsed);
         }
         digitalWrite(JBL_POWER, LOW);
-        Serial.printf("[T+%4lu] JBL power pulse done (%lu ms)\n",
+        LOG("[T+%4lu] JBL power pulse done (%lu ms)\n",
                       millis() - bootStart, millis() - jblPulseStart);
     }
 
@@ -1553,22 +1881,40 @@ void setup()
 
     // Bluetooth A2DP
     ledSetBootProgress(4); // BT step
-    Serial.printf("[T+%4lu] BT A2DP starting -> %s\n", millis() - bootStart, BT_SPEAKER_NAME);
+    LOG("[T+%4lu] BT A2DP starting -> %s\n", millis() - bootStart, BT_SPEAKER_NAME);
     ledSetWaitBt(); // PRZED a2dp.begin() - bo begin() może blokować
 
     auto cfg = a2dp.defaultConfig(TX_MODE);
     cfg.name = BT_SPEAKER_NAME;
     cfg.auto_reconnect = true;
+    a2dp.source().set_avrc_rn_events({});  // ESP jest master volume — ignoruj AVRCP notify od JBL
+    a2dp.source().set_on_connection_state_changed(onBtStateChange);  // PRZED begin()
     a2dp.begin(cfg);
+    // Bootstrap: na wypadek race condition gdy callback ominął pierwsze połączenie
+    delay(100);
+    g_btConnected = a2dp.source().is_connected();
+    LOG("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
     decoderStream.begin();
+    mp3Decoder.addNotifyAudioChange(audioInfoLogger);
 
-    Serial.printf("[T+%4lu] BT A2DP initiated\n", millis() - bootStart);
-    Serial.printf("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
+#if !TEST_AUDIO_MODE
+    nfcQueue = xQueueCreate(5, sizeof(NfcEvent));
+    xTaskCreatePinnedToCore(nfcTaskFunc, "nfc", 4096, NULL, 1, NULL, 1);
+    LOG("[T+%4lu] NFC task started (core 1)\n", millis() - bootStart);
+#endif
+
+    audioQueue = xQueueCreate(3, sizeof(AudioCmd));
+    xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, NULL, 2, &audioTaskHandle, 1);
+    LOG("[T+%4lu] Audio task started (core 1, prio 2)\n", millis() - bootStart);
+
+    LOG("[T+%4lu] BT A2DP initiated\n", millis() - bootStart);
+    LOG("[BOOT] Loop task core: %d\n", xPortGetCoreID());
+    LOG("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
 
 #if TEST_AUDIO_MODE
-    Serial.println("=== TEST MODE ===");
+    LOGLN("=== TEST MODE ===");
 #endif
-    Serial.println("Ready! Waiting for BT connection...");
+    LOGLN("Ready! Waiting for BT connection...");
 }
 
 // =============================================================================
@@ -1578,18 +1924,17 @@ void setup()
 void loop()
 {
     // Obsługa rozłączenia BT - reset flagi żeby ponowne połączenie ustawiło LED
-    if (btVolumeApplied && !a2dp.source().is_connected())
+    if (btVolumeApplied && !g_btConnected)
     {
         btVolumeApplied = false;
         if (!isPlaying)
             ledSetWaitBt();
     }
 
-    // Po połączeniu BT: ustaw głośność + uruchom odłożone odtwarzanie
-    if (!btVolumeApplied && a2dp.source().is_connected())
+    // Po połączeniu BT: uruchom odłożone odtwarzanie
+    if (!btVolumeApplied && g_btConnected)
     {
-        Serial.printf("[T+%4lu] BT connected!\n", millis() - bootStart);
-        applyBtVolume();
+        LOG("[T+%4lu] BT connected!\n", millis() - bootStart);
         btVolumeApplied = true;
 
         ledSetIdle();
@@ -1597,43 +1942,50 @@ void loop()
         // Deferred playback - plik wykryty przy boot, czekał na BT
         if (!pendingPlaybackPath.isEmpty() && sdReady)
         {
-            currentAudioFile = SD.open(pendingPlaybackPath);
-            if (currentAudioFile)
-            {
-                isPlaying = true;
-                lastNfcUid = pendingPlaybackUid;
-                ledSetPlaying();
-                Serial.printf("[T+%4lu] >>> PLAYBACK START: %s\n", millis() - bootStart, pendingPlaybackPath.c_str());
-                Serial.printf("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
-                bootTimingDone = true;
-            }
+            AudioCmd cmd;
+            cmd.type = AudioCmdType::PLAY;
+            strlcpy(cmd.path, pendingPlaybackPath.c_str(), sizeof(cmd.path));
+            xQueueSend(audioQueue, &cmd, 0);
+            strlcpy((char*)lastNfcUid, pendingPlaybackUid.c_str(), sizeof(lastNfcUid));
+            isPlaying = true;
+            ledSetPlaying();
+            LOG("[T+%4lu] >>> PLAYBACK START: %s\n", millis() - bootStart, pendingPlaybackPath.c_str());
+            LOG("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
+            bootTimingDone = true;
             pendingPlaybackPath = "";
             pendingPlaybackUid = "";
         }
     }
 
-    audioLoop();
     handleButtons();
+    vTaskDelay(pdMS_TO_TICKS(5)); // yield — pętla nie może głodzić IDLE1
 
 #if !TEST_AUDIO_MODE
-    if (millis() - lastNfcRead > NFC_READ_INTERVAL)
+    if (nfcQueue)
     {
-        lastNfcRead = millis();
-
-        currentNfcUid = readNfcTag();
-        if (!currentNfcUid.isEmpty())
+        NfcEvent nfcEvt;
+        while (xQueueReceive(nfcQueue, &nfcEvt, 0) == pdTRUE)
         {
-            noTagCount = 0;
-            if (currentNfcUid != lastNfcUid)
+            if (nfcEvt.tagPresent)
             {
-                startPlayback(currentNfcUid);
+                if (strcmp(nfcEvt.uid, (const char*)lastNfcUid) != 0)
+                    startPlayback(String(nfcEvt.uid));
             }
-        }
-        else if (isPlaying && ++noTagCount >= NO_TAG_THRESHOLD)
-        {
-            stopPlayback();
-            noTagCount = 0;
+            else if (isPlaying)
+            {
+                stopPlayback();
+            }
         }
     }
 #endif
+
+    // Heartbeat - diagnostyka zawieszania loop
+    static unsigned long lastHeartbeat = 0;
+    if (millis() - lastHeartbeat > 2000) {
+        lastHeartbeat = millis();
+        LOG("[LOOP] alive, isPlaying=%d btConn=%d pendingPath=%s\n",
+            (int)isPlaying,
+            (int)g_btConnected,
+            pendingPlaybackPath.c_str());
+    }
 }
