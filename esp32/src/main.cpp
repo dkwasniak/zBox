@@ -649,30 +649,23 @@ bool initSD()
 // MAPPINGS (JSON on SD)
 // =============================================================================
 
+bool readJsonFromSd(const char* path, JsonDocument& doc)
+{
+    File f = SD.open(path, FILE_READ);
+    if (!f) return false;
+    bool ok = (deserializeJson(doc, f) == DeserializationError::Ok);
+    f.close();
+    return ok;
+}
+
 bool loadMappings()
 {
     figurineMap.clear();
 
-    if (!SD.exists("/data/mappings.json"))
+    JsonDocument doc;
+    if (!readJsonFromSd("/data/mappings.json", doc))
     {
         LOGLN("No mappings.json on SD");
-        return false;
-    }
-
-    File f = SD.open("/data/mappings.json", FILE_READ);
-    if (!f)
-    {
-        LOGLN("Failed to open mappings.json");
-        return false;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, f);
-    f.close();
-
-    if (err)
-    {
-        LOG("mappings.json parse error: %s\n", err.c_str());
         return false;
     }
 
@@ -695,11 +688,8 @@ bool loadMappings()
 void loadSystemSounds()
 {
     systemSoundMap.clear();
-    File f = SD.open("/data/system_sounds.json", FILE_READ);
-    if (!f) return;
     JsonDocument doc;
-    if (deserializeJson(doc, f)) { f.close(); return; }
-    f.close();
+    if (!readJsonFromSd("/data/system_sounds.json", doc)) return;
     for (JsonPair kv : doc.as<JsonObject>())
         systemSoundMap[String(kv.key().c_str())] = kv.value().as<String>();
     LOG("[SYS] Loaded %d system sounds\n", (int)systemSoundMap.size());
@@ -1126,16 +1116,10 @@ String syncServerIP;
 void loadSyncMeta(std::map<String, uint32_t> &meta)
 {
     meta.clear();
-    if (!SD.exists("/data/sync_meta.json")) return;
-    File f = SD.open("/data/sync_meta.json", FILE_READ);
-    if (!f) return;
     JsonDocument doc;
-    if (deserializeJson(doc, f) == DeserializationError::Ok)
-    {
-        for (JsonPair kv : doc.as<JsonObject>())
-            meta[kv.key().c_str()] = kv.value().as<uint32_t>();
-    }
-    f.close();
+    if (!readJsonFromSd("/data/sync_meta.json", doc)) return;
+    for (JsonPair kv : doc.as<JsonObject>())
+        meta[kv.key().c_str()] = kv.value().as<uint32_t>();
 }
 
 void saveSyncMeta(const std::map<String, uint32_t> &meta)
@@ -1148,6 +1132,15 @@ void saveSyncMeta(const std::map<String, uint32_t> &meta)
     for (auto &kv : meta) obj[kv.first] = kv.second;
     serializeJson(doc, f);
     f.close();
+}
+
+bool ensureHttpConnected(WiFiClient& client, const String& ip)
+{
+    if (client.connected()) return true;
+    if (!client.connect(ip.c_str(), SERVER_PORT)) return false;
+    client.setNoDelay(true);
+    client.setTimeout(HTTP_TIMEOUT);
+    return true;
 }
 
 bool readHttpHeaders(WiFiClient &client, int &outContentLength)
@@ -1167,15 +1160,10 @@ bool readHttpHeaders(WiFiClient &client, int &outContentLength)
 
 String httpGet(WiFiClient &client, const String &path)
 {
-    if (!client.connected())
+    if (!ensureHttpConnected(client, syncServerIP))
     {
-        if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
-        {
-            LOG("[SYNC] Reconnect failed for GET %s\n", path.c_str());
-            return "";
-        }
-        client.setNoDelay(true);
-        client.setTimeout(HTTP_TIMEOUT);
+        LOG("[SYNC] Reconnect failed for GET %s\n", path.c_str());
+        return "";
     }
 
     client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n",
@@ -1239,15 +1227,10 @@ bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &s
 {
     LOG("[SYNC] Download: %s\n", sdPath.c_str());
 
-    if (!client.connected())
+    if (!ensureHttpConnected(client, syncServerIP))
     {
-        if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
-        {
-            LOGLN("[SYNC] Reconnect failed");
-            return false;
-        }
-        client.setNoDelay(true);
-        client.setTimeout(HTTP_TIMEOUT);
+        LOGLN("[SYNC] Reconnect failed");
+        return false;
     }
 
     unsigned long dlStart = millis();
