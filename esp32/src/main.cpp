@@ -168,6 +168,7 @@ namespace {
 
 volatile char lastNfcUid[30] = {};
 volatile bool isPlaying = false;
+volatile bool trackEndedFlag = false;
 bool nfcReady = false;
 bool sdReady = false;
 int btVolume = BT_VOL_DEFAULT;
@@ -776,8 +777,7 @@ void audioTaskFunc(void *param)
         {
             f.close();
             isPlaying = false;
-            lastNfcUid[0] = '\0';
-            ledSetIdle();
+            trackEndedFlag = true;   // loop() wyczyści lastNfcUid i wywoła ledSetIdle()
             LOGLN("[AUDIO] Track ended");
             telWindows = 6;
             a2dp.clear();
@@ -2029,6 +2029,13 @@ void setup()
 
 void loop()
 {
+    // Koniec tracka: zeruj lastNfcUid i LED tu, nie w audio task (eliminuje race)
+    if (trackEndedFlag) {
+        trackEndedFlag = false;
+        lastNfcUid[0] = '\0';
+        ledSetIdle();
+    }
+
     // Obsługa rozłączenia BT - reset flagi żeby ponowne połączenie ustawiło LED
     if (btVolumeApplied && !g_btConnected)
     {
