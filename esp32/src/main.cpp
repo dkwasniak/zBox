@@ -68,6 +68,7 @@
 
 #define JBL_POWER 13  // Tranzystor NPN -> przycisk POWER na JBL
 #define JBL_STATUS 34 // ADC - linia statusowa JBL (dzielnik 10k/22k)
+#define BAT_ADC_PIN 35 // Lolin D32 Pro wbudowany dzielnik VBAT 100k/100k
 
 // =============================================================================
 // KONFIGURACJA
@@ -1677,6 +1678,32 @@ void runSyncMode()
 }
 
 // =============================================================================
+// BATTERY
+// =============================================================================
+
+float readBatteryVoltage()
+{
+    int sum = 0;
+    for (int i = 0; i < 16; i++)
+    {
+        sum += analogRead(BAT_ADC_PIN);
+        delayMicroseconds(100);
+    }
+    return (sum / 16.0f / 4095.0f) * 3.3f * 2.0f;
+}
+
+// 1 = <20%, 2 = <40%, 3 = <60%, 4 = <80%, 5 = 80-100%
+int batteryBars(float v)
+{
+    float pct = (v - 3.0f) / (4.2f - 3.0f) * 100.0f;
+    if (pct >= 80.0f) return 5;
+    if (pct >= 60.0f) return 4;
+    if (pct >= 40.0f) return 3;
+    if (pct >= 20.0f) return 2;
+    return 1;
+}
+
+// =============================================================================
 // BUTTONS
 // =============================================================================
 //
@@ -1685,7 +1712,7 @@ void runSyncMode()
 //   BTN_C (VOL-)  krótki → BT volume -5%
 //   BTN_C         długi 2s (sam) → deep sleep
 //   BTN_C + BTN_D długie 2s → sync mode
-//   BTN_A         wolny
+//   BTN_A         długi 2s → sprawdź baterię (1-5 piknięć)
 //   BTN_B         wolny
 //
 // Akcje krótkie wykonywane natychmiast na naciśnięcie (nie na puszczenie) -
@@ -1767,6 +1794,23 @@ void handleButtons()
         buttons[2].longHandled = true;
         LOGLN("\n>>> DEEP SLEEP");
         enterDeepSleep();
+    }
+
+    // Długie BTN_A (sam) -> sprawdź baterię: 1-5 piknięć przez JBL
+    if (down[0] && !down[1] && buttons[0].pressStart > 0 &&
+        now - buttons[0].pressStart >= LONG_PRESS_MS && !buttons[0].longHandled)
+    {
+        buttons[0].longHandled = true;
+        float v = readBatteryVoltage();
+        int bars = batteryBars(v);
+        LOG("[BAT] Voltage: %.2fV -> %d bar(s)\n", v, bars);
+        for (int i = 0; i < bars; i++)
+        {
+            playSystemSoundSync("vol_down", 3000);
+            if (i < bars - 1) delay(400);
+        }
+        // Wyczyść lastNfcUid - jeśli figurka nadal stoi, NFC wznowi muzykę
+        lastNfcUid[0] = '\0';
     }
 
     // Zwolnienie przycisków
