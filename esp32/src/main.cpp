@@ -60,10 +60,10 @@
 #define LED_COUNT 5
 #define LED_BRIGHTNESS 40
 
-#define BTN_A 32 // VOL+   (RTC, wake-up z deep sleep przez ext0)
-#define BTN_B 33 // VOL-   (RTC)
-#define BTN_C 25 // rezerwa (RTC, wolny po rezygnacji z I2S)
-#define BTN_D 26 // rezerwa (RTC, wolny po rezygnacji z I2S)
+#define BTN_A 32 // wolny  (RTC)
+#define BTN_B 33 // wolny  (RTC)
+#define BTN_C 25 // VOL-   (RTC)
+#define BTN_D 26 // VOL+   (RTC, wake-up z deep sleep przez ext0)
 #define BTN_COUNT 4
 
 #define JBL_POWER 13  // Tranzystor NPN -> przycisk POWER na JBL
@@ -95,6 +95,9 @@
 #define BT_VOL_MIN 0
 #define BT_VOL_MAX 100
 #define BT_VOL_DEFAULT 50
+
+// Idle timeout → deep sleep
+#define IDLE_TIMEOUT_MS (15UL * 60 * 1000) // 15 minut bez odtwarzania
 
 // Sync
 #define SERVER_HOST "<musicbox-server-ip>"
@@ -179,18 +182,20 @@ struct Button
 };
 
 Button buttons[BTN_COUNT] = {
-    {BTN_A, "A(VOL+)", false, 0, 0, false},
-    {BTN_B, "B(VOL-)", false, 0, 0, false},
-    {BTN_C, "C", false, 0, 0, false},
-    {BTN_D, "D", false, 0, 0, false},
+    {BTN_A, "A", false, 0, 0, false},
+    {BTN_B, "B", false, 0, 0, false},
+    {BTN_C, "C(VOL-)", false, 0, 0, false},
+    {BTN_D, "D(VOL+)", false, 0, 0, false},
 };
 
-bool bothABHandled = false; // flaga dla kombinacji A+B (sync)
+bool bothCDHandled = false; // flaga dla kombinacji C+D (sync)
 
 int noTagCount = 0;
 int nfcErrorCount = 0;
 
-std::map<String, String> figurineMap; // nfc_uid -> filename
+std::map<String, String> figurineMap;    // nfc_uid → filename
+std::map<String, String> systemSoundMap; // name → /data/system/filename
+unsigned long lastActivityMs = 0;        // idle timeout: czas ostatniej aktywności
 
 // Deferred playback - plik gotowy do odtwarzania po połączeniu BT
 String pendingPlaybackPath;
@@ -692,6 +697,19 @@ bool loadMappings()
     return true;
 }
 
+void loadSystemSounds()
+{
+    systemSoundMap.clear();
+    File f = SD.open("/data/system_sounds.json", FILE_READ);
+    if (!f) return;
+    JsonDocument doc;
+    if (deserializeJson(doc, f)) { f.close(); return; }
+    f.close();
+    for (JsonPair kv : doc.as<JsonObject>())
+        systemSoundMap[String(kv.key().c_str())] = kv.value().as<String>();
+    LOG("[SYS] Loaded %d system sounds\n", (int)systemSoundMap.size());
+}
+
 // =============================================================================
 // AUDIO (SD -> MP3 -> Bluetooth A2DP)
 // =============================================================================
@@ -976,33 +994,76 @@ void stopPlayback()
 // DEEP SLEEP
 // =============================================================================
 
+// Odtwarza dźwięk systemowy przez BT i czeka na zakończenie (blokujące).
+// Zwraca natychmiast jeśli dźwięk nie istnieje, BT nie podłączony lub timeout.
+void playSystemSoundSync(const char *name, uint32_t timeoutMs = 10000)
+{
+    auto it = systemSoundMap.find(String(name));
+    if (it == systemSoundMap.end()) return;
+    if (!SD.exists(it->second) || !g_btConnected || !audioQueue || !audioTaskHandle) return;
+
+    // Zatrzymaj bieżący utwór
+    { AudioCmd cmd = { AudioCmdType::STOP, {} }; xQueueSend(audioQueue, &cmd, 0); }
+    delay(100);
+
+    // Zacznij odtwarzać dźwięk systemowy
+    AudioCmd cmd;
+    cmd.type = AudioCmdType::PLAY;
+    strlcpy(cmd.path, it->second.c_str(), sizeof(cmd.path));
+    xQueueSend(audioQueue, &cmd, 0);
+    isPlaying = true;
+
+    // Czekaj na zakończenie (audio task ustawi isPlaying=false gdy plik się skończy)
+    unsigned long start = millis();
+    while (isPlaying && (millis() - start) < timeoutMs)
+        delay(50);
+}
+
 void enterDeepSleep()
 {
-    if (audioQueue)
-    {
-        AudioCmd cmd = { AudioCmdType::STOP, {} };
-        xQueueSend(audioQueue, &cmd, 0);
+    LOGLN("Preparing for deep sleep...");
+
+    // 0. Zagraj dźwięk "sleep" przez BT (jeśli przypisany).
+    playSystemSoundSync("power_off");
+
+    // 1. Zabij audio task — zatrzymuje dekoder MP3, nie dotyka BT.
+    if (audioTaskHandle) {
+        vTaskDelete(audioTaskHandle);
+        audioTaskHandle = NULL;
     }
+    delay(50);
+
+    // 2. NIE wywołuj end() ani disconnect().
+    //    esp_a2d_disconnect() zawsze wywołuje esp_a2d_media_ctrl(STOP) →
+    //    SUSPEND_STREAM_REQ → state Closing → btc_av_state_closing_handler
+    //    unhandled → NULL deref → StoreProhibited.
+    //
+    //    esp_bt_controller_disable() operuje na poziomie radia (poniżej A2DP SM):
+    //    A2DP state machine nie dostaje żadnego eventu disconnect.
+    //    Musi być wywołane PRZED jblPowerOff() — fizyczne odłączenie JBL
+    //    triggeruje bta_av_str_stopped → crash jeśli controller nadal aktywny.
+    LOGLN("[SLEEP] Disabling BT controller...");
+    esp_bt_controller_disable();
+    delay(50);
+
 #if ENABLE_LEDS
-    // Zatrzymaj LED task zanim animacja - inaczej task nadpisuje leds[] co 15ms
     ledMode = LED_OFF;
     if (ledTaskHandle)
         vTaskSuspend(ledTaskHandle);
-    delay(20); // daj taskowi skończyć bieżącą iterację
+    delay(20);
     ledShutdownAnim();
 #endif
-    delay(100);
+
+    // 3. JBL OFF — bezpieczne, BT controller już wyłączony, brak eventów.
     jblPowerOff();
+
     LOGLN("Entering deep sleep...");
     Serial.flush();
-    // Wake tylko na BTN_A (VOL+). ESP32 classic nie wspiera oficjalnie
-    // ext1 ANY_LOW, a wszystkie przyciski są pull-up do GND. BTN_C/D działają
-    // tylko gdy urządzenie jest awake - nie wybudzają z deep sleep.
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_A, LOW);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
 }
 
-// Wybudzanie z deep sleep wymaga przytrzymania BTN_A przez LONG_PRESS_MS.
+// Wybudzanie z deep sleep wymaga przytrzymania BTN_D przez LONG_PRESS_MS.
 // ESP32 ext0 wybudza się natychmiast po wykryciu LOW, więc "hold-to-wake"
 // musi być zaimplementowane w software: tu odpytujemy przycisk i wracamy
 // do snu jeśli zostanie puszczony za wcześnie. Animacja LED (skalowana do
@@ -1013,9 +1074,9 @@ void handleWakeFromDeepSleep()
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
         return;
 
-    LOGLN("[WAKE] Hold BTN_A to confirm wake-up...");
+    LOGLN("[WAKE] Hold BTN_D to confirm wake-up...");
 
-    pinMode(BTN_A, INPUT_PULLUP);
+    pinMode(BTN_D, INPUT_PULLUP);
 
 #if ENABLE_LEDS
     // Minimalny init FastLED bez taska animacji - sam panel + jasność.
@@ -1034,12 +1095,12 @@ void handleWakeFromDeepSleep()
     const unsigned long holdStart = millis();
     while (true)
     {
-        bool pressed = (digitalRead(BTN_A) == LOW);
+        bool pressed = (digitalRead(BTN_D) == LOW);
         if (!pressed)
         {
             // Potwierdź zwolnienie po krótkim opóźnieniu (debounce)
             delay(10);
-            if (digitalRead(BTN_A) != LOW)
+            if (digitalRead(BTN_D) != LOW)
                 break; // naprawdę puszczony
         }
 
@@ -1076,7 +1137,7 @@ void handleWakeFromDeepSleep()
     FastLED.clear();
     FastLED.show();
 #endif
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_A, LOW);
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
 }
 
@@ -1237,10 +1298,9 @@ bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &s
 
     LOG("[SYNC] Size: %d bytes\n", contentLength);
 
-    // TEMP DEBUG: SD bypass
-    // if (SD.exists(sdPath)) SD.remove(sdPath);
-    // File f = SD.open(sdPath, FILE_WRITE);
-    // if (!f) { LOG("[SYNC] Cannot create %s\n", sdPath.c_str()); client.stop(); return false; }
+    if (SD.exists(sdPath)) SD.remove(sdPath);
+    File f = SD.open(sdPath, FILE_WRITE);
+    if (!f) { LOG("[SYNC] Cannot create %s\n", sdPath.c_str()); client.stop(); return false; }
 
     static uint8_t buf[DOWNLOAD_BUF_SIZE];
     int bufPos = 0;
@@ -1288,8 +1348,11 @@ bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &s
 
             if (bufPos >= DOWNLOAD_BUF_SIZE)
             {
-                // TEMP DEBUG: discard, no SD write
+                unsigned long tw = millis();
+                f.write(buf, bufPos);
+                timeWriting += millis() - tw;
                 bufPos = 0;
+                vTaskDelay(pdMS_TO_TICKS(1)); // yield po zapisie — IDLE task reset WDT
             }
 
             if (contentLength > 0 && totalWritten >= contentLength)
@@ -1319,17 +1382,15 @@ bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &s
         }
     }
 
-    // TEMP DEBUG: SD bypass
-    // if (bufPos > 0) f.write(buf, bufPos);
-    // f.close();
+    if (bufPos > 0) f.write(buf, bufPos);
+    f.close();
 
     if (contentLength > 0 && totalWritten != contentLength)
     {
         LOG("[SYNC] Size mismatch: got %d, expected %d\n", totalWritten, contentLength);
-        // TEMP DEBUG: SD bypass — nie usuwaj pliku, nie przerywaj
-        // SD.remove(sdPath);
-        // client.stop();
-        // return false;
+        SD.remove(sdPath);
+        client.stop();
+        return false;
     }
 
     unsigned long dlMs = millis() - dlStart;
@@ -1383,7 +1444,7 @@ bool performSync()
     client.setNoDelay(true);
     client.setTimeout(HTTP_TIMEOUT);
 
-    String payload = httpGet(client, "/api/sync?force=true");
+    String payload = httpGet(client, "/api/sync");
     if (payload.isEmpty())
     {
         LOGLN("[SYNC] Failed to fetch manifest");
@@ -1499,6 +1560,43 @@ bool performSync()
     }
     saveSyncMeta(localMtime);
 
+    // Dźwięki systemowe
+    LOGLN("[SYNC] Checking system sounds...");
+    JsonArray systemSounds = doc["system_sounds"].as<JsonArray>();
+    if (!SD.exists("/data/system"))
+        SD.mkdir("/data/system");
+
+    std::set<String> expectedSounds;
+    JsonDocument soundsDoc;
+    uint32_t dummy1 = 0, dummy2 = 0;
+
+    for (JsonObject s : systemSounds)
+    {
+        String name = s["name"].as<String>();
+        String filename = s["filename"].as<String>();
+        String sdPath = "/data/system/" + filename;
+        expectedSounds.insert(filename);
+        soundsDoc[name] = sdPath;
+
+        if (!SD.exists(sdPath))
+        {
+            String urlPath = "/api/stream/file/" + urlEncode(filename);
+            syncDownloadFile(client, urlPath, sdPath, 0, dummy1, dummy2);
+            LOG("[SYNC] Sound '%s': downloaded\n", name.c_str());
+        }
+        else
+        {
+            LOG("[SYNC] Sound '%s': exists\n", name.c_str());
+        }
+    }
+
+    if (SD.exists("/data/system_sounds.json"))
+        SD.remove("/data/system_sounds.json");
+    File sf = SD.open("/data/system_sounds.json", FILE_WRITE);
+    if (sf) { serializeJson(soundsDoc, sf); sf.close(); LOGLN("[SYNC] system_sounds.json saved"); }
+
+    syncCleanDir("/data/system", expectedSounds);
+
     // Wygeneruj mappings.json
     LOGLN("[SYNC] Generating mappings.json...");
 
@@ -1601,12 +1699,12 @@ void runSyncMode()
 // =============================================================================
 //
 // Mapowanie akcji:
-//   BTN_A (VOL+)  krótki → BT volume +5%
-//   BTN_B (VOL-)  krótki → BT volume -5%
-//   BTN_B         długi 2s (sam) → deep sleep
-//   BTN_A + BTN_B długie 2s → sync mode
-//   BTN_C         TODO - akcja nieprzypisana (obecnie tylko log)
-//   BTN_D         TODO - akcja nieprzypisana (obecnie tylko log)
+//   BTN_D (VOL+)  krótki → BT volume +5%
+//   BTN_C (VOL-)  krótki → BT volume -5%
+//   BTN_C         długi 2s (sam) → deep sleep
+//   BTN_C + BTN_D długie 2s → sync mode
+//   BTN_A         wolny
+//   BTN_B         wolny
 //
 // Akcje krótkie wykonywane natychmiast na naciśnięcie (nie na puszczenie) -
 // szybka reakcja. Długie dopiero po przytrzymaniu przez LONG_PRESS_MS.
@@ -1630,34 +1728,37 @@ void handleButtons()
         {
             b.pressStart = now;
             b.longHandled = false;
+            lastActivityMs = millis(); // reset idle timer przy każdym naciśnięciu
             // Akcje krótkie (natychmiast)
             switch (i)
             {
-            case 0:
-                volumeUp();
-                break; // BTN_A
-            case 1:
-                volumeDown();
-                break; // BTN_B
-            case 2:    // BTN_C
-            case 3:    // BTN_D
+            case 0: // BTN_A
+            case 1: // BTN_B
                 LOG("[BTN] Short press: %s (no action)\n", b.name);
                 break;
+            case 2:
+                volumeDown();
+                break; // BTN_C
+            case 3:
+                volumeUp();
+                break; // BTN_D
             }
         }
     }
 
-    // Combo: BTN_A + BTN_B trzymane LONG_PRESS_MS -> SYNC MODE.
-    // Wymagamy pressStart>0 dla OBU - inaczej trzymanie BTN_A z hold-to-wake
-    // (które omija ISR) + późniejsze BTN_B mogłyby fałszywie wejść w sync.
-    if (down[0] && down[1] && !bothABHandled &&
-        buttons[0].pressStart > 0 && buttons[1].pressStart > 0)
+    // Combo: BTN_C + BTN_D trzymane LONG_PRESS_MS -> SYNC MODE.
+    // Wymagamy pressStart>0 dla OBU - inaczej trzymanie BTN_D z hold-to-wake
+    // (które omija ISR) + późniejsze BTN_C mogłyby fałszywie wejść w sync.
+    if (down[2] && down[3] && !bothCDHandled &&
+        buttons[2].pressStart > 0 && buttons[3].pressStart > 0)
     {
-        unsigned long earliest = max(buttons[0].pressStart, buttons[1].pressStart);
+        unsigned long earliest = max(buttons[2].pressStart, buttons[3].pressStart);
         if (now - earliest >= LONG_PRESS_MS)
         {
-            bothABHandled = true;
+            bothCDHandled = true;
             LOGLN("\n>>> SYNC MODE");
+
+            playSystemSoundSync("sync");
 
             if (audioQueue)
             {
@@ -1677,11 +1778,11 @@ void handleButtons()
         }
     }
 
-    // Długie BTN_B (bez BTN_A) -> deep sleep
-    if (down[1] && !down[0] && buttons[1].pressStart > 0 &&
-        now - buttons[1].pressStart >= LONG_PRESS_MS && !buttons[1].longHandled)
+    // Długie BTN_C (bez BTN_D) -> deep sleep
+    if (down[2] && !down[3] && buttons[2].pressStart > 0 &&
+        now - buttons[2].pressStart >= LONG_PRESS_MS && !buttons[2].longHandled)
     {
-        buttons[1].longHandled = true;
+        buttons[2].longHandled = true;
         LOGLN("\n>>> DEEP SLEEP");
         enterDeepSleep();
     }
@@ -1697,9 +1798,9 @@ void handleButtons()
             b.longHandled = false;
         }
     }
-    // Flaga combo resetuje się gdy którykolwiek z A/B zostanie puszczony
-    if (!down[0] || !down[1])
-        bothABHandled = false;
+    // Flaga combo resetuje się gdy którykolwiek z C/D zostanie puszczony
+    if (!down[2] || !down[3])
+        bothCDHandled = false;
 }
 
 // =============================================================================
@@ -1732,7 +1833,7 @@ void setup()
     LOG("[T+%4lu] Boot start\n", 0UL);
 
     // Hold-to-wake: jeśli boot pochodzi z deep sleep, wymaga przytrzymania
-    // BTN_A przez LONG_PRESS_MS. Inicjalizuje minimalnie LEDy do animacji
+    // BTN_D przez LONG_PRESS_MS. Inicjalizuje minimalnie LEDy do animacji
     // postępu i wraca do snu jeśli przycisk puszczony za wcześnie.
     handleWakeFromDeepSleep();
     // Reset bootStart - hold-to-wake może zabrać ~2s, nie chcemy żeby
@@ -1819,6 +1920,7 @@ void setup()
     if (sdReady)
     {
         loadMappings();
+        loadSystemSounds();
     }
     LOG("[T+%4lu] Mappings loaded (%d)\n", millis() - bootStart, figurineMap.size());
     ledSetBootProgress(2); // Mappings done
@@ -1914,6 +2016,7 @@ void setup()
 #if TEST_AUDIO_MODE
     LOGLN("=== TEST MODE ===");
 #endif
+    lastActivityMs = millis();
     LOGLN("Ready! Waiting for BT connection...");
 }
 
@@ -1978,6 +2081,15 @@ void loop()
         }
     }
 #endif
+
+    // Idle timeout - brak odtwarzania przez IDLE_TIMEOUT_MS → deep sleep
+    if (isPlaying)
+        lastActivityMs = millis();
+    else if (lastActivityMs > 0 && millis() - lastActivityMs > IDLE_TIMEOUT_MS)
+    {
+        LOGLN("[IDLE] Timeout - entering deep sleep");
+        enterDeepSleep();
+    }
 
     // Heartbeat - diagnostyka zawieszania loop
     static unsigned long lastHeartbeat = 0;
