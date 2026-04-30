@@ -97,7 +97,7 @@
 #define BT_VOL_DEFAULT 50
 
 // Idle timeout → deep sleep
-#define IDLE_TIMEOUT_MS (15UL * 60 * 1000) // 15 minut bez odtwarzania
+#define IDLE_TIMEOUT_MS (10UL * 60 * 1000) // 15 minut bez odtwarzania
 
 // Sync
 #define SERVER_HOST "<musicbox-server-ip>"
@@ -897,42 +897,22 @@ void nfcTaskFunc(void *param)
 // Zwraca true gdy wszystko gotowe, false gdy przekroczono timeout.
 bool ensureJblReady()
 {
-    bool adcOn = isJblOn();
-    bool btConn = g_btConnected;
-
-    // Szybka ścieżka - wszystko działa, wracamy od razu
-    if (adcOn && btConn)
+    if (g_btConnected)
         return true;
 
-    // JBL wyłączony wg ADC - wciśnij power (blokujące, 500ms)
-    if (!adcOn)
+    // JBL nie jest połączony. Jeśli ADC mówi OFF - wciśnij power (z debounce).
+    static unsigned long lastPulseMs = 0;
+    if (!isJblOn() && millis() - lastPulseMs > 10000)
     {
         LOGLN("[JBL] ADC says OFF - pressing power");
+        lastPulseMs = millis();
         digitalWrite(JBL_POWER, HIGH);
-        delay(JBL_POWER_PRESS_MS);
+        delay(JBL_POWER_PRESS_MS); // 500ms — konieczne fizycznie
         digitalWrite(JBL_POWER, LOW);
-        // JBL potrzebuje ~1-2s na boot zanim zacznie akceptować BT
     }
 
-    // Poczekaj na A2DP (auto_reconnect zadziała w tle)
-    LOGLN("[JBL] Waiting for A2DP reconnect...");
-    ledSetWaitBt();
-    unsigned long start = millis();
-    while (!g_btConnected)
-    {
-        if (millis() - start > JBL_BOOT_WAIT_MS)
-        {
-            LOG("[JBL] A2DP reconnect timeout after %lu ms\n", millis() - start);
-            return false;
-        }
-        delay(50);
-    }
-    LOG("[JBL] Ready after %lu ms\n", millis() - start);
-
-    // Po reconnect trzeba ponownie zaaplikować głośność
-    applyBtVolume();
-    btVolumeApplied = true;
-    return true;
+    // Zwracamy false — caller ustawi pendingPlaybackPath, auto_reconnect zadba o resztę
+    return false;
 }
 
 void startPlayback(const String &uid)
@@ -963,8 +943,10 @@ void startPlayback(const String &uid)
     // ensureJblReady() sprawdza ADC, w razie potrzeby wciska power i czeka na A2DP.
     if (!ensureJblReady())
     {
-        LOGLN("[PLAY] JBL not ready - aborting playback");
-        ledFlashWarning();
+        LOGLN("[PLAY] JBL not ready - deferring until BT connects");
+        pendingPlaybackPath = path;
+        pendingPlaybackUid = uid;
+        ledSetWaitBt();
         return;
     }
 
@@ -2039,7 +2021,7 @@ void loop()
     {
         LOG("[T+%4lu] BT connected!\n", millis() - bootStart);
         btVolumeApplied = true;
-
+        applyBtVolume();
         ledSetIdle();
 
         // Deferred playback - plik wykryty przy boot, czekał na BT
@@ -2074,9 +2056,12 @@ void loop()
                 if (strcmp(nfcEvt.uid, (const char*)lastNfcUid) != 0)
                     startPlayback(String(nfcEvt.uid));
             }
-            else if (isPlaying)
+            else
             {
-                stopPlayback();
+                pendingPlaybackPath = "";
+                pendingPlaybackUid = "";
+                if (isPlaying)
+                    stopPlayback();
             }
         }
     }
