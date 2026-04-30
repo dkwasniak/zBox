@@ -156,6 +156,12 @@ unsigned long ledVolumeShowTime = 0;
 int ledSyncLit = 0; // ile diod zapalonych w pasku postępu
 #endif
 
+namespace {
+    int nfcErrorCount = 0;
+    unsigned long bootStart = 0;
+    bool bootTimingDone = false;
+}
+
 // =============================================================================
 // STAN
 // =============================================================================
@@ -186,10 +192,6 @@ Button buttons[BTN_COUNT] = {
     {BTN_D, "D(VOL+)", false, 0, 0, false},
 };
 
-bool bothCDHandled = false; // flaga dla kombinacji C+D (sync)
-
-int nfcErrorCount = 0;
-
 std::map<String, String> figurineMap;    // nfc_uid → filename
 std::map<String, String> systemSoundMap; // name → /data/system/filename
 unsigned long lastActivityMs = 0;        // idle timeout: czas ostatniej aktywności
@@ -197,10 +199,6 @@ unsigned long lastActivityMs = 0;        // idle timeout: czas ostatniej aktywno
 // Deferred playback - plik gotowy do odtwarzania po połączeniu BT
 String pendingPlaybackPath;
 String pendingPlaybackUid;
-
-// Timing - pomiar czasu startu
-unsigned long bootStart = 0;
-bool bootTimingDone = false;
 
 // NFC events queue (nfc task → main loop)
 struct NfcEvent
@@ -1715,6 +1713,7 @@ int batteryBars(float v)
 
 void handleButtons()
 {
+    static bool bothCDHandled = false;
     unsigned long now = millis();
 
     // Odczyt aktualnego surowego stanu
