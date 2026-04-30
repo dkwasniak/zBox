@@ -160,7 +160,6 @@ int ledSyncLit = 0; // ile diod zapalonych w pasku postępu
 // STAN
 // =============================================================================
 
-String currentNfcUid;
 volatile char lastNfcUid[30] = {};
 volatile bool isPlaying = false;
 bool nfcReady = false;
@@ -168,8 +167,6 @@ bool sdReady = false;
 int btVolume = BT_VOL_DEFAULT;
 bool btVolumeApplied = false;
 volatile bool g_btConnected = false;
-
-unsigned long lastNfcRead = 0;
 
 // --- Buttons (generic, 4x) ---
 struct Button
@@ -191,7 +188,6 @@ Button buttons[BTN_COUNT] = {
 
 bool bothCDHandled = false; // flaga dla kombinacji C+D (sync)
 
-int noTagCount = 0;
 int nfcErrorCount = 0;
 
 std::map<String, String> figurineMap;    // nfc_uid → filename
@@ -841,7 +837,6 @@ String readNfcTag()
 
     if (nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 20))
     {
-        noTagCount = 0;
         String uidStr = uidToString(uid, uidLength);
         LOG("\nNFC Tag: %s\n", uidStr.c_str());
         return uidStr;
