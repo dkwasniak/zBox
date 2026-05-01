@@ -878,24 +878,25 @@ void audioTaskFunc(void *param)
 
 void reinitNfc()
 {
-    // Wakeup PN532 z potencjalnego PowerDown (po deep sleep).
-    // NSS LOW >= ~1ms wybudza chip; 20ms daje duży margines.
-    pinMode(PN532_SS, OUTPUT);
-    digitalWrite(PN532_SS, LOW);
-    delay(20);
-    digitalWrite(PN532_SS, HIGH);
-    delay(5);
+    PLOGF("[NFC] reinit attempt");
+    // Brak NSS pulse — reinit wywołujemy podczas normalnej pracy,
+    // PN532 nie jest w PowerDown (PowerDown tylko przed deep sleep).
     nfc.begin();
-    delay(100); // było 500 - PN532 wymaga max ~2ms na wakeup, 100ms to bezpieczny margines
-    if (nfc.getFirmwareVersion())
+    delay(1000); // było 100ms — za krótko; setup() używa 1000ms
+    uint32_t ver = nfc.getFirmwareVersion();
+    PLOGF("[NFC] reinit fwver=%lu", ver);
+    if (ver)
     {
         nfc.SAMConfig();
+        nfc.setPassiveActivationRetries(0x10); // brakowało vs setup()
         nfcReady = true;
         nfcErrorCount = 0;
+        PLOGF("[NFC] reinit OK");
     }
     else
     {
         nfcReady = false;
+        PLOGF("[NFC] reinit FAIL");
     }
 }
 
@@ -2017,13 +2018,23 @@ void setup()
     }
 
     // NFC - oryginalny delay 1000ms, PN532 bywa wolny na cold boot
-    // Wakeup PN532 z potencjalnego PowerDown (po deep sleep).
-    // NSS LOW >= ~1ms wybudza chip; 20ms daje duży margines.
-    pinMode(PN532_SS, OUTPUT);
-    digitalWrite(PN532_SS, LOW);
-    delay(20);
-    digitalWrite(PN532_SS, HIGH);
-    delay(5);
+    // Na cold boot: PN532 nie jest w PowerDown, pulse zakłóca init.
+    // Po deep sleep: PN532 jest w PowerDown po nfcPowerDown() → pulse potrzebny.
+    //
+    // LED task jest na core 1 (ten sam co setup()). FreeRTOS preemption może
+    // przerwać Software SPI bit-banging w połowie transakcji → PN532 widzi pauzę
+    // na CLK i resetuje swój SPI state machine. Zawieszamy task na czas NFC init.
+    if (ledTaskHandle)
+        vTaskSuspend(ledTaskHandle);
+
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_UNDEFINED)
+    {
+        pinMode(PN532_SS, OUTPUT);
+        digitalWrite(PN532_SS, LOW);
+        delay(20);
+        digitalWrite(PN532_SS, HIGH);
+        delay(5);
+    }
     nfc.begin();
     delay(1000);
 
@@ -2036,8 +2047,10 @@ void setup()
     }
     else
     {
-        LOGLN("ERROR: PN532 not found!");
+        PLOGF("ERROR: PN532 not found! (setup)");
     }
+    if (ledTaskHandle)
+        vTaskResume(ledTaskHandle);
     LOG("[T+%4lu] NFC %s\n", millis() - bootStart, nfcReady ? "OK" : "FAIL");
     ledSetBootProgress(1); // NFC done
 
