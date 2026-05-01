@@ -56,7 +56,7 @@
 // PN532 NFC (Software SPI)
 #define PN532_SCK 22
 #define PN532_MISO 21
-#define PN532_MOSI 12
+#define PN532_MOSI 0
 #define PN532_SS 5
 
 #define LED_PIN 14  // WS2812B DIN
