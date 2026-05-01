@@ -51,6 +51,33 @@ class SerialHarness:
             self._new_line.wait(timeout=min(remaining, 0.2))
             self._new_line.clear()
 
+    def wait_for_nth_occurrence(self, pattern: str, n: int, timeout_s: float) -> list:
+        """Wait for n occurrences of pattern (each a different line). Returns list of Match."""
+        matches = []
+        seen_up_to = 0
+        regex = re.compile(pattern)
+        deadline = time.monotonic() + timeout_s
+
+        while len(matches) < n:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError(
+                    f"Only {len(matches)}/{n} occurrences of {pattern!r} seen within {timeout_s}s"
+                )
+            with self._lock:
+                snapshot = list(self._buf)
+            for line in snapshot[seen_up_to:]:
+                m = regex.search(line)
+                if m:
+                    matches.append(m)
+                    if len(matches) == n:
+                        return matches
+            seen_up_to = len(snapshot)
+            self._new_line.wait(timeout=min(remaining, 0.2))
+            self._new_line.clear()
+
+        return matches
+
     def wait_for_sequence(self, patterns: list, timeout_s: float) -> list:
         """Wait for patterns to appear in order. Returns list of Match objects."""
         matches = []

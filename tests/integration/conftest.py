@@ -9,6 +9,10 @@ def pytest_addoption(parser):
                      help="Serial port of tester ESP32-S3")
     parser.addoption("--no-reset", action="store_true",
                      help="Skip DTR reset at fixture setup")
+    parser.addoption("--run-manual", action="store_true",
+                     help="Uruchom testy @manual (wymagają interakcji)")
+    parser.addoption("--run-hardware", action="store_true",
+                     help="Uruchom testy @requires_hardware (JBL + figurka)")
 
 
 def pytest_configure(config):
@@ -18,12 +22,24 @@ def pytest_configure(config):
     config.addinivalue_line("markers", "soak: długi test >60s")
 
 
+def pytest_collection_modifyitems(config, items):
+    skip_manual = pytest.mark.skip(reason="--run-manual nie podano")
+    skip_hw = pytest.mark.skip(reason="--run-hardware nie podano")
+    run_manual = config.getoption("--run-manual", default=False)
+    run_hw = config.getoption("--run-hardware", default=False)
+    for item in items:
+        if "manual" in item.keywords and not run_manual:
+            item.add_marker(skip_manual)
+        if "requires_hardware" in item.keywords and not run_hw:
+            item.add_marker(skip_hw)
+
+
 @pytest.fixture(scope="session")
 def serial_harness(request):
     port = request.config.getoption("--port")
     harness = SerialHarness(port)
-    if not request.config.getoption("--no-reset"):
-        harness.reset_device()
+    # Nie resetujemy tu — każdy test robi flush+reset sam.
+    # Podwójny reset (fixture + test w 0.2s) przerywa trwający boot.
     yield harness
     harness.close()
 
