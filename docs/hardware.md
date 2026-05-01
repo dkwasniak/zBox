@@ -5,7 +5,7 @@
 - **ESP32 Lolin D32 Pro** (WROOM32 + PSRAM + wbudowany slot SD)
 - **PN532** - czytnik NFC (Software SPI)
 - **JBL GO 2** - głośnik przez **Bluetooth A2DP** (sparowany, sterowany przez BT AVRCP + tranzystor do włączania)
-- **WS2812B** - pasek 5 diod RGB
+- **WS2812B** - pasek 12 diod RGB
 - **4x tact switch** - BTN_A (VOL+), BTN_B (VOL-), BTN_C i BTN_D (rezerwa, akcje TODO)
 - **1x tranzystor NPN BC547** + rezystor 2.2kΩ - sterowanie przyciskiem POWER JBL
 - **Karta SD** - muzyka i mappingi offline
@@ -84,7 +84,7 @@ Wszystkie cztery GPIO są RTC-capable, ale w obecnym firmware wake-up z deep sle
 
 Wewnętrzny pull-up ESP32 wystarcza, zewnętrzne rezystory nie są potrzebne.
 
-## WS2812B - pasek 5 diod RGB
+## WS2812B - pasek 12 diod RGB
 
 | WS2812B | ESP32/Zasilanie | Uwagi |
 |---------|-----------------|-------|
@@ -92,9 +92,11 @@ Wewnętrzny pull-up ESP32 wystarcza, zewnętrzne rezystory nie są potrzebne.
 | GND | GND | Star ground |
 | DIN | GPIO14 | 3.3V logic, OK na krótkim kablu |
 
+**Filtrowanie szumów:** kondensator elektrolityczny **1000µF / 25V** na wejściu MT3608 (VIN→GND) eliminuje pisk w głośniku BT spowodowany modulacją prądu przez animacje LED.
+
 ### Zasilanie LEDów (Q2 + MT3608)
 
-LEDy WS2812B wymagają 5V. Zasilanie jest podawane przez step-up MT3608 (U2), który jest włączany/wyłączany P-MOSFETem AO3401 (Q2) sterowanym z GPIO27 (LED_EN).
+LEDy WS2812B wymagają 5V. Zasilanie jest podawane przez step-up MT3608 (U2), który jest włączany/wyłączany P-MOSFETem AO3415A (Q2) sterowanym z GPIO27 (LED_EN).
 
 ```
 GPIO27 (LED_EN)
@@ -176,3 +178,4 @@ Nie zasilać z USB ESP32 (za mało prądu przy pracy WS2812B + BT + peak).
 - Złącze J4 (PCM5102A) ma 5 pinów - brakuje SCK. Dla obecnego firmware bez znaczenia (PCM5102A nie jest używany), ale dla kompletności można dodać 6-pin albo w ogóle usunąć jeśli I2S nie wraca.
 - Header przycisków J7 jest 4-pinowy (BTN_A + BTN_B + 2x GND). Firmware obsługuje 4 przyciski (BTN_A/B/C/D na GPIO32/33/25/26) - do nowej rewizji warto poszerzyć J7 do 5-pin (4 sygnały + wspólny GND) albo 6-pin. Obecnie BTN_C/D można podłączyć tylko przewodami bezpośrednio do listew L/P Lolin D32 Pro.
 - Q2, Q3, R4, R5 (tranzystory VOL+/VOL- JBL) zostały usunięte z BOM - głośność sterowana przez AVRCP.
+- Q2 (LED_EN) zmieniony z BS250 na AO3415A (BS250 230mA za mało dla 5x WS2812B ~300mA full white).

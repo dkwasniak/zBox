@@ -22,7 +22,7 @@
 #include <SPI.h>
 #include <Adafruit_PN532.h>
 #include <SD.h>
-#define ENABLE_LEDS false // wyłączone podczas debug BT, wrócimy później
+#define ENABLE_LEDS true
 #if ENABLE_LEDS
 #include <FastLED.h>
 #endif
@@ -39,6 +39,9 @@
 #include <WiFiManager.h>
 #include <esp_wifi.h>
 #include <esp_bt.h>
+#include <esp_task_wdt.h>
+
+#include "persistent_log.h"
 
 // Logging z timestampem (ms od bootu)
 #define LOG(fmt, ...) Serial.printf("<%lu> " fmt, millis(), ##__VA_ARGS__)
@@ -56,8 +59,9 @@
 #define PN532_MOSI 12
 #define PN532_SS 5
 
-#define LED_PIN 14 // WS2812B DIN
-#define LED_COUNT 5
+#define LED_PIN 14  // WS2812B DIN
+#define LED_EN  27  // P-MOSFET gate (AO3415A): LOW = LEDy ON, HIGH = OFF
+#define LED_COUNT 12
 #define LED_BRIGHTNESS 40
 
 #define BTN_A 32 // wolny  (RTC)
@@ -68,7 +72,7 @@
 
 #define JBL_POWER 13  // Tranzystor NPN -> przycisk POWER na JBL
 #define JBL_STATUS 34 // ADC - linia statusowa JBL (dzielnik 10k/22k)
-#define BAT_ADC_PIN 35 // Lolin D32 Pro wbudowany dzielnik VBAT 100k/100k
+#define BAT_ADC_PIN 36 // GPIO36 (VP) - zewnętrzny dzielnik 100k/100k VBAT->VP->GND
 
 // =============================================================================
 // KONFIGURACJA
@@ -88,7 +92,7 @@
 
 // JBL
 #define JBL_POWER_PRESS_MS 500
-#define JBL_STATUS_THRESHOLD 180
+#define JBL_STATUS_THRESHOLD 500  // ~0.4V — powyżej residual/noise, poniżej ON (~2V+)
 #define JBL_BOOT_WAIT_MS 5000 // timeout na cold boot JBL + A2DP reconnect
 
 // Głośność Bluetooth (AVRCP)
@@ -148,12 +152,12 @@ enum LedMode
     LED_SYNC_PROGRESS
 };
 
-LedMode ledMode = LED_OFF;
-unsigned long ledLastUpdate = 0;
-int ledAnimStep = 0;
-int ledBootStep = -1;
-unsigned long ledVolumeShowTime = 0;
-int ledSyncLit = 0; // ile diod zapalonych w pasku postępu
+volatile LedMode ledMode = LED_OFF;
+volatile unsigned long ledLastUpdate = 0;
+volatile int ledAnimStep = 0;
+volatile int ledBootStep = -1;
+volatile unsigned long ledVolumeShowTime = 0;
+volatile int ledSyncLit = 0; // ile diod zapalonych w pasku postępu
 #endif
 
 namespace {
@@ -173,6 +177,8 @@ bool nfcReady = false;
 bool sdReady = false;
 int btVolume = BT_VOL_DEFAULT;
 bool btVolumeApplied = false;
+unsigned long btWaitStart = 0;
+bool jblRecoveryDone = false;
 volatile bool g_btConnected = false;
 
 // --- Buttons (generic, 4x) ---
@@ -217,6 +223,7 @@ struct AudioCmd {
 };
 QueueHandle_t audioQueue = NULL;
 TaskHandle_t audioTaskHandle = NULL;
+TaskHandle_t nfcTaskHandle = NULL;
 
 // =============================================================================
 // ISR
@@ -288,6 +295,8 @@ void initLeds()
 {
     if (!fastLedInitialized)
     {
+        pinMode(LED_EN, OUTPUT);
+        digitalWrite(LED_EN, LOW); // włącz zasilanie LEDów (P-MOSFET)
         FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
         FastLED.setBrightness(LED_BRIGHTNESS);
         fastLedInitialized = true;
@@ -297,7 +306,7 @@ void initLeds()
     ledMode = LED_OFF;
 
     // Osobny task FreeRTOS - animacje LED niezależne od loop()
-    xTaskCreatePinnedToCore(ledTaskFunc, "led", 2048, NULL, 1, &ledTaskHandle, 0);
+    xTaskCreatePinnedToCore(ledTaskFunc, "led", 4096, NULL, 1, &ledTaskHandle, 1);
 }
 
 void ledSetBootProgress(int step)
@@ -431,11 +440,77 @@ void ledShutdownAnim()
     }
 }
 
+void ledShowBattery(int bars)
+{
+    // bars: 1 (krytyczny) ... 5 (pełny)
+    // Zatrzymaj LED task na czas animacji (LED_OFF → default:break w tasku)
+    LedMode prevMode = ledMode;
+    ledMode = LED_OFF;
+    delay(20); // daj taskowi czas na wyjście z FastLED.show()
+
+    // Kolor zależny od poziomu — 5 odrębnych hue'ów
+    CRGB color;
+    if      (bars >= 5) color = CRGB(0,    50, 140);  // niebieski  (pełny)
+    else if (bars == 4) color = CRGB(0,   130,   0);  // zielony
+    else if (bars == 3) color = CRGB(130, 120,   0);  // żółty
+    else if (bars == 2) color = CRGB(140,  50,   0);  // pomarańczowy
+    else                color = CRGB(140,   0,   0);  // czerwony   (krytyczny)
+
+    // Liczba zapalonych diod: bars=1 → 2, bars=2 → 4, bars=3 → 7, bars=4 → 9, bars=5 → 12
+    int lit = map(bars, 1, 5, 2, LED_COUNT);
+
+    // Faza 1: sweep in — zapala po jednej diodzie od lewej
+    FastLED.clear();
+    FastLED.show();
+    for (int i = 0; i < lit; i++) {
+        leds[i] = color;
+        FastLED.show();
+        delay(40);
+    }
+
+    // Faza 2: hold 1.5s
+    delay(1500);
+
+    // Faza 3: krytyczny poziom — mrugnij 3x na czerwono
+    if (bars == 1) {
+        for (int b = 0; b < 3; b++) {
+            FastLED.clear();
+            FastLED.show();
+            delay(180);
+            for (int i = 0; i < lit; i++) leds[i] = color;
+            FastLED.show();
+            delay(180);
+        }
+        delay(300);
+    }
+
+    // Faza 4: sweep out — gaśnij od prawej do lewej
+    for (int i = lit - 1; i >= 0; i--) {
+        leds[i] = CRGB::Black;
+        FastLED.show();
+        delay(30);
+    }
+
+    // Przywróć tryb animacji LED
+    if (isPlaying)
+        ledSetPlaying();
+    else
+        ledSetIdle();
+    (void)prevMode;
+}
+
 void ledTaskFunc(void *param)
 {
+    static unsigned long lastLedHeartbeat = 0;
     for (;;)
     {
         unsigned long now = millis();
+
+        // Heartbeat co 5s — PRZED FastLED.show(), żeby log był widoczny nawet gdy show() wisi
+        if (now - lastLedHeartbeat > 5000) {
+            lastLedHeartbeat = now;
+            PLOGF("[LED] alive mode=%d hwm=%u", (int)ledMode, uxTaskGetStackHighWaterMark(NULL));
+        }
 
         // Volume overlay - powrót do poprzedniego trybu po 1s
         if (ledMode == LED_VOLUME && now - ledVolumeShowTime >= 1000)
@@ -526,6 +601,7 @@ inline void ledSetSyncProgress(int, int) {}
 inline void ledFlashResult(bool) {}
 inline void ledFlashWarning() {}
 inline void ledShutdownAnim() {}
+inline void ledShowBattery(int) {}
 
 #endif // ENABLE_LEDS
 
@@ -592,6 +668,7 @@ void loadBtVolume()
 
 void applyBtVolume()
 {
+    if (!g_btConnected) return;
     static unsigned long lastApply = 0;
     unsigned long now = millis();
     if (now - lastApply < 500)
@@ -712,6 +789,12 @@ void audioTaskFunc(void *param)
 
     for (;;)
     {
+        static unsigned long lastAudioHb = 0;
+        if (millis() - lastAudioHb > 5000) {
+            lastAudioHb = millis();
+            PLOGF("[AUDIO] alive isPlaying=%d hwm=%u", (int)isPlaying, uxTaskGetStackHighWaterMark(NULL));
+        }
+
         AudioCmd cmd;
         if (xQueueReceive(audioQueue, &cmd, 0) == pdTRUE)
         {
@@ -723,7 +806,7 @@ void audioTaskFunc(void *param)
                 {
                     isPlaying = true;
                     ledSetPlaying();
-                    LOG("[AUDIO] Playing: %s\n", cmd.path);
+                    PLOGF("[AUDIO] Playing: %s", cmd.path);
                     telSdBytes = telWrittenBytes = telDrops = 0;
                     telWindowStart = millis();
                     telWindows = 0;
@@ -738,7 +821,7 @@ void audioTaskFunc(void *param)
             {
                 isPlaying = false;
                 ledSetIdle();
-                LOGLN("[AUDIO] Stopped");
+                PLOGF("[AUDIO] Stopped");
                 telWindows = 6; // wyłącz telemetrię po stopie
                 a2dp.clear();
             }
@@ -778,7 +861,7 @@ void audioTaskFunc(void *param)
             f.close();
             isPlaying = false;
             trackEndedFlag = true;   // loop() wyczyści lastNfcUid i wywoła ledSetIdle()
-            LOGLN("[AUDIO] Track ended");
+            PLOGF("[AUDIO] Track ended heap=%u largest=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
             telWindows = 6;
             a2dp.clear();
         }
@@ -795,6 +878,13 @@ void audioTaskFunc(void *param)
 
 void reinitNfc()
 {
+    // Wakeup PN532 z potencjalnego PowerDown (po deep sleep).
+    // NSS LOW >= ~1ms wybudza chip; 20ms daje duży margines.
+    pinMode(PN532_SS, OUTPUT);
+    digitalWrite(PN532_SS, LOW);
+    delay(20);
+    digitalWrite(PN532_SS, HIGH);
+    delay(5);
     nfc.begin();
     delay(100); // było 500 - PN532 wymaga max ~2ms na wakeup, 100ms to bezpieczny margines
     if (nfc.getFirmwareVersion())
@@ -843,6 +933,12 @@ void nfcTaskFunc(void *param)
 
     for (;;)
     {
+        static unsigned long lastNfcHb = 0;
+        if (millis() - lastNfcHb > 5000) {
+            lastNfcHb = millis();
+            PLOGF("[NFC] alive hwm=%u err=%d", uxTaskGetStackHighWaterMark(NULL), nfcErrorCount);
+        }
+
         String uid = readNfcTag();
 
         if (!uid.isEmpty())
@@ -901,6 +997,7 @@ bool ensureJblReady()
 
 void startPlayback(const String &uid)
 {
+    PLOGF("[PLAY] startPlayback uid=%s", uid.c_str());
     if (!sdReady)
     {
         LOGLN("SD not ready");
@@ -950,7 +1047,7 @@ void startPlayback(const String &uid)
 
 void stopPlayback()
 {
-    LOGLN("Stopping playback");
+    PLOGF("[STOP] stopPlayback");
     AudioCmd cmd = { AudioCmdType::STOP, {} };
     xQueueSend(audioQueue, &cmd, 0);
     lastNfcUid[0] = '\0';
@@ -985,6 +1082,15 @@ void playSystemSoundSync(const char *name, uint32_t timeoutMs = 10000)
         delay(50);
 }
 
+void nfcPowerDown()
+{
+    // PN532 PowerDown — pobiera ~1mA zamiast ~100mA podczas deep sleep.
+    // ESP32 po wybudzeniu robi pełny boot i wywołuje nfc.begin() od nowa.
+    uint8_t cmd[] = {PN532_COMMAND_POWERDOWN, 0x04}; // wakeup via SPI (nieużywane po restarcie)
+    nfc.sendCommandCheckAck(cmd, sizeof(cmd), 100);
+    LOGLN("[NFC] PowerDown sent");
+}
+
 void enterDeepSleep()
 {
     LOGLN("Preparing for deep sleep...");
@@ -998,6 +1104,9 @@ void enterDeepSleep()
         audioTaskHandle = NULL;
     }
     delay(50);
+
+    // 1a. PN532 PowerDown — ~1mA zamiast ~100mA podczas snu.
+    nfcPowerDown();
 
     // 2. NIE wywołuj end() ani disconnect().
     //    esp_a2d_disconnect() zawsze wywołuje esp_a2d_media_ctrl(STOP) →
@@ -1018,6 +1127,7 @@ void enterDeepSleep()
         vTaskSuspend(ledTaskHandle);
     delay(20);
     ledShutdownAnim();
+    pinMode(LED_EN, INPUT); // wyłącz zasilanie: Hi-Z → R8 podciąga Gate do BAT → Vgs=0 → MOSFET OFF
 #endif
 
     // 3. JBL OFF — bezpieczne, BT controller już wyłączony, brak eventów.
@@ -1047,6 +1157,8 @@ void handleWakeFromDeepSleep()
 #if ENABLE_LEDS
     // Minimalny init FastLED bez taska animacji - sam panel + jasność.
     // initLeds() później pominie addLeds dzięki fastLedInitialized.
+    pinMode(LED_EN, OUTPUT);
+    digitalWrite(LED_EN, LOW); // włącz zasilanie LEDów (P-MOSFET)
     FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
     FastLED.setBrightness(LED_BRIGHTNESS);
     FastLED.clear();
@@ -1102,6 +1214,7 @@ void handleWakeFromDeepSleep()
 #if ENABLE_LEDS
     FastLED.clear();
     FastLED.show();
+    pinMode(LED_EN, INPUT); // wyłącz zasilanie: Hi-Z → R8 podciąga Gate do BAT → Vgs=0 → MOSFET OFF
 #endif
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
@@ -1659,23 +1772,26 @@ void runSyncMode()
 
 float readBatteryVoltage()
 {
-    int sum = 0;
+    long sum = 0;
     for (int i = 0; i < 16; i++)
     {
-        sum += analogRead(BAT_ADC_PIN);
+        sum += analogReadMilliVolts(BAT_ADC_PIN);
         delayMicroseconds(100);
     }
-    return (sum / 16.0f / 4095.0f) * 3.3f * 2.0f;
+    float vPin = (sum / 16.0f) / 1000.0f; // mV → V na pinie (VBAT/2)
+    PLOGF("[BAT] ADC pin voltage: %.3fV", vPin);
+    return vPin * 2.0f; // dzielnik 100k/100k na Lolin D32 Pro
 }
 
-// 1 = <20%, 2 = <40%, 3 = <60%, 4 = <80%, 5 = 80-100%
+// Progi z rzeczywistej krzywej rozładowania Li-Po 1S:
+// 4.20V=100%, 3.90V=~60%, 3.80V=~40%, 3.70V=~20%, <3.50V=krytyczny
+// 5=80-100%, 4=60-80%, 3=40-60%, 2=20-40%, 1=<20%
 int batteryBars(float v)
 {
-    float pct = (v - 3.0f) / (4.2f - 3.0f) * 100.0f;
-    if (pct >= 80.0f) return 5;
-    if (pct >= 60.0f) return 4;
-    if (pct >= 40.0f) return 3;
-    if (pct >= 20.0f) return 2;
+    if (v >= 4.05f) return 5;
+    if (v >= 3.90f) return 4;
+    if (v >= 3.80f) return 3;
+    if (v >= 3.70f) return 2;
     return 1;
 }
 
@@ -1773,19 +1889,15 @@ void handleButtons()
         enterDeepSleep();
     }
 
-    // Długie BTN_A (sam) -> sprawdź baterię: 1-5 piknięć przez JBL
+    // Długie BTN_A (sam) -> sprawdź baterię: animacja LED
     if (down[0] && !down[1] && buttons[0].pressStart > 0 &&
         now - buttons[0].pressStart >= LONG_PRESS_MS && !buttons[0].longHandled)
     {
         buttons[0].longHandled = true;
         float v = readBatteryVoltage();
         int bars = batteryBars(v);
-        LOG("[BAT] Voltage: %.2fV -> %d bar(s)\n", v, bars);
-        for (int i = 0; i < bars; i++)
-        {
-            playSystemSoundSync("vol_down", 3000);
-            if (i < bars - 1) delay(400);
-        }
+        PLOGF("[BAT] Voltage: %.2fV -> %d bar(s)", v, bars);
+        ledShowBattery(bars);
         // Wyczyść lastNfcUid - jeśli figurka nadal stoi, NFC wznowi muzykę
         lastNfcUid[0] = '\0';
     }
@@ -1825,7 +1937,7 @@ void handleButtons()
 void onBtStateChange(esp_a2d_connection_state_t state, void *)
 {
     g_btConnected = (state == ESP_A2D_CONNECTION_STATE_CONNECTED);
-    LOG("[BT] connection state=%d connected=%d\n", (int)state, (int)g_btConnected);
+    PLOGF("[BT] state=%d connected=%d", (int)state, (int)g_btConnected);
 }
 
 void setup()
@@ -1872,6 +1984,9 @@ void setup()
     LOG("[T+%4lu] SD %s\n", millis() - bootStart, sdReady ? "OK" : "FAIL");
     ledSetBootProgress(0); // SD done
 
+    plogInit();
+    plogMark("BOOT");
+
     // Sprawdź flagę sync PRZED inicjalizacją BT
     bool syncPending = SD.exists("/data/sync_pending");
     LOG("[BOOT] sync_pending flag: %d\n", syncPending);
@@ -1902,6 +2017,13 @@ void setup()
     }
 
     // NFC - oryginalny delay 1000ms, PN532 bywa wolny na cold boot
+    // Wakeup PN532 z potencjalnego PowerDown (po deep sleep).
+    // NSS LOW >= ~1ms wybudza chip; 20ms daje duży margines.
+    pinMode(PN532_SS, OUTPUT);
+    digitalWrite(PN532_SS, LOW);
+    delay(20);
+    digitalWrite(PN532_SS, HIGH);
+    delay(5);
     nfc.begin();
     delay(1000);
 
@@ -2002,15 +2124,30 @@ void setup()
     decoderStream.begin();
     mp3Decoder.addNotifyAudioChange(audioInfoLogger);
 
+    // === JBL fallback recovery (nieblokujące) ===
+    // Jeśli ADC powiedział "JBL ON" ale BT nie łączy się w 5s → ADC kłamało.
+    // Puls power wykonywany jest w loop() żeby handleButtons() działało podczas czekania.
+    btWaitStart = millis();
+    if (jblNeedsPower) jblRecoveryDone = true;
+
 #if !TEST_AUDIO_MODE
     nfcQueue = xQueueCreate(5, sizeof(NfcEvent));
-    xTaskCreatePinnedToCore(nfcTaskFunc, "nfc", 4096, NULL, 1, NULL, 1);
+    xTaskCreatePinnedToCore(nfcTaskFunc, "nfc", 4096, NULL, 1, &nfcTaskHandle, 1);
     LOG("[T+%4lu] NFC task started (core 1)\n", millis() - bootStart);
 #endif
 
     audioQueue = xQueueCreate(3, sizeof(AudioCmd));
     xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, NULL, 2, &audioTaskHandle, 1);
     LOG("[T+%4lu] Audio task started (core 1, prio 2)\n", millis() - bootStart);
+
+    // Task Watchdog: monitoruje loop task, reset po 15s bez esp_task_wdt_reset()
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000,
+        .idle_core_mask = 0,
+        .trigger_panic = false  // reset, nie panic — żeby RTC recovery zadziałało
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+    esp_task_wdt_add(NULL);  // NULL = current task (loop task)
 
     LOG("[T+%4lu] BT A2DP initiated\n", millis() - bootStart);
     LOG("[BOOT] Loop task core: %d\n", xPortGetCoreID());
@@ -2029,6 +2166,10 @@ void setup()
 
 void loop()
 {
+    esp_task_wdt_reset();
+    static volatile uint8_t loopStep = 0;
+
+    loopStep = 1;
     // Koniec tracka: zeruj lastNfcUid i LED tu, nie w audio task (eliminuje race)
     if (trackEndedFlag) {
         trackEndedFlag = false;
@@ -2036,6 +2177,7 @@ void loop()
         ledSetIdle();
     }
 
+    loopStep = 2;
     // Obsługa rozłączenia BT - reset flagi żeby ponowne połączenie ustawiło LED
     if (btVolumeApplied && !g_btConnected)
     {
@@ -2044,6 +2186,7 @@ void loop()
             ledSetWaitBt();
     }
 
+    loopStep = 3;
     // Po połączeniu BT: uruchom odłożone odtwarzanie
     if (!btVolumeApplied && g_btConnected)
     {
@@ -2070,9 +2213,28 @@ void loop()
         }
     }
 
+    loopStep = 4;
+    // JBL fallback recovery — nieblokujące
+    if (g_btConnected) {
+        jblRecoveryDone = true;
+    }
+    else if (!jblRecoveryDone && btWaitStart > 0 &&
+             millis() - btWaitStart > 5000)
+    {
+        jblRecoveryDone = true;
+        PLOGF("[JBL] BT timeout - ADC false positive, pressing power");
+        digitalWrite(JBL_POWER, HIGH);
+        delay(JBL_POWER_PRESS_MS);   // 500ms, jednorazowe; ISR-y działają
+        digitalWrite(JBL_POWER, LOW);
+        LOG("[T+%4lu] JBL power pulse (recovery)\n", millis() - bootStart);
+    }
+
+    loopStep = 5;
     handleButtons();
+    loopStep = 6;
     vTaskDelay(pdMS_TO_TICKS(5)); // yield — pętla nie może głodzić IDLE1
 
+    loopStep = 7;
 #if !TEST_AUDIO_MODE
     if (nfcQueue)
     {
@@ -2095,6 +2257,7 @@ void loop()
     }
 #endif
 
+    loopStep = 8;
     // Idle timeout - brak odtwarzania przez IDLE_TIMEOUT_MS → deep sleep
     if (isPlaying)
         lastActivityMs = millis();
@@ -2104,13 +2267,25 @@ void loop()
         enterDeepSleep();
     }
 
+    loopStep = 9;
     // Heartbeat - diagnostyka zawieszania loop
     static unsigned long lastHeartbeat = 0;
-    if (millis() - lastHeartbeat > 2000) {
+    if (millis() - lastHeartbeat > 5000) {
         lastHeartbeat = millis();
-        LOG("[LOOP] alive, isPlaying=%d btConn=%d pendingPath=%s\n",
-            (int)isPlaying,
-            (int)g_btConnected,
-            pendingPlaybackPath.c_str());
+        PLOGF("[LOOP] alive step=%u isPlaying=%d btConn=%d", loopStep, (int)isPlaying, (int)g_btConnected);
+        plogFlushToSd();
+    }
+
+    // Diagnostyka stack HWM + heap co 30s
+    static unsigned long lastDiag = 0;
+    if (millis() - lastDiag > 30000) {
+        lastDiag = millis();
+        PLOGF("[DIAG] HWM loop=%u led=%u audio=%u nfc=%u",
+            uxTaskGetStackHighWaterMark(NULL),
+            ledTaskHandle ? uxTaskGetStackHighWaterMark(ledTaskHandle) : 0,
+            audioTaskHandle ? uxTaskGetStackHighWaterMark(audioTaskHandle) : 0,
+            nfcTaskHandle ? uxTaskGetStackHighWaterMark(nfcTaskHandle) : 0);
+        PLOGF("[DIAG] heap free=%u min=%u largest=%u",
+            ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     }
 }
