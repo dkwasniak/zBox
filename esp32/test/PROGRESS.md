@@ -47,7 +47,7 @@ test_diag_heap_appears         PASS
 cd esp32 && pio test -e native -v
 
 # Etapy 2+3
-cd tests
+cd esp32/test
 pytest integration/test_boot_sequence.py integration/test_timing.py \
   integration/test_heartbeat.py -v --port /dev/cu.usbserial-10 -m "not soak"
 

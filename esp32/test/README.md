@@ -27,14 +27,14 @@ Trzy poziomy testów:
 ├─────────────────────────────────────────────────────────┤
 │  Etapy 2-3: Serial integration tests                    │
 │  Python + pyserial, obserwacja logów DUT przez USB      │
-│  tests/integration/test_boot_sequence.py                │
-│  tests/integration/test_timing.py                       │
-│  tests/integration/test_heartbeat.py                    │
+│  esp32/test/integration/test_boot_sequence.py                │
+│  esp32/test/integration/test_timing.py                       │
+│  esp32/test/integration/test_heartbeat.py                    │
 ├─────────────────────────────────────────────────────────┤
 │  Etapy 4-6: Hardware automation + manual                │
 │  Drugi ESP32-S3 symuluje przyciski, figurka NFC         │
-│  tests/integration/test_buttons.py                      │
-│  tests/integration/test_nfc_playback.py                 │
+│  esp32/test/integration/test_buttons.py                      │
+│  esp32/test/integration/test_nfc_playback.py                 │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -128,7 +128,7 @@ Replikuje logikę `loadMappings()` (`main.cpp:739`) z ArduinoJson v7, bez SD (da
 ### Wymagania
 
 ```bash
-cd tests
+cd esp32/test
 pip install -r requirements.txt
 ```
 
@@ -137,7 +137,7 @@ DUT (Lolin D32 Pro) podłączony przez USB, firmware wgrany.
 ### Uruchomienie
 
 ```bash
-cd tests
+cd esp32/test
 pytest integration/test_boot_sequence.py integration/test_timing.py \
   -v --port /dev/cu.usbserial-10
 ```
