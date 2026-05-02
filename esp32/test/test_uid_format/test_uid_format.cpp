@@ -1,21 +1,6 @@
 #include <unity.h>
 #include <Arduino.h>
-
-// Inline copy of uidToString() from main.cpp:271
-static String uidToString(uint8_t *uid, uint8_t uidLength)
-{
-    String r;
-    for (uint8_t i = 0; i < uidLength; i++)
-    {
-        if (i)
-            r += ":";
-        if (uid[i] < 0x10)
-            r += "0";
-        r += String(uid[i], HEX);
-    }
-    r.toUpperCase();
-    return r;
-}
+#include "helpers.h"
 
 void test_uid_4_bytes()
 {

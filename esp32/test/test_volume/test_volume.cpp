@@ -1,13 +1,14 @@
 #include <unity.h>
 #include <Arduino.h>
 #include <algorithm>
+#include "helpers.h"
 
-// Constants from main.cpp:99-101
+// Constants from musicbox_config.h (local copies for pure-logic tests)
 #define BT_VOL_STEP 5
 #define BT_VOL_MIN  0
 #define BT_VOL_MAX  100
 
-// Inline volume logic from main.cpp:684-698
+// Pure volume logic (math only, no hardware side effects)
 static int volumeUp(int current)
 {
     return std::min(current + BT_VOL_STEP, BT_VOL_MAX);
@@ -16,16 +17,6 @@ static int volumeUp(int current)
 static int volumeDown(int current)
 {
     return std::max(current - BT_VOL_STEP, BT_VOL_MIN);
-}
-
-// Inline batteryBars() from main.cpp:1790
-static int batteryBars(float v)
-{
-    if (v >= 4.05f) return 5;
-    if (v >= 3.90f) return 4;
-    if (v >= 3.80f) return 3;
-    if (v >= 3.70f) return 2;
-    return 1;
 }
 
 // Volume tests
