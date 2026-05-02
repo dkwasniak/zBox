@@ -41,7 +41,7 @@ void enterDeepSleep()
     esp_bt_controller_disable();
     delay(50);
 
-    ledSuspendTask(); // LED_OFF + vTaskSuspend
+    ledSuspendTask();
     delay(20);
     ledShutdownAnim();
     ledPowerOff();    // FastLED clear + wyłącz zasilanie LEDów

@@ -31,6 +31,7 @@ esp32/src/
 ├── musicbox_config.h   ✅ (#define, piny, stałe, BTN_COUNT, ENABLE_LEDS)
 ├── logging.h           ✅ (LOG/LOGLN)
 ├── helpers.h           ✅ (inline: urlEncode, uidToString, batteryBars)
+├── diagnostics.h/.cpp  ✅ (resetReasonName)
 ├── shared_types.h      ✅ (Button struct, NfcEvent struct)
 ├── state.h/.cpp        ✅ (shared globals z extern)
 ├── battery.h/.cpp      ✅ (readBatteryVoltage)
@@ -46,22 +47,25 @@ esp32/src/
 ├── sleep.h/.cpp        ✅ (enterDeepSleep, handleWakeFromDeepSleep)
 ├── buttons.h/.cpp      ✅ (handleButtons — logika akcji)
 ├── sync_mode.h/.cpp    ✅ (runSyncMode, wszystkie WiFi helpers — static)
-└── main.cpp            ✅ (~361 linii: tylko setup() + loop())
+└── main.cpp            ✅ (~277 linii: setup() + loop())
 ```
 
-## Stan main.cpp po kroku 3
+## Stan finalny main.cpp
 
-Pozostałe sekcje do ekstrakcji w main.cpp:
-- `btVolume`, `saveBtVolume`, `loadBtVolume`, `applyBtVolume`, `volumeUp`, `volumeDown` → **krok 4: volume.h/.cpp**
-- `initSD`, `readJsonFromSd`, `loadMappings`, `loadSystemSounds` → **krok 5: sd_storage.h/.cpp**
-- `AudioInfoLogger`, `a2dp`, `mp3Decoder`, `decoderStream`, `audioTaskFunc`, `AudioCmd/Type`, `audioQueue`, `audioTaskHandle` → **krok 6: audio.h/.cpp**
-- `nfc`, `nfcMutex`, `nfcQueue`, `nfcTaskHandle`, NFC init/task/PowerDown → **krok 7: nfc_module.h/.cpp**
-- `buttons[]`, `btnISR`, `buttonsInit` → **krok 8: buttons_isr.h/.cpp**
-- `ensureJblReady`, `startPlayback`, `stopPlayback`, `playSystemSoundSync` → **krok 9: playback.h/.cpp**
-- `enterDeepSleep`, `handleWakeFromDeepSleep` → **krok 10: sleep.h/.cpp**
-- `handleButtons` → **krok 11: buttons.h/.cpp**
-- `syncServerIP`, `runSyncMode`, `performSync`, `syncDownloadFile`, itp. → **krok 12: sync_mode.h/.cpp**
-- Cleanup setup()+loop() → **krok 13**
+`main.cpp` zawiera tylko sekwencję `setup()` i obsługę `loop()`.
+Logika domenowa jest za API modułów:
+- volume → `volume.h/.cpp`
+- SD/mappingi → `sd_storage.h/.cpp`
+- audio/A2DP → `audio.h/.cpp`
+- NFC → `nfc_module.h/.cpp`
+- przyciski ISR → `buttons_isr.h/.cpp`
+- akcje przycisków → `buttons.h/.cpp`
+- playback → `playback.h/.cpp`
+- sleep/wake → `sleep.h/.cpp`
+- sync WiFi → `sync_mode.h/.cpp`
+- diagnostyka resetu → `diagnostics.h/.cpp`
+
+Tryb `TEST_AUDIO_MODE` został usunięty; normalny flow NFC jest jedyną ścieżką boot/playback.
 
 ## Zależności między modułami (z refactor.md)
 
@@ -84,6 +88,7 @@ sleep.h            ← musicbox_config, logging, state, audio, nfc_module, jbl, 
 buttons.h          ← musicbox_config, state, buttons_isr, helpers, volume, leds, sleep, battery, playback
 sync_mode.h        ← musicbox_config, logging, state, leds, sd_storage, helpers
 main.cpp           ← wszystkie moduły
+diagnostics.h      ← main
 ```
 
 ## Kluczowe uwagi dla krok 4 (volume)
@@ -93,7 +98,7 @@ main.cpp           ← wszystkie moduły
 - `volumeUp/Down()` w volume.cpp wołają `audioSetBtVolumePercent()` (nie `a2dp` bezpośrednio)
 - `btVolume` = prywatny w volume.cpp (static)
 - `Preferences preferences` = prywatny w volume.cpp (static)
-- Ale `applyBtVolume()` jest też wołana z loop() w main.cpp przy BT connect — API: `volumeApplyToBt()`
+- `applyBtVolume()` jest też wołana z loop() w main.cpp przy BT connect
 
 ## Kluczowe uwagi dla krok 6 (audio)
 

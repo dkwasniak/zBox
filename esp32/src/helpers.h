@@ -51,3 +51,12 @@ inline int batteryBars(float v)
     if (v >= 3.70f) return 2;
     return 1;
 }
+
+inline const char *batteryColorName(int bars)
+{
+    if (bars >= 5) return "blue";
+    if (bars == 4) return "green";
+    if (bars == 3) return "yellow";
+    if (bars == 2) return "orange";
+    return "red";
+}

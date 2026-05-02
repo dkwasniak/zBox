@@ -1,21 +1,3 @@
-/*
- * MusicBox - Muzyczne Pudełko dla Dzieci
- *
- * ESP32 Lolin D32 Pro + PN532 (NFC Software SPI) + Bluetooth A2DP + SD Card
- * Offline mode: muzyka i mappingi na karcie SD
- * Audio: SD -> MP3 decoder -> Bluetooth A2DP Source -> JBL Go 2
- *
- * Sync: oba przyciski 2s -> flaga sync_pending -> restart -> WiFi sync -> restart
- * Pierwsze WiFi: automatyczny portal AP "MusicBox-Setup" do konfiguracji
- *
- * OPTYMALIZACJA STARTU:
- * - Usunięte zbędne delay() z inicjalizacji SD, NFC, ADC
- * - Nieblokujące włączanie JBL (puls w tle, bez czekania na boot)
- * - BT A2DP startuje jak najwcześniej (async, łączy się w tle)
- * - NFC pre-scan przy boot - jeśli figurka już stoi, plik gotowy do odtwarzania
- * - Odtwarzanie startuje natychmiast po połączeniu BT (deferred playback)
- */
-
 #include <Arduino.h>
 #include <SD.h>
 #include <esp_sleep.h>
@@ -39,40 +21,8 @@
 #include "sleep.h"
 #include "buttons.h"
 #include "sync_mode.h"
-
-// =============================================================================
-// SETUP - ZOPTYMALIZOWANY
-// =============================================================================
-//
-// Stara kolejność (sekwencyjna, ~5.5s samych delay):
-//   SD(+100ms) → sync_check → NFC(+1000ms) → ADC(+500ms) → JBL_power(+500-3500ms)
-//   → loadVolume → BT_begin → mappings → [test file]
-//
-// Nowa kolejność (równoległa, ~150ms delay):
-//   SD(0ms) → sync_check → NFC(+100ms) → mappings → NFC_prescan(+200ms)
-//   → JBL_async(0ms) → loadVolume → BT_begin → [deferred playback]
-//
-// BT startuje ~5s wcześniej. JBL bootuje w tle równolegle z BT.
-// Jeśli figurka stoi na padzie - plik gotowy do odtwarzania od razu po BT connect.
-//
-
-static const char *resetReasonName(esp_reset_reason_t reason)
-{
-    switch (reason)
-    {
-    case ESP_RST_POWERON: return "POWERON";
-    case ESP_RST_EXT: return "EXT";
-    case ESP_RST_SW: return "SW";
-    case ESP_RST_PANIC: return "PANIC";
-    case ESP_RST_INT_WDT: return "INT_WDT";
-    case ESP_RST_TASK_WDT: return "TASK_WDT";
-    case ESP_RST_WDT: return "WDT";
-    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
-    case ESP_RST_BROWNOUT: return "BROWNOUT";
-    case ESP_RST_SDIO: return "SDIO";
-    default: return "UNKNOWN";
-    }
-}
+#include "diagnostics.h"
+#include "diagnostic_mode.h"
 
 void setup()
 {
@@ -81,18 +31,10 @@ void setup()
     LOGLN("\n\n=== MusicBox ===");
     LOG("[T+%4lu] Boot start\n", 0UL);
 
-    // Hold-to-wake: jeśli boot pochodzi z deep sleep, wymaga przytrzymania
-    // BTN_D przez LONG_PRESS_MS. Inicjalizuje minimalnie LEDy do animacji
-    // postępu i wraca do snu jeśli przycisk puszczony za wcześnie.
     handleWakeFromDeepSleep();
-    // Reset bootStart - hold-to-wake może zabrać ~2s, nie chcemy żeby
-    // wszystkie późniejsze logi [T+...] były przesunięte o czas trzymania.
     bootStart = millis();
 
-    // LED - jako pierwsze, żeby pokazać że urządzenie żyje
-    ledInit(); // uruchamia task + wyświetla dim niebieski
-
-    // GPIO - natychmiast
+    ledInit();
     buttonsInit();
 
     pinMode(JBL_POWER, OUTPUT);
@@ -100,7 +42,6 @@ void setup()
     pinMode(JBL_STATUS, INPUT);
     LOG("[T+%4lu] GPIO ready\n", millis() - bootStart);
 
-    // SD Card - bez delay
     sdReady = initSD();
     if (!sdReady)
     {
@@ -117,9 +58,16 @@ void setup()
               (int)reason, resetReasonName(reason), (int)esp_sleep_get_wakeup_cause());
     }
 
-    // Sprawdź flagę sync PRZED inicjalizacją BT
     bool syncPending = SD.exists("/data/sync_pending");
+    bool diagPending = SD.exists(DIAG_PENDING_PATH);
+    LOG("[BOOT] diag_pending flag: %d\n", diagPending);
     LOG("[BOOT] sync_pending flag: %d\n", syncPending);
+
+    if (diagPending)
+    {
+        runDiagnosticMode();
+        return;
+    }
 
     if (syncPending)
     {
@@ -127,12 +75,8 @@ void setup()
         return;
     }
 
-    // === Normalny tryb ===
     LOGLN("\n--- Normal mode (fast boot) ---");
 
-    // --- JBL Power ON: puls startuje tutaj, inne operacje wypełniają czas ---
-    // Sprawdzamy status i startujemy puls PRZED NFC/mappings,
-    // dzięki czemu 500ms pulsu mija w trakcie inicjalizacji
     bool jblNeedsPower = !isJblOn();
     unsigned long jblPulseStart = 0;
     if (jblNeedsPower)
@@ -146,18 +90,12 @@ void setup()
         LOG("[T+%4lu] JBL already ON\n", millis() - bootStart);
     }
 
-    // NFC init — nfcInit() obsługuje cold boot, deep sleep wake i reset.
-    // Po znanym PowerDown robi raw SPI wake przed nfc.begin(), bo Adafruit_PN532
-    // samo zarządza SS i nie utrzyma NSS low przez T_wake_up przed pierwszą ramką.
-    // NFC critical sekcja zawiesza LED task — FreeRTOS preemption może przerwać
-    // Software SPI, a mutex blokuje równoległe użycie PN532 z innych kontekstów.
     LOG("[NFC] init: wake_cause=%d\n", (int)esp_sleep_get_wakeup_cause());
     if (!nfcInit())
         PLOGF("ERROR: PN532 not found! (setup)");
     LOG("[T+%4lu] NFC %s\n", millis() - bootStart, nfcReady ? "OK" : "FAIL");
     ledSetBootProgress(1); // NFC done
 
-    // Mappings - ładowane wcześniej (potrzebne do NFC pre-scan)
     if (sdReady)
     {
         loadMappings();
@@ -166,9 +104,6 @@ void setup()
     LOG("[T+%4lu] Mappings loaded (%d)\n", millis() - bootStart, figurineMap.size());
     ledSetBootProgress(2); // Mappings done
 
-// NFC pre-scan - sprawdź czy figurka już stoi na padzie
-// Typowy scenariusz: dziecko stawiło figurkę, rodzic włącza urządzenie
-#if !TEST_AUDIO_MODE
     if (nfcReady && sdReady)
     {
         char preUidBuf[30] = {};
@@ -194,16 +129,7 @@ void setup()
             LOG("[T+%4lu] NFC pre-scan: no tag\n", millis() - bootStart);
         }
     }
-#else
-    // W test mode - ustaw pending na test file
-    if (sdReady && SD.exists(TEST_SD_FILE))
-    {
-        pendingPlaybackPath = TEST_SD_FILE;
-        LOG("[T+%4lu] Test file queued: %s\n", millis() - bootStart, TEST_SD_FILE);
-    }
-#endif
 
-    // --- Zakończ puls JBL (dopełnij do 500ms jeśli trzeba) ---
     if (jblNeedsPower)
     {
         unsigned long elapsed = millis() - jblPulseStart;
@@ -218,27 +144,18 @@ void setup()
 
     ledSetBootProgress(3); // JBL done
 
-    // Głośność z NVS
     loadBtVolume();
 
-    // Bluetooth A2DP
     ledSetBootProgress(4); // BT step
     LOG("[T+%4lu] BT A2DP starting -> %s\n", millis() - bootStart, BT_SPEAKER_NAME);
     ledSetWaitBt(); // PRZED audioInit() - bo a2dp.begin() może blokować
     audioInit();
 
-    // === JBL fallback recovery (nieblokujące) ===
-    // Jeśli ADC powiedział "JBL ON" ale BT nie łączy się w 5s → ADC kłamało.
-    // Puls power wykonywany jest w loop() żeby handleButtons() działało podczas czekania.
     btWaitStart = millis();
     if (jblNeedsPower) jblRecoveryDone = true;
 
-#if !TEST_AUDIO_MODE
     nfcStartTask();
-#endif
 
-
-    // Task Watchdog: monitoruje loop task, reset po 15s bez esp_task_wdt_reset()
     esp_task_wdt_config_t wdt_cfg = {
         .timeout_ms = 15000,
         .idle_core_mask = 0,
@@ -251,16 +168,9 @@ void setup()
     LOG("[BOOT] Loop task core: %d\n", xPortGetCoreID());
     LOG("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
 
-#if TEST_AUDIO_MODE
-    LOGLN("=== TEST MODE ===");
-#endif
     lastActivityMs = millis();
     LOGLN("Ready! Waiting for BT connection...");
 }
-
-// =============================================================================
-// LOOP
-// =============================================================================
 
 void loop()
 {
@@ -268,7 +178,6 @@ void loop()
     static volatile uint8_t loopStep = 0;
 
     loopStep = 1;
-    // Koniec tracka: zeruj lastNfcUid i LED tu, nie w audio task (eliminuje race)
     if (trackEndedFlag) {
         trackEndedFlag = false;
         lastNfcUid[0] = '\0';
@@ -276,7 +185,6 @@ void loop()
     }
 
     loopStep = 2;
-    // Obsługa rozłączenia BT - reset flagi żeby ponowne połączenie ustawiło LED
     if (btVolumeApplied && !g_btConnected)
     {
         btVolumeApplied = false;
@@ -285,7 +193,6 @@ void loop()
     }
 
     loopStep = 3;
-    // Po połączeniu BT: uruchom odłożone odtwarzanie
     if (!btVolumeApplied && g_btConnected)
     {
         LOG("[T+%4lu] BT connected!\n", millis() - bootStart);
@@ -293,7 +200,6 @@ void loop()
         applyBtVolume();
         ledSetIdle();
 
-        // Deferred playback - plik wykryty przy boot, czekał na BT
         if (!pendingPlaybackPath.isEmpty() && sdReady)
         {
             audioStartFile(pendingPlaybackPath.c_str());
@@ -309,7 +215,6 @@ void loop()
     }
 
     loopStep = 4;
-    // JBL fallback recovery — nieblokujące
     if (g_btConnected) {
         jblRecoveryDone = true;
     }
@@ -328,10 +233,9 @@ void loop()
     handleButtons();
     volumeTick();
     loopStep = 6;
-    vTaskDelay(pdMS_TO_TICKS(5)); // yield — pętla nie może głodzić IDLE1
+    vTaskDelay(pdMS_TO_TICKS(5));
 
     loopStep = 7;
-#if !TEST_AUDIO_MODE
     {
         NfcEvent nfcEvt;
         while (nfcGetEvent(&nfcEvt, 0))
@@ -350,10 +254,8 @@ void loop()
             }
         }
     }
-#endif
 
     loopStep = 8;
-    // Idle timeout - brak odtwarzania przez IDLE_TIMEOUT_MS → deep sleep
     if (isPlaying)
         lastActivityMs = millis();
     else if (lastActivityMs > 0 && millis() - lastActivityMs > IDLE_TIMEOUT_MS)
@@ -363,7 +265,6 @@ void loop()
     }
 
     loopStep = 9;
-    // Heartbeat - diagnostyka zawieszania loop
     static unsigned long lastHeartbeat = 0;
     if (millis() - lastHeartbeat > 5000) {
         lastHeartbeat = millis();
@@ -371,7 +272,6 @@ void loop()
         plogFlushToSd();
     }
 
-    // Diagnostyka stack HWM + heap co 30s
     static unsigned long lastDiag = 0;
     if (millis() - lastDiag > 30000) {
         lastDiag = millis();

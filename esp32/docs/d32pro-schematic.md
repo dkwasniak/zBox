@@ -80,6 +80,11 @@
 
 **C2**: 10 µF — bulk decoupling on VBAT rail
 
+**Battery ADC divider**:
+- R12: 100 kΩ from VBAT to IO35 / I35
+- R17: 100 kΩ from IO35 / I35 to GND
+- IO35 therefore reads approximately VBAT / 2 for firmware battery measurement
+
 **LED2**: charge status LED
 - Anode: +3V3 (or VBUS)
 - Cathode: CHRG pin via current-limiting resistor (~1 kΩ)
@@ -187,7 +192,7 @@ Two 1×16P headers: JP1 (left side) and JP2 (right side). All signals at 3.3 V l
 | 12 | IO33 / TFT_RST | TFT reset; also routed to TFT port P4; RTC-capable; ADC1_CH5 (input only on ADC) |
 | 13 | IO27 / TFT_DC | TFT Data/Command select; also routed to TFT port P4; RTC-capable |
 | 14 | IO26 | DAC2; RTC-capable |
-| 15 | IO35 | **Input only** — no internal pull-up/pull-down; ADC1_CH7 |
+| 15 | IO35 | **Input only** — no internal pull-up/pull-down; ADC1_CH7; connected to onboard VBAT/2 divider |
 | 16 | IO34 | **Input only** — no internal pull-up/pull-down; ADC1_CH6 |
 
 ---

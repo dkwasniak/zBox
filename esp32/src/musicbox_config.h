@@ -27,16 +27,14 @@
 
 #define JBL_POWER 13  // Tranzystor NPN -> przycisk POWER na JBL
 #define JBL_STATUS 34 // ADC - linia statusowa JBL (dzielnik 10k/22k)
-#define BAT_ADC_PIN 36 // GPIO36 (VP) - zewnętrzny dzielnik 100k/100k VBAT->VP->GND
+#define BAT_ADC_PIN 35 // GPIO35 (I35) - onboard D32 Pro dzielnik 100k/100k VBAT->I35->GND
+#define BAT_ADC_SCALE 1.972f // calibrated: multimeter 4.08-4.09V when ADC pin reads 2.072V
 
 // =============================================================================
 // KONFIGURACJA
 // =============================================================================
 
 #define BT_SPEAKER_NAME "JBL GO 2"
-
-#define TEST_AUDIO_MODE false
-#define TEST_SD_FILE "/music/9383471d_babajaga.mp3"
 
 #define LONG_PRESS_MS 2000
 #define DEBOUNCE_MS 50
@@ -66,3 +64,9 @@
 #define SERVER_PORT 8000
 #define HTTP_TIMEOUT 15000
 #define DOWNLOAD_BUF_SIZE 16384
+
+// Diagnostic mode
+#define DIAG_PENDING_PATH "/data/diag_pending"
+#define DIAG_AP_NAME "MusicBox-Diag"
+#define DIAG_TELNET_PORT 23
+#define DIAG_LOG_INTERVAL_MS 5000

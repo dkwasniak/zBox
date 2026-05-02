@@ -24,7 +24,8 @@ enum LedMode
     LED_PLAYING,
     LED_VOLUME,
     LED_SYNC_WIFI,
-    LED_SYNC_PROGRESS
+    LED_SYNC_PROGRESS,
+    LED_DIAGNOSTIC
 };
 
 static volatile LedMode ledMode = LED_OFF;
@@ -196,6 +197,13 @@ void ledSetSyncProgress(int current, int total)
         leds[i] = (i < ledSyncLit) ? CRGB(0, 0, 120) : CRGB(0, 0, 15);
     }
     FastLED.show();
+}
+
+void ledSetDiagnostic()
+{
+    ledMode = LED_DIAGNOSTIC;
+    ledAnimStep = 0;
+    ledLastUpdate = millis();
 }
 
 void ledFlashResult(bool success)
@@ -375,6 +383,25 @@ static void ledTaskFunc(void *param)
             FastLED.show();
             break;
         }
+        case LED_DIAGNOSTIC:
+        {
+            ledAnimStep = (ledAnimStep + 1) % (LED_COUNT * 2);
+            int head = ledAnimStep % LED_COUNT;
+            uint8_t breath = map(cubicwave8((uint8_t)(ledAnimStep * 8)), 0, 255, 20, 90);
+            for (int i = 0; i < LED_COUNT; i++)
+            {
+                int dist = abs(i - head);
+                dist = min(dist, LED_COUNT - dist);
+                if (dist == 0)
+                    leds[i] = CRGB(90, 0, 120);
+                else if (dist == 1)
+                    leds[i] = CRGB(0, breath, 100);
+                else
+                    leds[i] = CRGB(8, 0, 18);
+            }
+            FastLED.show();
+            break;
+        }
         default:
             break;
         }
@@ -385,6 +412,8 @@ static void ledTaskFunc(void *param)
             delayMs = 80;
         else if (ledMode == LED_SYNC_WIFI)
             delayMs = 400;
+        else if (ledMode == LED_DIAGNOSTIC)
+            delayMs = 90;
         vTaskDelay(pdMS_TO_TICKS(delayMs));
     }
 }

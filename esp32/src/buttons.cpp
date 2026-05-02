@@ -16,6 +16,7 @@
 
 void handleButtons()
 {
+    static bool bothABHandled = false;
     static bool bothCDHandled = false;
     unsigned long now = millis();
 
@@ -49,6 +50,27 @@ void handleButtons()
                 volumeUp();
                 break; // BTN_D
             }
+        }
+    }
+
+    if (down[0] && down[1] && !bothABHandled &&
+        buttons[0].pressStart > 0 && buttons[1].pressStart > 0)
+    {
+        unsigned long earliest = max(buttons[0].pressStart, buttons[1].pressStart);
+        if (now - earliest >= LONG_PRESS_MS)
+        {
+            bothABHandled = true;
+            LOGLN("\n>>> DIAGNOSTIC MODE");
+
+            audioStop();
+
+            File f = SD.open(DIAG_PENDING_PATH, FILE_WRITE);
+            bool written = (bool)f;
+            if (f) f.close();
+            LOG(">>> Diagnostic flag written & verified: %d\n", written);
+
+            delay(100);
+            ESP.restart();
         }
     }
 
@@ -113,6 +135,8 @@ void handleButtons()
         }
     }
     // Flaga combo resetuje się gdy którykolwiek z C/D zostanie puszczony
+    if (!down[0] || !down[1])
+        bothABHandled = false;
     if (!down[2] || !down[3])
         bothCDHandled = false;
 }

@@ -104,6 +104,15 @@ void test_battery_boundary_below_390()
     TEST_ASSERT_EQUAL_INT(3, batteryBars(3.899f));
 }
 
+void test_battery_color_names()
+{
+    TEST_ASSERT_EQUAL_STRING("blue", batteryColorName(5));
+    TEST_ASSERT_EQUAL_STRING("green", batteryColorName(4));
+    TEST_ASSERT_EQUAL_STRING("yellow", batteryColorName(3));
+    TEST_ASSERT_EQUAL_STRING("orange", batteryColorName(2));
+    TEST_ASSERT_EQUAL_STRING("red", batteryColorName(1));
+}
+
 void setUp() {}
 void tearDown() {}
 
@@ -126,5 +135,6 @@ int main()
     RUN_TEST(test_battery_2bars_edge);
     RUN_TEST(test_battery_1bar);
     RUN_TEST(test_battery_boundary_below_390);
+    RUN_TEST(test_battery_color_names);
     return UNITY_END();
 }

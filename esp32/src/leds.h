@@ -32,6 +32,7 @@ void ledSetPlaying();
 void ledShowVolume(int volumePercent);
 void ledSetSyncWifi();
 void ledSetSyncProgress(int current, int total);
+void ledSetDiagnostic();
 void ledFlashResult(bool success);
 void ledFlashWarning();
 void ledShutdownAnim();
@@ -54,6 +55,7 @@ inline void ledSetPlaying() {}
 inline void ledShowVolume(int) {}
 inline void ledSetSyncWifi() {}
 inline void ledSetSyncProgress(int, int) {}
+inline void ledSetDiagnostic() {}
 inline void ledFlashResult(bool) {}
 inline void ledFlashWarning() {}
 inline void ledShutdownAnim() {}
