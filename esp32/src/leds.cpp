@@ -78,7 +78,6 @@ uint32_t ledGetTaskHWM()
 
 void ledSuspendTask()
 {
-    ledMode = LED_OFF; // zatrzymaj animację zanim task zostanie zawieszony
     if (ledTaskHandle)
         vTaskSuspend(ledTaskHandle);
 }

@@ -13,10 +13,11 @@
 // Private types
 // =============================================================================
 
-enum class AudioCmdType : uint8_t { PLAY, STOP };
+enum class AudioCmdType : uint8_t { PLAY, STOP, VOLUME };
 struct AudioCmd {
     AudioCmdType type;
     char path[256];
+    int volumePercent;
 };
 
 // =============================================================================
@@ -38,6 +39,20 @@ static MP3DecoderHelix mp3Decoder;
 static EncodedAudioStream decoderStream(&a2dp, &mp3Decoder);
 static QueueHandle_t audioQueue = NULL;
 static TaskHandle_t audioTaskHandle = NULL;
+
+static bool audioSendCmd(const AudioCmd &cmd, TickType_t timeout, bool front = false)
+{
+    if (!audioQueue) return false;
+    BaseType_t ok = front
+        ? xQueueSendToFront(audioQueue, &cmd, timeout)
+        : xQueueSend(audioQueue, &cmd, timeout);
+    if (ok != pdTRUE)
+    {
+        PLOGF("[AUDIO] Queue full, cmd dropped: %d", (int)cmd.type);
+        return false;
+    }
+    return true;
+}
 
 // =============================================================================
 // Private callbacks / task
@@ -70,9 +85,9 @@ static void audioTaskFunc(void *param)
         AudioCmd cmd;
         if (xQueueReceive(audioQueue, &cmd, 0) == pdTRUE)
         {
-            if (f) f.close();
             if (cmd.type == AudioCmdType::PLAY)
             {
+                if (f) f.close();
                 f = SD.open(cmd.path);
                 if (f)
                 {
@@ -89,13 +104,19 @@ static void audioTaskFunc(void *param)
                     a2dp.clear();
                 }
             }
-            else
+            else if (cmd.type == AudioCmdType::STOP)
             {
+                if (f) f.close();
                 isPlaying = false;
                 ledSetIdle();
                 PLOGF("[AUDIO] Stopped");
                 telWindows = 6; // wyłącz telemetrię po stopie
                 a2dp.clear();
+            }
+            else if (cmd.type == AudioCmdType::VOLUME)
+            {
+                a2dp.setVolume(cmd.volumePercent / 100.0);
+                PLOGF("[VOL] Applied in audio task: %d%%", cmd.volumePercent);
             }
         }
 
@@ -163,24 +184,25 @@ void audioInit()
     decoderStream.begin();
     mp3Decoder.addNotifyAudioChange(audioInfoLogger);
 
-    audioQueue = xQueueCreate(3, sizeof(AudioCmd));
+    audioQueue = xQueueCreate(5, sizeof(AudioCmd));
     xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, NULL, 2, &audioTaskHandle, 1);
     LOG("[T+%4lu] Audio task started (core 1, prio 2)\n", millis() - bootStart);
 }
 
 void audioStartFile(const char *path)
 {
+    if (!path) return;
     AudioCmd cmd;
     cmd.type = AudioCmdType::PLAY;
+    cmd.volumePercent = 0;
     strlcpy(cmd.path, path, sizeof(cmd.path));
-    xQueueSend(audioQueue, &cmd, 0);
+    audioSendCmd(cmd, pdMS_TO_TICKS(50));
 }
 
 void audioStop()
 {
-    if (!audioQueue) return;
-    AudioCmd cmd = { AudioCmdType::STOP, {} };
-    xQueueSend(audioQueue, &cmd, 0);
+    AudioCmd cmd = { AudioCmdType::STOP, {}, 0 };
+    audioSendCmd(cmd, pdMS_TO_TICKS(100), true);
 }
 
 bool audioIsRunning()
@@ -204,7 +226,14 @@ void audioDeleteTaskForSleep()
 
 void audioSetBtVolumePercent(int percent)
 {
-    a2dp.setVolume(percent / 100.0);
+    if (!audioQueue)
+    {
+        a2dp.setVolume(percent / 100.0);
+        return;
+    }
+
+    AudioCmd cmd = { AudioCmdType::VOLUME, {}, percent };
+    audioSendCmd(cmd, 0);
 }
 
 bool audioBtIsConnected()

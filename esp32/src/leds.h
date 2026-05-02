@@ -13,7 +13,7 @@ void ledPreInitHardware();
 void ledInit();
 
 // Sterowanie taskiem (safe do wywołania z dowolnego kontekstu RTOS)
-void ledSuspendTask(); // LED_OFF + vTaskSuspend(ledTaskHandle)
+void ledSuspendTask(); // vTaskSuspend(ledTaskHandle), bez zmiany aktualnego trybu
 void ledResumeTask();  // vTaskResume(ledTaskHandle)
 
 // Operacje FastLED bez FreeRTOS (dla handleWakeFromDeepSleep / enterDeepSleep)

@@ -20,6 +20,7 @@
 #include <SD.h>
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
+#include <esp_system.h>
 
 #include "persistent_log.h"
 
@@ -54,6 +55,24 @@
 // BT startuje ~5s wcześniej. JBL bootuje w tle równolegle z BT.
 // Jeśli figurka stoi na padzie - plik gotowy do odtwarzania od razu po BT connect.
 //
+
+static const char *resetReasonName(esp_reset_reason_t reason)
+{
+    switch (reason)
+    {
+    case ESP_RST_POWERON: return "POWERON";
+    case ESP_RST_EXT: return "EXT";
+    case ESP_RST_SW: return "SW";
+    case ESP_RST_PANIC: return "PANIC";
+    case ESP_RST_INT_WDT: return "INT_WDT";
+    case ESP_RST_TASK_WDT: return "TASK_WDT";
+    case ESP_RST_WDT: return "WDT";
+    case ESP_RST_DEEPSLEEP: return "DEEPSLEEP";
+    case ESP_RST_BROWNOUT: return "BROWNOUT";
+    case ESP_RST_SDIO: return "SDIO";
+    default: return "UNKNOWN";
+    }
+}
 
 void setup()
 {
@@ -92,6 +111,11 @@ void setup()
 
     plogInit();
     plogMark("BOOT");
+    {
+        esp_reset_reason_t reason = esp_reset_reason();
+        PLOGF("[BOOT] reset_reason=%d(%s) wake_cause=%d",
+              (int)reason, resetReasonName(reason), (int)esp_sleep_get_wakeup_cause());
+    }
 
     // Sprawdź flagę sync PRZED inicjalizacją BT
     bool syncPending = SD.exists("/data/sync_pending");
@@ -302,6 +326,7 @@ void loop()
 
     loopStep = 5;
     handleButtons();
+    volumeTick();
     loopStep = 6;
     vTaskDelay(pdMS_TO_TICKS(5)); // yield — pętla nie może głodzić IDLE1
 
