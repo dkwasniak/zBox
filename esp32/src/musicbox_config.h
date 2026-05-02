@@ -37,6 +37,7 @@
 #define BT_SPEAKER_NAME "JBL GO 2"
 
 #define LONG_PRESS_MS 2000
+#define EMERGENCY_SLEEP_MS 10000
 #define DEBOUNCE_MS 50
 #define NFC_READ_INTERVAL 1000 // było 300 - szybsza detekcja tagu
 #define NFC_ERROR_THRESHOLD 10

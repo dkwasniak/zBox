@@ -177,6 +177,8 @@ void loop()
     esp_task_wdt_reset();
     static volatile uint8_t loopStep = 0;
 
+    audioPollBtConnection();
+
     loopStep = 1;
     if (trackEndedFlag) {
         trackEndedFlag = false;

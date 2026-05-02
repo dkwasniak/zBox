@@ -23,6 +23,7 @@ enum LedMode
     LED_IDLE,
     LED_PLAYING,
     LED_VOLUME,
+    LED_SLEEP_READY,
     LED_SYNC_WIFI,
     LED_SYNC_PROGRESS,
     LED_DIAGNOSTIC
@@ -95,11 +96,31 @@ void ledClear()
     FastLED.show();
 }
 
+// Gradient: ciemny teal (0,15,35) → szmaragd (0,130,50) → jasna limonka (50,210,10)
+static CRGB wakeColor(int i, int total)
+{
+    if (total <= 1) return CRGB(50, 210, 10);
+    int t = (i * 255) / (total - 1); // 0..255
+    uint8_t r, g, b;
+    if (t < 128) {
+        uint8_t u = (uint8_t)(t * 2);
+        r =        ((uint16_t)u * 0)            / 255;
+        g = 15  + ((uint16_t)u * (130 - 15))   / 255;
+        b = 35  + ((uint16_t)u * (50 - 35))    / 255; // 35→50
+    } else {
+        uint8_t u = (uint8_t)((t - 128) * 2);
+        r =        ((uint16_t)u * 50)           / 255;
+        g = 130 + ((uint16_t)u * (210 - 130))  / 255;
+        b = 50  - ((uint16_t)u * 40)            / 255;
+    }
+    return CRGB(r, g, b);
+}
+
 void ledSetWakeProgress(int lit)
 {
     for (int i = 0; i < LED_COUNT; i++)
     {
-        leds[i] = (i < lit) ? CRGB(80, 40, 0) : CRGB::Black; // ciepłe pomarańczowe
+        leds[i] = (i < lit) ? wakeColor(i, LED_COUNT) : CRGB::Black;
     }
     FastLED.show();
 }
@@ -168,6 +189,13 @@ void ledShowVolume(int volumePercent)
     }
     FastLED.show();
     ledVolumeShowTime = millis();
+}
+
+void ledSetSleepReady()
+{
+    ledMode = LED_SLEEP_READY;
+    ledAnimStep = 0;
+    ledLastUpdate = millis();
 }
 
 void ledSetSyncWifi()
@@ -383,6 +411,14 @@ static void ledTaskFunc(void *param)
             FastLED.show();
             break;
         }
+        case LED_SLEEP_READY:
+        {
+            ledAnimStep = !ledAnimStep;
+            CRGB color = ledAnimStep ? CRGB(140, 0, 0) : CRGB::Black;
+            fill_solid(leds, LED_COUNT, color);
+            FastLED.show();
+            break;
+        }
         case LED_DIAGNOSTIC:
         {
             ledAnimStep = (ledAnimStep + 1) % (LED_COUNT * 2);
@@ -412,6 +448,8 @@ static void ledTaskFunc(void *param)
             delayMs = 80;
         else if (ledMode == LED_SYNC_WIFI)
             delayMs = 400;
+        else if (ledMode == LED_SLEEP_READY)
+            delayMs = 200;
         else if (ledMode == LED_DIAGNOSTIC)
             delayMs = 90;
         vTaskDelay(pdMS_TO_TICKS(delayMs));

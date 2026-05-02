@@ -9,4 +9,5 @@ bool audioIsReady();
 void audioDeleteTaskForSleep();
 void audioSetBtVolumePercent(int percent);
 bool audioBtIsConnected();
+void audioPollBtConnection();
 uint32_t audioGetTaskHWM();

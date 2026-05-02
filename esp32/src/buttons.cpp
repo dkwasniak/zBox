@@ -18,6 +18,7 @@ void handleButtons()
 {
     static bool bothABHandled = false;
     static bool bothCDHandled = false;
+    static bool cSleepReadyShown = false;
     unsigned long now = millis();
 
     // Odczyt aktualnego surowego stanu
@@ -101,13 +102,23 @@ void handleButtons()
         }
     }
 
-    // Długie BTN_C (bez BTN_D) -> deep sleep
+    // Bardzo długie BTN_C (bez BTN_D) -> awaryjny deep sleep.
+    // Normalny deep sleep dla BTN_C odpalamy dopiero po puszczeniu, żeby
+    // przytrzymanie mogło dojść do progu emergency.
     if (down[2] && !down[3] && buttons[2].pressStart > 0 &&
-        now - buttons[2].pressStart >= LONG_PRESS_MS && !buttons[2].longHandled)
+        now - buttons[2].pressStart >= EMERGENCY_SLEEP_MS && !buttons[2].longHandled)
     {
         buttons[2].longHandled = true;
-        LOGLN("\n>>> DEEP SLEEP");
-        enterDeepSleep();
+        LOGLN("\n>>> EMERGENCY DEEP SLEEP");
+        enterEmergencyDeepSleep();
+    }
+
+    if (down[2] && !down[3] && buttons[2].pressStart > 0 &&
+        now - buttons[2].pressStart >= LONG_PRESS_MS && !cSleepReadyShown)
+    {
+        cSleepReadyShown = true;
+        LOGLN("[SLEEP] Release BTN_C now for normal deep sleep; keep holding for emergency");
+        ledSetSleepReady();
     }
 
     // Długie BTN_A (sam) -> sprawdź baterię: animacja LED
@@ -129,9 +140,18 @@ void handleButtons()
         Button &b = buttons[i];
         if (!down[i] && b.pressed)
         {
+            if (i == 2 && b.pressStart > 0 && !b.longHandled && !down[3] &&
+                now - b.pressStart >= LONG_PRESS_MS)
+            {
+                b.longHandled = true;
+                LOGLN("\n>>> DEEP SLEEP");
+                enterDeepSleep();
+            }
             b.pressed = false;
             b.pressStart = 0;
             b.longHandled = false;
+            if (i == 2)
+                cSleepReadyShown = false;
         }
     }
     // Flaga combo resetuje się gdy którykolwiek z C/D zostanie puszczony

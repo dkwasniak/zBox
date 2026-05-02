@@ -55,6 +55,36 @@ void enterDeepSleep()
     esp_deep_sleep_start();
 }
 
+void enterEmergencyDeepSleep()
+{
+    LOGLN("[SLEEP] Emergency deep sleep");
+
+    pinMode(JBL_POWER, OUTPUT);
+    digitalWrite(JBL_POWER, LOW);
+    pinMode(JBL_STATUS, INPUT);
+
+    int maxVal = 0;
+    for (int i = 0; i < 5; i++)
+    {
+        int v = analogRead(JBL_STATUS);
+        if (v > maxVal)
+            maxVal = v;
+        delayMicroseconds(200);
+    }
+
+    if (maxVal > JBL_STATUS_THRESHOLD)
+    {
+        digitalWrite(JBL_POWER, HIGH);
+        delay(JBL_POWER_PRESS_MS);
+        digitalWrite(JBL_POWER, LOW);
+        delay(50);
+    }
+
+    Serial.flush();
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
+    esp_deep_sleep_start();
+}
+
 // Wybudzanie z deep sleep wymaga przytrzymania BTN_D przez LONG_PRESS_MS.
 // ESP32 ext0 wybudza się natychmiast po wykryciu LOW, więc "hold-to-wake"
 // musi być zaimplementowane w software: tu odpytujemy przycisk i wracamy

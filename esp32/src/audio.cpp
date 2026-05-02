@@ -39,6 +39,7 @@ static MP3DecoderHelix mp3Decoder;
 static EncodedAudioStream decoderStream(&a2dp, &mp3Decoder);
 static QueueHandle_t audioQueue = NULL;
 static TaskHandle_t audioTaskHandle = NULL;
+static bool a2dpStarted = false;
 
 static bool audioSendCmd(const AudioCmd &cmd, TickType_t timeout, bool front = false)
 {
@@ -55,14 +56,8 @@ static bool audioSendCmd(const AudioCmd &cmd, TickType_t timeout, bool front = f
 }
 
 // =============================================================================
-// Private callbacks / task
+// Private task
 // =============================================================================
-
-static void onBtStateChange(esp_a2d_connection_state_t state, void *)
-{
-    g_btConnected = (state == ESP_A2D_CONNECTION_STATE_CONNECTED);
-    PLOGF("[BT] state=%d connected=%d", (int)state, (int)g_btConnected);
-}
 
 static void audioTaskFunc(void *param)
 {
@@ -174,9 +169,10 @@ void audioInit()
     auto cfg = a2dp.defaultConfig(TX_MODE);
     cfg.name = BT_SPEAKER_NAME;
     cfg.auto_reconnect = true;
+    cfg.wait_for_connection = false;
     a2dp.source().set_avrc_rn_events({});  // ESP jest master volume — ignoruj AVRCP notify od JBL
-    a2dp.source().set_on_connection_state_changed(onBtStateChange);  // PRZED begin()
     a2dp.begin(cfg);
+    a2dpStarted = true;
     // Bootstrap: na wypadek race condition gdy callback ominął pierwsze połączenie
     delay(100);
     g_btConnected = a2dp.source().is_connected();
@@ -239,6 +235,19 @@ void audioSetBtVolumePercent(int percent)
 bool audioBtIsConnected()
 {
     return a2dp.source().is_connected();
+}
+
+void audioPollBtConnection()
+{
+    if (!a2dpStarted)
+        return;
+
+    bool connected = a2dp.source().is_connected();
+    if (connected == g_btConnected)
+        return;
+
+    g_btConnected = connected;
+    PLOGF("[BT] polled connected=%d", (int)g_btConnected);
 }
 
 uint32_t audioGetTaskHWM()
