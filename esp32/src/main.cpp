@@ -46,6 +46,8 @@
 #include "musicbox_config.h"
 #include "logging.h"
 #include "helpers.h"
+#include "shared_types.h"
+#include "state.h"
 
 // =============================================================================
 // OBIEKTY
@@ -97,59 +99,25 @@ volatile unsigned long ledVolumeShowTime = 0;
 volatile int ledSyncLit = 0; // ile diod zapalonych w pasku postępu
 #endif
 
-namespace {
-    int nfcErrorCount = 0;
-    unsigned long bootStart = 0;
-    bool bootTimingDone = false;
-}
+static int nfcErrorCount = 0; // prywatny — przeniesie się do nfc_module.cpp
 
 // =============================================================================
 // STAN
 // =============================================================================
 
-volatile char lastNfcUid[30] = {};
-volatile bool isPlaying = false;
-volatile bool trackEndedFlag = false;
-bool nfcReady = false;
-bool sdReady = false;
-int btVolume = BT_VOL_DEFAULT;
-bool btVolumeApplied = false;
-unsigned long btWaitStart = 0;
-bool jblRecoveryDone = false;
-volatile bool g_btConnected = false;
+// Shared globals zdefiniowane w state.cpp (extern w state.h)
+// Pozostałe zmienne prywatne — przeniosą się do swoich modułów
 
-// --- Buttons (generic, 4x) ---
-struct Button
-{
-    uint8_t pin;
-    const char *name;
-    volatile bool pressed;                // ISR flag, czyszczone w handleButtons po release
-    volatile unsigned long lastInterrupt; // debounce timestamp (ISR)
-    unsigned long pressStart;             // millis() pierwszego naciśnięcia, 0 gdy zwolniony
-    bool longHandled;                     // akcja long-press już wystrzeliła
-};
+int btVolume = BT_VOL_DEFAULT; // → volume.cpp (krok 4)
 
-Button buttons[BTN_COUNT] = {
+Button buttons[BTN_COUNT] = {  // → buttons_isr.cpp (krok 8)
     {BTN_A, "A", false, 0, 0, false},
     {BTN_B, "B", false, 0, 0, false},
     {BTN_C, "C(VOL-)", false, 0, 0, false},
     {BTN_D, "D(VOL+)", false, 0, 0, false},
 };
 
-std::map<String, String> figurineMap;    // nfc_uid → filename
-std::map<String, String> systemSoundMap; // name → /data/system/filename
-unsigned long lastActivityMs = 0;        // idle timeout: czas ostatniej aktywności
-
-// Deferred playback - plik gotowy do odtwarzania po połączeniu BT
-String pendingPlaybackPath;
-String pendingPlaybackUid;
-
-// NFC events queue (nfc task → main loop)
-struct NfcEvent
-{
-    bool tagPresent;
-    char uid[30];
-};
+// NFC events queue (nfc task → main loop) — → nfc_module.cpp (krok 7)
 QueueHandle_t nfcQueue = NULL;
 
 // Audio task
