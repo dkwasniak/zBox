@@ -45,41 +45,7 @@
 #include "sd_storage.h"
 #include "audio.h"
 #include "nfc_module.h"
-
-// =============================================================================
-// OBIEKTY
-// =============================================================================
-
-// =============================================================================
-// STAN
-// =============================================================================
-
-// Shared globals zdefiniowane w state.cpp (extern w state.h)
-// Pozostałe zmienne prywatne — przeniosą się do swoich modułów
-
-Button buttons[BTN_COUNT] = {  // → buttons_isr.cpp (krok 8)
-    {BTN_A, "A", false, 0, 0, false},
-    {BTN_B, "B", false, 0, 0, false},
-    {BTN_C, "C(VOL-)", false, 0, 0, false},
-    {BTN_D, "D(VOL+)", false, 0, 0, false},
-};
-
-// =============================================================================
-// ISR
-// =============================================================================
-
-// Jedna wspólna ISR dla wszystkich przycisków, parametryzowana przez wskaźnik
-// na strukturę Button (attachInterruptArg).
-void IRAM_ATTR btnISR(void *arg)
-{
-    Button *b = (Button *)arg;
-    unsigned long now = millis();
-    if (now - b->lastInterrupt > DEBOUNCE_MS)
-    {
-        b->pressed = true;
-        b->lastInterrupt = now;
-    }
-}
+#include "buttons_isr.h"
 
 // LED — moduł w leds.h/leds.cpp
 
@@ -1010,12 +976,7 @@ void setup()
     ledInit(); // uruchamia task + wyświetla dim niebieski
 
     // GPIO - natychmiast
-    for (int i = 0; i < BTN_COUNT; i++)
-    {
-        pinMode(buttons[i].pin, INPUT_PULLUP);
-        attachInterruptArg(digitalPinToInterrupt(buttons[i].pin),
-                           btnISR, &buttons[i], FALLING);
-    }
+    buttonsInit();
 
     pinMode(JBL_POWER, OUTPUT);
     digitalWrite(JBL_POWER, LOW);
