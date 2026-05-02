@@ -1,17 +1,13 @@
 #include "volume.h"
 #include <Preferences.h>
-#include "AudioTools/Communication/A2DPStream.h"
 #include "musicbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"
+#include "audio.h"
 
 static int btVolume = BT_VOL_DEFAULT;
 static Preferences preferences;
-
-// Temporary: a2dp still lives in main.cpp until step 6 (audio module).
-// Will be replaced by audioSetBtVolumePercent(btVolume) after that step.
-extern A2DPStream a2dp;
 
 static void saveBtVolume()
 {
@@ -39,7 +35,7 @@ void applyBtVolume()
         return;
     }
     lastApply = now;
-    a2dp.setVolume(btVolume / 100.0);
+    audioSetBtVolumePercent(btVolume);
     LOG("[VOL] Applied: %d%%\n", btVolume);
 }
 
