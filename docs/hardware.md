@@ -63,7 +63,7 @@ Software SPI, żeby nie kolidować z HW SPI karty SD (która zajmuje 18/19/23).
 | GND   | GND   | |
 | SCK   | GPIO22 | |
 | MISO  | GPIO21 | |
-| MOSI  | GPIO12 | Strapping pin - musi być LOW przy boot |
+| MOSI  | GPIO0 |  |
 | SS    | GPIO5  | |
 
 PN532 musi być w trybie **SPI** (przełączniki SEL0/SEL1 na module).
