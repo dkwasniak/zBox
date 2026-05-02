@@ -17,28 +17,16 @@
  */
 
 #include <Arduino.h>
-#include <ArduinoJson.h>
-#include <SPI.h>
 #include <SD.h>
-#include <map>
-#include <set>
-
-// WiFi (tylko do sync - nie inicjalizowane jednocześnie z BT)
-#include <WiFi.h>
-#include <WiFiClient.h>
-#include <WiFiManager.h>
-#include <esp_wifi.h>
-#include <esp_bt.h>
+#include <esp_sleep.h>
 #include <esp_task_wdt.h>
 
 #include "persistent_log.h"
 
 #include "musicbox_config.h"
 #include "logging.h"
-#include "helpers.h"
 #include "shared_types.h"
 #include "state.h"
-#include "battery.h"
 #include "leds.h"
 #include "jbl.h"
 #include "volume.h"
