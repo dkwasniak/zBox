@@ -12,11 +12,55 @@
 #include <set>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <WiFiServer.h>
 #include <WiFiManager.h>
 #include <esp_wifi.h>
 #include <esp_bt.h>
+#include <stdarg.h>
 
 static String syncServerIP;
+static WiFiServer syncTelnetServer(DIAG_TELNET_PORT);
+static WiFiClient syncTelnetClient;
+
+static void syncTelnetBanner()
+{
+    if (!syncTelnetClient || !syncTelnetClient.connected())
+        return;
+    syncTelnetClient.println();
+    syncTelnetClient.println("=== MusicBox Sync Mode ===");
+    syncTelnetClient.printf("IP: %s\r\n", WiFi.localIP().toString().c_str());
+    syncTelnetClient.printf("Server: %s:%d\r\n", syncServerIP.c_str(), SERVER_PORT);
+    syncTelnetClient.println("Streaming sync progress...");
+    syncTelnetClient.println();
+}
+
+static void syncTelnetPoll()
+{
+    if (!syncTelnetClient || !syncTelnetClient.connected())
+    {
+        WiFiClient incoming = syncTelnetServer.accept();
+        if (incoming)
+        {
+            syncTelnetClient.stop();
+            syncTelnetClient = incoming;
+            syncTelnetClient.setNoDelay(true);
+            syncTelnetBanner();
+        }
+    }
+}
+
+static void syncLogf(const char *fmt, ...)
+{
+    char line[224];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+
+    Serial.println(line);
+    if (syncTelnetClient && syncTelnetClient.connected())
+        syncTelnetClient.println(line);
+}
 
 static void loadSyncMeta(std::map<String, uint32_t> &meta)
 {
@@ -41,6 +85,7 @@ static void saveSyncMeta(const std::map<String, uint32_t> &meta)
 
 static bool ensureHttpConnected(WiFiClient& client, const String& ip)
 {
+    syncTelnetPoll();
     if (client.connected()) return true;
     if (!client.connect(ip.c_str(), SERVER_PORT)) return false;
     client.setNoDelay(true);
@@ -67,7 +112,7 @@ static String httpGet(WiFiClient &client, const String &path)
 {
     if (!ensureHttpConnected(client, syncServerIP))
     {
-        LOG("[SYNC] Reconnect failed for GET %s\n", path.c_str());
+        syncLogf("[SYNC] Reconnect failed for GET %s", path.c_str());
         return "";
     }
 
@@ -77,9 +122,10 @@ static String httpGet(WiFiClient &client, const String &path)
     unsigned long start = millis();
     while (client.connected() && !client.available())
     {
+        syncTelnetPoll();
         if (millis() - start > HTTP_TIMEOUT)
         {
-            LOGLN("[SYNC] Timeout waiting for response");
+            syncLogf("[SYNC] Timeout waiting for response");
             client.stop();
             return "";
         }
@@ -89,7 +135,7 @@ static String httpGet(WiFiClient &client, const String &path)
     int contentLength = -1;
     if (!readHttpHeaders(client, contentLength))
     {
-        LOG("[SYNC] HTTP error on GET %s\n", path.c_str());
+        syncLogf("[SYNC] HTTP error on GET %s", path.c_str());
         client.stop();
         return "";
     }
@@ -115,6 +161,7 @@ static String httpGet(WiFiClient &client, const String &path)
             else
             {
                 if (millis() - lastData > HTTP_TIMEOUT) break;
+                syncTelnetPoll();
                 delay(1);
             }
         }
@@ -130,11 +177,11 @@ static String httpGet(WiFiClient &client, const String &path)
 static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &sdPath,
                       uint32_t totalExpectedBytes, uint32_t &syncBytesDownloaded, uint32_t &lastLedUpdate)
 {
-    LOG("[SYNC] Download: %s\n", sdPath.c_str());
+    syncLogf("[SYNC] Download: %s", sdPath.c_str());
 
     if (!ensureHttpConnected(client, syncServerIP))
     {
-        LOGLN("[SYNC] Reconnect failed");
+        syncLogf("[SYNC] Reconnect failed");
         return false;
     }
 
@@ -143,9 +190,10 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
                   urlPath.c_str(), syncServerIP.c_str());
     while (client.connected() && !client.available())
     {
+        syncTelnetPoll();
         if (millis() - dlStart > HTTP_TIMEOUT)
         {
-            LOGLN("[SYNC] Timeout waiting for response");
+            syncLogf("[SYNC] Timeout waiting for response");
             client.stop();
             return false;
         }
@@ -155,16 +203,16 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
     int contentLength = -1;
     if (!readHttpHeaders(client, contentLength))
     {
-        LOG("[SYNC] HTTP error downloading %s\n", sdPath.c_str());
+        syncLogf("[SYNC] HTTP error downloading %s", sdPath.c_str());
         client.stop();
         return false;
     }
 
-    LOG("[SYNC] Size: %d bytes\n", contentLength);
+    syncLogf("[SYNC] Size: %d bytes", contentLength);
 
     if (SD.exists(sdPath)) SD.remove(sdPath);
     File f = SD.open(sdPath, FILE_WRITE);
-    if (!f) { LOG("[SYNC] Cannot create %s\n", sdPath.c_str()); client.stop(); return false; }
+    if (!f) { syncLogf("[SYNC] Cannot create %s", sdPath.c_str()); client.stop(); return false; }
 
     static uint8_t buf[DOWNLOAD_BUF_SIZE];
     int bufPos = 0;
@@ -184,6 +232,7 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
 
     while (client.connected() || client.available())
     {
+        syncTelnetPoll();
         int available = client.available();
         if (available > 0)
         {
@@ -227,16 +276,16 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
             {
                 lastLoggedKB = currentKB;
                 if (contentLength > 0)
-                    LOG("[SYNC] %d / %d KB\n", currentKB, contentLength / 1024);
+                    syncLogf("[SYNC] %d / %d KB", currentKB, contentLength / 1024);
                 else
-                    LOG("[SYNC] %d KB\n", currentKB);
+                    syncLogf("[SYNC] %d KB", currentKB);
             }
         }
         else
         {
             if (millis() - lastDataMs > HTTP_TIMEOUT)
             {
-                LOG("[SYNC] Data timeout after %d bytes\n", totalWritten);
+                syncLogf("[SYNC] Data timeout after %d bytes", totalWritten);
                 break;
             }
             zeroAvailCount++;
@@ -251,7 +300,7 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
 
     if (contentLength > 0 && totalWritten != contentLength)
     {
-        LOG("[SYNC] Size mismatch: got %d, expected %d\n", totalWritten, contentLength);
+        syncLogf("[SYNC] Size mismatch: got %d, expected %d", totalWritten, contentLength);
         SD.remove(sdPath);
         client.stop();
         return false;
@@ -259,11 +308,11 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
 
     unsigned long dlMs = millis() - dlStart;
     uint32_t kbs = dlMs > 0 ? (uint32_t)((uint64_t)totalWritten * 1000 / dlMs / 1024) : 0;
-    LOG("[SYNC] avail stats: zero=%lu nonzero=%lu min=%lu max=%lu maxGap=%lu ms\n",
+    syncLogf("[SYNC] avail stats: zero=%lu nonzero=%lu min=%lu max=%lu maxGap=%lu ms",
         zeroAvailCount, nonZeroAvailCount, minAvail == UINT32_MAX ? 0 : minAvail, maxAvail, maxGapMs);
-    LOG("[SYNC] Timing: read=%lums write=%lums wait=%lums total=%lums\n",
+    syncLogf("[SYNC] Timing: read=%lums write=%lums wait=%lums total=%lums",
         timeReading, timeWriting, timeWaiting, dlMs);
-    LOG("[SYNC] OK: %d bytes in %lu ms (%lu KB/s)\n", totalWritten, dlMs, kbs);
+    syncLogf("[SYNC] OK: %d bytes in %lu ms (%lu KB/s)", totalWritten, dlMs, kbs);
     return totalWritten > 0;
 }
 
@@ -286,7 +335,7 @@ static void syncCleanDir(const String &dirPath, std::set<String> &expected)
             if (expected.find(name) == expected.end())
             {
                 String fullPath = dirPath + "/" + name;
-                LOG("[SYNC] Removing: %s\n", fullPath.c_str());
+                syncLogf("[SYNC] Removing: %s", fullPath.c_str());
                 SD.remove(fullPath);
             }
         }
@@ -297,12 +346,13 @@ static void syncCleanDir(const String &dirPath, std::set<String> &expected)
 
 static bool performSync()
 {
-    LOGLN("\n[SYNC] Fetching manifest...");
+    syncLogf("");
+    syncLogf("[SYNC] Fetching manifest...");
 
     WiFiClient client;
     if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
     {
-        LOG("[SYNC] Connection failed: %s:%d\n", syncServerIP.c_str(), SERVER_PORT);
+        syncLogf("[SYNC] Connection failed: %s:%d", syncServerIP.c_str(), SERVER_PORT);
         return false;
     }
     client.setNoDelay(true);
@@ -311,7 +361,7 @@ static bool performSync()
     String payload = httpGet(client, "/api/sync");
     if (payload.isEmpty())
     {
-        LOGLN("[SYNC] Failed to fetch manifest");
+        syncLogf("[SYNC] Failed to fetch manifest");
         client.stop();
         return false;
     }
@@ -320,7 +370,7 @@ static bool performSync()
     DeserializationError err = deserializeJson(doc, payload);
     if (err)
     {
-        LOG("[SYNC] JSON error: %s\n", err.c_str());
+        syncLogf("[SYNC] JSON error: %s", err.c_str());
         client.stop();
         return false;
     }
@@ -328,7 +378,7 @@ static bool performSync()
     JsonArray figurines = doc["figurines"].as<JsonArray>();
     JsonArray tracks = doc["tracks"].as<JsonArray>();
 
-    LOG("[SYNC] Manifest: %d figurines, %d tracks\n",
+    syncLogf("[SYNC] Manifest: %d figurines, %d tracks",
                   figurines.size(), tracks.size());
 
     std::map<String, uint32_t> localMtime;
@@ -356,7 +406,7 @@ static bool performSync()
             totalExpectedBytes += t["size"].as<uint32_t>();
     }
 
-    LOGLN("[SYNC] Checking music files...");
+    syncLogf("[SYNC] Checking music files...");
     int downloaded = 0, skipped = 0, failed = 0;
     uint32_t syncBytesDownloaded = 0;
     uint32_t lastLedUpdate = 0;
@@ -386,7 +436,7 @@ static bool performSync()
         {
             if (attempt > 0)
             {
-                LOG("[SYNC] Retry %d/3 for %s\n", attempt + 1, filename.c_str());
+                syncLogf("[SYNC] Retry %d/3 for %s", attempt + 1, filename.c_str());
                 delay(1000);
                 if (!client.connected())
                     client.connect(syncServerIP.c_str(), SERVER_PORT);
@@ -398,7 +448,6 @@ static bool performSync()
         {
             downloaded++;
             localMtime[filename] = remoteMtime;
-            saveSyncMeta(localMtime);
         }
         else
         {
@@ -408,10 +457,10 @@ static bool performSync()
 
     if (totalExpectedBytes > 0)
         ledSetSyncProgress(totalExpectedBytes, totalExpectedBytes);
-    LOG("[SYNC] Music: %d new, %d existing, %d failed\n", downloaded, skipped, failed);
+    syncLogf("[SYNC] Music: %d new, %d existing, %d failed", downloaded, skipped, failed);
 
     // Usuń nieaktualne pliki
-    LOGLN("[SYNC] Cleaning obsolete files...");
+    syncLogf("[SYNC] Cleaning obsolete files...");
     syncCleanDir("/music", expectedMusic);
 
     // Usuń z localMtime pliki których nie ma już w expectedMusic
@@ -425,7 +474,7 @@ static bool performSync()
     saveSyncMeta(localMtime);
 
     // Dźwięki systemowe
-    LOGLN("[SYNC] Checking system sounds...");
+    syncLogf("[SYNC] Checking system sounds...");
     JsonArray systemSounds = doc["system_sounds"].as<JsonArray>();
     if (!SD.exists("/data/system"))
         SD.mkdir("/data/system");
@@ -446,23 +495,23 @@ static bool performSync()
         {
             String urlPath = "/api/stream/file/" + urlEncode(filename);
             syncDownloadFile(client, urlPath, sdPath, 0, dummy1, dummy2);
-            LOG("[SYNC] Sound '%s': downloaded\n", name.c_str());
+            syncLogf("[SYNC] Sound '%s': downloaded", name.c_str());
         }
         else
         {
-            LOG("[SYNC] Sound '%s': exists\n", name.c_str());
+            syncLogf("[SYNC] Sound '%s': exists", name.c_str());
         }
     }
 
     if (SD.exists("/data/system_sounds.json"))
         SD.remove("/data/system_sounds.json");
     File sf = SD.open("/data/system_sounds.json", FILE_WRITE);
-    if (sf) { serializeJson(soundsDoc, sf); sf.close(); LOGLN("[SYNC] system_sounds.json saved"); }
+    if (sf) { serializeJson(soundsDoc, sf); sf.close(); syncLogf("[SYNC] system_sounds.json saved"); }
 
     syncCleanDir("/data/system", expectedSounds);
 
     // Wygeneruj mappings.json
-    LOGLN("[SYNC] Generating mappings.json...");
+    syncLogf("[SYNC] Generating mappings.json...");
 
     JsonDocument mappingsDoc;
     JsonObject mFigurines = mappingsDoc["figurines"].to<JsonObject>();
@@ -479,14 +528,14 @@ static bool performSync()
     File mf = SD.open("/data/mappings.json", FILE_WRITE);
     if (!mf)
     {
-        LOGLN("[SYNC] Cannot write mappings.json");
+        syncLogf("[SYNC] Cannot write mappings.json");
         client.stop();
         return false;
     }
 
     serializeJson(mappingsDoc, mf);
     mf.close();
-    LOGLN("[SYNC] mappings.json saved!");
+    syncLogf("[SYNC] mappings.json saved!");
 
     client.stop();
     return failed == 0;
@@ -500,14 +549,16 @@ static void clearSyncFlag()
 
 void runSyncMode()
 {
-    LOGLN("\n=== MusicBox SYNC MODE ===\n");
+    syncLogf("");
+    syncLogf("=== MusicBox SYNC MODE ===");
+    syncLogf("");
     ledSetSyncWifi();
 
     // Wyłącz BT kontroler żeby zwolnić radio dla WiFi (koegzystencja BT/WiFi)
     esp_bt_controller_disable();
     esp_bt_controller_deinit();
     esp_bt_mem_release(ESP_BT_MODE_BTDM);
-    LOGLN("[SYNC] BT controller released");
+    syncLogf("[SYNC] BT controller released");
 
     WiFiManager wm;
     wm.setConfigPortalTimeout(180);
@@ -515,7 +566,7 @@ void runSyncMode()
 
     if (!wm.autoConnect("MusicBox-Setup"))
     {
-        LOGLN("[SYNC] WiFi not connected!");
+        syncLogf("[SYNC] WiFi not connected!");
         ledFlashResult(false);
         clearSyncFlag();
         delay(3000);
@@ -523,18 +574,24 @@ void runSyncMode()
     }
 
     LOG("[SYNC] WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    syncServerIP = SERVER_HOST;
+    syncTelnetServer.begin();
+    syncTelnetServer.setNoDelay(true);
+    syncLogf("[SYNC] Telnet server listening on %s:%d",
+             WiFi.localIP().toString().c_str(), DIAG_TELNET_PORT);
+    syncLogf("[SYNC] Connect with: nc %s %d",
+             WiFi.localIP().toString().c_str(), DIAG_TELNET_PORT);
     esp_err_t psResult = esp_wifi_set_ps(WIFI_PS_NONE);
-    LOG("[SYNC] esp_wifi_set_ps(NONE) -> %d\n", psResult);
+    syncLogf("[SYNC] esp_wifi_set_ps(NONE) -> %d", psResult);
 
     wifi_ps_type_t psMode;
     esp_wifi_get_ps(&psMode);
-    LOG("[SYNC] Verified PS mode: %d (0=NONE, 1=MIN, 2=MAX)\n", psMode);
+    syncLogf("[SYNC] Verified PS mode: %d (0=NONE, 1=MIN, 2=MAX)", psMode);
 
-    syncServerIP = SERVER_HOST;
     WiFiClient testClient;
     if (!testClient.connect(syncServerIP.c_str(), SERVER_PORT))
     {
-        LOGLN("[SYNC] Cannot reach server!");
+        syncLogf("[SYNC] Cannot reach server!");
         testClient.stop();
         ledFlashResult(false);
         clearSyncFlag();
@@ -542,15 +599,18 @@ void runSyncMode()
         ESP.restart();
     }
     testClient.stop();
-    LOGLN("[SYNC] Server reachable!");
+    syncLogf("[SYNC] Server reachable!");
     ledSetSyncProgress(0, 1);
 
     bool success = performSync();
 
+    if (syncTelnetClient)
+        syncTelnetClient.stop();
+    syncTelnetServer.stop();
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
 
-    LOG("%s\n", success ? "\n[SYNC] COMPLETE!" : "\n[SYNC] FAILED");
+    syncLogf("%s", success ? "[SYNC] COMPLETE!" : "[SYNC] FAILED");
     ledFlashResult(success);
 
     clearSyncFlag();

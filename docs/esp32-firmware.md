@@ -67,6 +67,7 @@ File currentAudioFile;
 | `TEST_AUDIO_MODE` | **`true`** (!) | Omija NFC, loopuje `TEST_SD_FILE` |
 | `TEST_SD_FILE` | `/music/9383471d_babajaga.mp3` | |
 | `LONG_PRESS_MS` | 2000 | Próg długiego przycisku |
+| `EMERGENCY_SLEEP_MS` | 10000 | Próg awaryjnego deep sleep |
 | `DEBOUNCE_MS` | 50 | |
 | `NFC_READ_INTERVAL` | 150 ms | Szybsza niż domyślne 300 |
 | `NO_TAG_THRESHOLD` | 1 | Ile pustych odczytów = stop playback |
@@ -103,11 +104,11 @@ LED init → GPIO + 4x btnISR (attachInterruptArg) → SD → sprawdź sync_pend
        │
   loadBtVolume() z NVS
        │
-  a2dp.begin(cfg) z auto_reconnect=true, name="JBL GO 2"
+  a2dp.begin(cfg) z auto_reconnect=true, wait_for_connection=false, name="JBL GO 2"
        │
   decoderStream.begin()
        │
-  loop() czeka na a2dp.source().is_connected()
+  loop() działa od razu; audioPollBtConnection() odświeża g_btConnected
        │
   Po BT connect: applyBtVolume() + odtwórz pendingPlaybackPath jeśli ustawione
 ```
@@ -125,7 +126,7 @@ Cały czas logowany jako `[T+xxxx] ...` + `[BOOT] Total boot-to-play: N ms`.
 
 ### 3. Sync mode
 
-Trigger: oba przyciski przytrzymane 2s (`handleButtons()` wykrywa `a && b` po `LONG_PRESS_MS`).
+Trigger: BTN_C + BTN_D przytrzymane 2s (`handleButtons()` wykrywa combo po `LONG_PRESS_MS`).
 
 1. `preferences.putBool("sync_pending", true)` w NVS
 2. `ESP.restart()`
@@ -145,15 +146,20 @@ Trigger: oba przyciski przytrzymane 2s (`handleButtons()` wykrywa `a && b` po `L
 
 ### 4. Deep sleep
 
-Trigger: VOL- długi 2s (sam, bez VOL+).
+Trigger: BTN_C przytrzymany 2-10s i puszczony (sam, bez BTN_D). Po osiągnięciu 2s firmware ustawia nieblokujący tryb `LED_SLEEP_READY` (czerwone miganie): to sygnał, że puszczenie BTN_C uruchomi normalny deep sleep, a dalsze trzymanie prowadzi do emergency.
 
-1. `currentAudioFile.close()`
-2. `ledShutdownAnim()` (sekwencja fioletowa)
-3. `jblPowerOff()` - sprawdza ADC, wciska power tylko jeśli JBL jest ON
-4. `esp_sleep_enable_ext0_wakeup(BTN_A, LOW)` - wake na VOL+
-5. `esp_deep_sleep_start()`
+1. `playSystemSoundSync("power_off")` jeśli BT i dźwięk systemowy są dostępne
+2. `audioDeleteTaskForSleep()`
+3. `nfcStopTaskForSleep()` + `nfcPowerDown()`
+4. `esp_bt_controller_disable()`
+5. `ledShutdownAnim()` + `ledPowerOff()`
+6. `jblPowerOff()` - sprawdza ADC, wciska power tylko jeśli JBL jest ON
+7. `esp_sleep_enable_ext0_wakeup(BTN_D, LOW)` - wake na BTN_D
+8. `esp_deep_sleep_start()`
 
-Po wybudzeniu ESP32 startuje normalnie (`setup()` od zera).
+Po wybudzeniu ESP32 wymaga przytrzymania BTN_D przez `LONG_PRESS_MS` (`handleWakeFromDeepSleep()`), potem startuje normalnie (`setup()` od zera).
+
+**Awaryjny deep sleep:** BTN_C trzymany pełne `EMERGENCY_SLEEP_MS` (10s) bez puszczania odpala `enterEmergencyDeepSleep()`. Ta ścieżka omija audio, BT, NFC i animacje LED; próbuje tylko bezpośrednio wyłączyć JBL krótkim pulsem, jeśli ADC statusu wskazuje że głośnik jest ON, a potem natychmiast woła `esp_deep_sleep_start()`.
 
 ## Logika NFC
 
@@ -167,31 +173,35 @@ Po wybudzeniu ESP32 startuje normalnie (`setup()` od zera).
 
 ## Logika przycisków
 
-4 przyciski obsługiwane przez jedną strukturę `Button buttons[BTN_COUNT]` i wspólną ISR `btnISR(void*)` podpiętą przez `attachInterruptArg`. Debounce 50ms w ISR. Obsługa w `handleButtons()` wołane z `loop()`.
+4 przyciski obsługiwane przez jedną strukturę `Button buttons[BTN_COUNT]` i wspólną ISR `btnISR(void*)` podpiętą przez `attachInterruptArg`. Debounce 50ms w ISR. Obsługa w `handleButtons()` wołane z `loop()`. `loop()` startuje bez czekania na BT, więc przyciski działają także przed połączeniem A2DP.
 
 **Mapowanie pinów:**
 
 | Button | Pin | RTC? | Pull-up |
 |--------|-----|------|---------|
-| BTN_A (VOL+) | GPIO32 | ✅ | wewnętrzny |
-| BTN_B (VOL-) | GPIO33 | ✅ | wewnętrzny |
-| BTN_C | GPIO25 | ✅ | wewnętrzny |
-| BTN_D | GPIO26 | ✅ | wewnętrzny |
+| BTN_A | GPIO32 | ✅ | wewnętrzny |
+| BTN_B | GPIO33 | ✅ | wewnętrzny |
+| BTN_C (VOL-) | GPIO25 | ✅ | wewnętrzny |
+| BTN_D (VOL+) | GPIO26 | ✅ | wewnętrzny |
 
 **Akcje:**
 
 | Akcja | Efekt |
 |-------|-------|
-| Krótkie BTN_A (VOL+) | `volumeUp()` - BT vol +5%, zapis NVS, LED overlay 1s |
-| Krótkie BTN_B (VOL-) | `volumeDown()` - BT vol -5%, zapis NVS, LED overlay 1s |
-| Krótkie BTN_C / BTN_D | log do serial, **akcja nieprzypisana (TODO)** |
-| Długie BTN_B 2s (sam) | deep sleep |
-| BTN_A + BTN_B razem 2s | sync mode (sync_pending → restart) |
-| BTN_A w deep sleep | wake (ext0 GPIO32 LOW) |
+| Krótkie BTN_A / BTN_B | log do serial, brak akcji |
+| Krótkie BTN_C (VOL-) | `volumeDown()` - BT vol -5%, zapis NVS, LED overlay |
+| Krótkie BTN_D (VOL+) | `volumeUp()` - BT vol +5%, zapis NVS, LED overlay |
+| Długie BTN_A 2s (sam) | wskaźnik baterii na LED |
+| BTN_C 2s | czerwony flash: puść teraz dla normalnego deep sleep |
+| BTN_C 2-10s i puszczenie | deep sleep |
+| BTN_C 10s trzymane bez puszczania | emergency deep sleep |
+| BTN_A + BTN_B razem 2s | diagnostic mode (diag_pending → restart) |
+| BTN_C + BTN_D razem 2s | sync mode (sync_pending → restart) |
+| BTN_D w deep sleep | wake (ext0 GPIO26 LOW) z potwierdzeniem hold-to-wake |
 
-Głośność stosowana jest **natychmiast na naciśnięcie** (nie na puszczenie), żeby reakcja była szybka. Może się zdarzyć że krótki klik BTN_A i zaraz BTN_B trafi przypadkiem w sync - kod sobie z tym radzi patrząc na `max(buttons[0].pressStart, buttons[1].pressStart)` (oba muszą być jednocześnie wciśnięte przez pełne 2s).
+Głośność stosowana jest **natychmiast na naciśnięcie** (nie na puszczenie), żeby reakcja była szybka. Przed połączeniem BT zmienia się lokalna wartość i zapis NVS; AVRCP apply wykona się po wykryciu connect. Combo C+D wymaga, żeby oba przyciski były jednocześnie wciśnięte przez pełne 2s.
 
-**Deep sleep wake tylko przez BTN_A.** ESP32 classic nie wspiera oficjalnie `ESP_EXT1_WAKEUP_ANY_LOW`, a przyciski są w konfiguracji pull-up→GND. BTN_C/D/długie_BTN_B wymagają że urządzenie jest awake - nie wybudzają z deep sleep. Jeśli chcesz wake na dowolnym z 4, trzeba zmienić okablowanie na pull-down→VCC + `ext1` z `ANY_HIGH`.
+**Deep sleep wake tylko przez BTN_D.** ESP32 classic nie wspiera oficjalnie `ESP_EXT1_WAKEUP_ANY_LOW`, a przyciski są w konfiguracji pull-up→GND. Pozostałe przyciski wymagają że urządzenie jest awake - nie wybudzają z deep sleep. Jeśli chcesz wake na dowolnym z 4, trzeba zmienić okablowanie na pull-down→VCC + `ext1` z `ANY_HIGH`.
 
 **Struktura `Button`:**
 ```cpp
@@ -205,7 +215,7 @@ struct Button {
 };
 ```
 
-Dodanie nowej akcji dla BTN_C/BTN_D: edytuj switch w `handleButtons()` (case 2/3) lub dopisz warunek długiego przycisku analogicznie do BTN_B → deep sleep.
+Dodanie nowej akcji dla BTN_A/BTN_B: edytuj switch w `handleButtons()` (case 0/1) lub dopisz warunek długiego przycisku analogicznie do BTN_A/BTN_C.
 
 ## Logika głośności (BT AVRCP)
 
@@ -215,7 +225,7 @@ a2dp.setVolume(btVolume / 100.0);   // float 0.0-1.0
 
 Przechowywanie: `Preferences` (NVS), namespace `musicbox`, key `bt_volume` (int 0-100). Domyślnie 50, zakres 0-100, krok 5.
 
-**Flaga `btVolumeApplied`:** przy starcie `false`. Po pierwszym wykryciu `a2dp.source().is_connected()` → `applyBtVolume()` + deferred playback. Jeśli BT się rozłączy (`is_connected()` wraca na false), flaga resetuje się → przy kolejnym connect znowu apply.
+**Flaga `btVolumeApplied`:** przy starcie `false`. `audioPollBtConnection()` w `loop()` odświeża `g_btConnected` przez `a2dp.source().is_connected()`. Po pierwszym wykryciu connect → `applyBtVolume()` + deferred playback. Jeśli BT się rozłączy (`is_connected()` wraca na false), flaga resetuje się → przy kolejnym connect znowu apply.
 
 ## Logika JBL power
 
@@ -359,6 +369,6 @@ Pre-scripts w `platformio.ini`:
 
 8. **PCM5102A i I2S** - fizycznie na PCB, firmware w ogóle nie inicjalizuje I2S. Jeśli kiedykolwiek chcesz wrócić do toru I2S zamiast BT, trzeba napisać drugi tor audio (np. `I2SStream` z arduino-audio-tools) - obecny `A2DPStream` jest wyłączną ścieżką.
 
-9. **BTN_C / BTN_D bez akcji** - przyciski są w pełni okablowane na poziomie firmware (pinMode, ISR, debounce, timing long-press), ale krótkie naciśnięcie tylko loguje `[BTN] Short press: C/D (no action)`. Do przypisania akcji: zmień `case 2:`/`case 3:` w `handleButtons()` (main.cpp). Długi press dla C/D też nie ma akcji - dopisać analogicznie do BTN_B → deep sleep.
+9. **BTN_A / BTN_B bez krótkiej akcji użytkowej** - przyciski są w pełni okablowane na poziomie firmware (pinMode, ISR, debounce, timing long-press), ale krótkie naciśnięcie tylko loguje `[BTN] Short press: A/B (no action)`. Do przypisania akcji: zmień `case 0:`/`case 1:` w `handleButtons()` (`buttons.cpp`).
 
 10. **PCB header J7 dalej 4-pinowy** - obecny custom PCB ma pin header dla 2 przycisków + 2x GND. Na 4 fizyczne przyciski potrzebna nowa rewizja PCB z 5- lub 6-pin headerem (4 sygnały + GND), plus ścieżki z GPIO25/26 do nowego headera. Tymczasowo można podłączyć BTN_C/D przewodami bezpośrednio do listew L/P Lolin D32 Pro.

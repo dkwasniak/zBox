@@ -47,6 +47,16 @@ def test_deep_sleep_trigger(reset_esp, button_tester):
     reset_esp.wait_for_line(r"\[SLEEP\]", timeout_s=5)
 
 
+def test_deep_sleep_long_press_c_does_not_change_volume(reset_esp, button_tester):
+    """Długie BTN_C nie może wcześniej odpalić krótkiego [VOL]."""
+    _boot_ready(reset_esp)
+    reset_esp.flush()
+    button_tester.press("C", 2500)
+    reset_esp.wait_for_line(r">>> DEEP SLEEP", timeout_s=5)
+    lines = list(reset_esp._buf)
+    assert not any("[VOL]" in line for line in lines), f"Nieoczekiwany log [VOL]: {lines}"
+
+
 def test_sync_mode_trigger(reset_esp, button_tester):
     """Combo BTN_C+BTN_D (2500ms) → Sync flag + restart + SYNC MODE."""
     _boot_ready(reset_esp)
@@ -58,3 +68,14 @@ def test_sync_mode_trigger(reset_esp, button_tester):
     reset_esp.wait_for_line(r"=== MusicBox ===", timeout_s=10)
     # 3. Tryb sync
     reset_esp.wait_for_line(r"MusicBox SYNC MODE", timeout_s=10)
+
+
+def test_long_press_b_switches_mode_without_click(reset_esp, button_tester):
+    """Długie BTN_B przełącza tryb bez emitowania clicków BTN_B."""
+    _boot_ready(reset_esp)
+    reset_esp.flush()
+    button_tester.press("B", 2500)
+    reset_esp.wait_for_line(r"\[MODE\] Toggle requested by long press B", timeout_s=5)
+    reset_esp.wait_for_line(r"\[MODE\] Saved mode=", timeout_s=5)
+    lines = list(reset_esp._buf)
+    assert not any("B single click" in line for line in lines), f"Nieoczekiwany click BTN_B: {lines}"

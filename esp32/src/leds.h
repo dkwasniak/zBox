@@ -30,6 +30,7 @@ void ledSetWaitBt();
 void ledSetIdle();
 void ledSetPlaying();
 void ledShowVolume(int volumePercent);
+void ledShowModeChange(bool musicMode);
 void ledSetSleepReady();
 void ledSetSyncWifi();
 void ledSetSyncProgress(int current, int total);
@@ -54,6 +55,7 @@ inline void ledSetWaitBt() {}
 inline void ledSetIdle() {}
 inline void ledSetPlaying() {}
 inline void ledShowVolume(int) {}
+inline void ledShowModeChange(bool) {}
 inline void ledSetSleepReady() {}
 inline void ledSetSyncWifi() {}
 inline void ledSetSyncProgress(int, int) {}

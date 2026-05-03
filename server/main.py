@@ -18,11 +18,20 @@ Path("./data").mkdir(parents=True, exist_ok=True)
 # Inicjalizacja bazy danych
 create_tables()
 
-SYSTEM_SOUND_NAMES = ["vol_up", "vol_down", "power_on", "power_off", "sync", "ready"]
+SYSTEM_SOUND_NAMES = [
+    "vol_up",
+    "vol_down",
+    "power_on",
+    "power_off",
+    "sync",
+    "ready",
+    "nfc_mode",
+    "music_mode",
+]
 
 
 def seed_system_sounds():
-    """Tworzy 6 slotów dźwięków systemowych jeśli nie istnieją."""
+    """Tworzy sloty dźwięków systemowych jeśli nie istnieją."""
     db = SessionLocal()
     try:
         for name in SYSTEM_SOUND_NAMES:

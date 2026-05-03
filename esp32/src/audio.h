@@ -4,7 +4,10 @@
 void audioInit();
 void audioStartFile(const char *path);
 void audioStop();
+void audioPause();
+void audioResume();
 bool audioIsRunning();
+bool audioIsPaused();
 bool audioIsReady();
 void audioDeleteTaskForSleep();
 void audioSetBtVolumePercent(int percent);

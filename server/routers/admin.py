@@ -27,7 +27,16 @@ router = APIRouter(prefix="/admin", tags=["Panel administracyjny"])
 MUSIC_DIR = Path("./music")
 SYSTEM_SOUNDS_DIR = Path("./music/system")
 
-VALID_SYSTEM_SOUNDS = {"vol_up", "vol_down", "power_on", "power_off", "sync", "ready"}
+VALID_SYSTEM_SOUNDS = {
+    "vol_up",
+    "vol_down",
+    "power_on",
+    "power_off",
+    "sync",
+    "ready",
+    "nfc_mode",
+    "music_mode",
+}
 
 # Globalny dict do trzymania progressu zadań YouTube
 youtube_tasks: Dict[str, dict] = {}

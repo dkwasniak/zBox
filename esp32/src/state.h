@@ -16,6 +16,7 @@ extern std::map<String, String> figurineMap;
 extern std::map<String, String> systemSoundMap;
 extern volatile char lastNfcUid[30];
 extern volatile bool isPlaying;      // kanoniczne źródło prawdy
+extern volatile bool isPaused;
 extern volatile bool trackEndedFlag;
 extern String pendingPlaybackPath;
 extern String pendingPlaybackUid;

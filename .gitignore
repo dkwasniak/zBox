@@ -35,6 +35,7 @@ esp32/.pio/
 esp32/.vscode/
 esp32/.clang_complete
 esp32/.gcc-flags.json
+esp32/managed_components/espressif__esp_secure_cert_mgr/tools/
 
 # =============================================================================
 # Docker volumes (dane runtime)

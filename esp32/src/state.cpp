@@ -11,6 +11,7 @@ std::map<String, String> figurineMap;
 std::map<String, String> systemSoundMap;
 volatile char lastNfcUid[30] = {};
 volatile bool isPlaying = false;
+volatile bool isPaused = false;
 volatile bool trackEndedFlag = false;
 String pendingPlaybackPath;
 String pendingPlaybackUid;

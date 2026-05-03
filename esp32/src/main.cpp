@@ -101,10 +101,11 @@ void setup()
         loadMappings();
         loadSystemSounds();
     }
+    playbackInit();
     LOG("[T+%4lu] Mappings loaded (%d)\n", millis() - bootStart, figurineMap.size());
     ledSetBootProgress(2); // Mappings done
 
-    if (nfcReady && sdReady)
+    if (playbackIsNfcMode() && nfcReady && sdReady)
     {
         char preUidBuf[30] = {};
         if (nfcPrescan(preUidBuf, sizeof(preUidBuf)))
@@ -182,10 +183,7 @@ void loop()
     loopStep = 1;
     if (trackEndedFlag) {
         trackEndedFlag = false;
-        // NIE czyść lastNfcUid — karta może wciąż leżeć.
-        // UID zostaje ustawiony → NFC nie odtworzy ponownie (strcmp == 0).
-        // Czyszczenie następuje dopiero przy fizycznym zdjęciu karty.
-        ledSetIdle();
+        playbackHandleTrackEnded();
     }
 
     loopStep = 2;
@@ -203,19 +201,7 @@ void loop()
         btVolumeApplied = true;
         applyBtVolume();
         ledSetIdle();
-
-        if (!pendingPlaybackPath.isEmpty() && sdReady)
-        {
-            audioStartFile(pendingPlaybackPath.c_str());
-            strlcpy((char*)lastNfcUid, pendingPlaybackUid.c_str(), sizeof(lastNfcUid));
-            isPlaying = true;
-            ledSetPlaying();
-            LOG("[T+%4lu] >>> PLAYBACK START: %s\n", millis() - bootStart, pendingPlaybackPath.c_str());
-            LOG("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
-            bootTimingDone = true;
-            pendingPlaybackPath = "";
-            pendingPlaybackUid = "";
-        }
+        playbackHandleBtConnected();
     }
 
     loopStep = 4;
@@ -246,16 +232,11 @@ void loop()
         {
             if (nfcEvt.tagPresent)
             {
-                if (strcmp(nfcEvt.uid, (const char*)lastNfcUid) != 0)
-                    startPlayback(String(nfcEvt.uid));
+                playbackHandleNfcTagPresent(nfcEvt.uid);
             }
             else
             {
-                pendingPlaybackPath = "";
-                pendingPlaybackUid = "";
-                lastNfcUid[0] = '\0';  // karta zdjęta → wyczyść, żeby ponowne położenie zadziałało
-                if (isPlaying)
-                    stopPlayback();
+                playbackHandleNfcTagRemoved();
             }
         }
     }

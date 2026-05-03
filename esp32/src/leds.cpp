@@ -199,6 +199,21 @@ void ledShowVolume(int volumePercent)
     ledVolumeShowTime = millis();
 }
 
+void ledShowModeChange(bool musicMode)
+{
+    CRGB color = musicMode ? CRGB(0, 120, 0) : CRGB(0, 0, 120);
+    for (int flash = 0; flash < 2; flash++)
+    {
+        fill_solid(leds, LED_COUNT, color);
+        FastLED.show();
+        delay(140);
+        FastLED.clear();
+        FastLED.show();
+        delay(120);
+    }
+    ledSetIdle();
+}
+
 void ledSetSleepReady()
 {
     ledMode = LED_SLEEP_READY;

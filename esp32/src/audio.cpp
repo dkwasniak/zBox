@@ -13,7 +13,7 @@
 // Private types
 // =============================================================================
 
-enum class AudioCmdType : uint8_t { PLAY, STOP, VOLUME };
+enum class AudioCmdType : uint8_t { PLAY, STOP, PAUSE, RESUME, VOLUME };
 struct AudioCmd {
     AudioCmdType type;
     char path[256];
@@ -153,6 +153,7 @@ static void audioTaskFunc(void *param)
                 if (f)
                 {
                     isPlaying = true;
+                    isPaused = false;
                     ledSetPlaying();
                     PLOGF("[AUDIO] Playing: %s", cmd.path);
                     telSdBytes = telWrittenBytes = telDrops = 0;
@@ -161,6 +162,8 @@ static void audioTaskFunc(void *param)
                 }
                 else
                 {
+                    isPlaying = false;
+                    isPaused = false;
                     LOG("[AUDIO] Open failed: %s\n", cmd.path);
                     a2dp.clear();
                 }
@@ -169,10 +172,32 @@ static void audioTaskFunc(void *param)
             {
                 if (f) f.close();
                 isPlaying = false;
+                isPaused = false;
                 ledSetIdle();
                 PLOGF("[AUDIO] Stopped");
                 telWindows = 6; // wyłącz telemetrię po stopie
                 a2dp.clear();
+            }
+            else if (cmd.type == AudioCmdType::PAUSE)
+            {
+                if (f && isPlaying)
+                {
+                    isPlaying = false;
+                    isPaused = true;
+                    ledSetIdle();
+                    PLOGF("[AUDIO] Paused");
+                    a2dp.clear();
+                }
+            }
+            else if (cmd.type == AudioCmdType::RESUME)
+            {
+                if (f && isPaused)
+                {
+                    isPlaying = true;
+                    isPaused = false;
+                    ledSetPlaying();
+                    PLOGF("[AUDIO] Resumed");
+                }
             }
             else if (cmd.type == AudioCmdType::VOLUME)
             {
@@ -181,7 +206,11 @@ static void audioTaskFunc(void *param)
             }
         }
 
-        if (f && f.available())
+        if (f && isPaused)
+        {
+            vTaskDelay(pdMS_TO_TICKS(10));
+        }
+        else if (f && f.available())
         {
             int n = f.read(audioBuf, AUDIO_BUF_SIZE);
             if (n > 0)
@@ -214,6 +243,7 @@ static void audioTaskFunc(void *param)
         {
             f.close();
             isPlaying = false;
+            isPaused = false;
             trackEndedFlag = true;   // loop() wyczyści lastNfcUid i wywoła ledSetIdle()
             PLOGF("[AUDIO] Track ended heap=%u largest=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
             telWindows = 6;
@@ -268,9 +298,26 @@ void audioStop()
     audioSendCmd(cmd, pdMS_TO_TICKS(100), true);
 }
 
+void audioPause()
+{
+    AudioCmd cmd = { AudioCmdType::PAUSE, {}, 0 };
+    audioSendCmd(cmd, pdMS_TO_TICKS(50), true);
+}
+
+void audioResume()
+{
+    AudioCmd cmd = { AudioCmdType::RESUME, {}, 0 };
+    audioSendCmd(cmd, pdMS_TO_TICKS(50));
+}
+
 bool audioIsRunning()
 {
-    return isPlaying;
+    return isPlaying || isPaused;
+}
+
+bool audioIsPaused()
+{
+    return isPaused;
 }
 
 bool audioIsReady()

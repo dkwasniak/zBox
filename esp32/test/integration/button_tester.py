@@ -36,6 +36,12 @@ class ButtonTester:
         self._send(f"PRESS_COMBO {btns.upper()} {duration_ms}")
         self._ser.timeout = 5
 
+    def double_press(self, btn: str, duration_ms: int = 100, gap_ms: int = 120):
+        """Dwa krótkie kliknięcia tego samego przycisku."""
+        self.press(btn, duration_ms)
+        time.sleep(gap_ms / 1000)
+        self.press(btn, duration_ms)
+
     def release_all(self):
         """Zwolnij wszystkie przyciski (Hi-Z)."""
         self._send("RELEASE ALL")

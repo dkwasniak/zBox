@@ -2,10 +2,10 @@
 #include <Arduino.h>
 
 Button buttons[BTN_COUNT] = {
-    {BTN_A, "A", false, 0, 0, false},
-    {BTN_B, "B", false, 0, 0, false},
-    {BTN_C, "C(VOL-)", false, 0, 0, false},
-    {BTN_D, "D(VOL+)", false, 0, 0, false},
+    {BTN_A, "A", false, 0, 0, false, 0, 0, false},
+    {BTN_B, "B", false, 0, 0, false, 0, 0, false},
+    {BTN_C, "C(VOL-)", false, 0, 0, false, 0, 0, false},
+    {BTN_D, "D(VOL+)", false, 0, 0, false, 0, 0, false},
 };
 
 void IRAM_ATTR btnISR(void *arg)
