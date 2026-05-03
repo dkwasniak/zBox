@@ -39,9 +39,10 @@
 #define LONG_PRESS_MS 2000
 #define EMERGENCY_SLEEP_MS 10000
 #define DEBOUNCE_MS 50
-#define NFC_READ_INTERVAL 1000 // było 300 - szybsza detekcja tagu
+#define NFC_READ_INTERVAL 1000
 #define NFC_ERROR_THRESHOLD 10
 #define NO_TAG_THRESHOLD 2
+#define NFC_TAG_LOST_MS 3000  // wymagany ciągły brak odczytu, zanim uznamy kartę za zdjętą
 #define PN532_WAKEUP_SPI 0x20
 #define PN532_WAKE_SETTLE_MS 5
 #define AUDIO_BUF_SIZE 2048

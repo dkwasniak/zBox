@@ -1,6 +1,8 @@
 #include "state.h"
 
 volatile bool g_btConnected = false;
+volatile bool g_beatDetected = false;
+volatile uint8_t g_audioEnergy = 0;
 bool btVolumeApplied = false;
 unsigned long btWaitStart = 0;
 bool jblRecoveryDone = false;

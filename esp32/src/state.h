@@ -6,6 +6,8 @@
 // Wyłącznie prawdziwie shared globals (czytane/pisane przez wiele modułów)
 
 extern volatile bool g_btConnected;
+extern volatile bool g_beatDetected;
+extern volatile uint8_t g_audioEnergy;  // 0-255, bieżąca energia audio (dla LED)
 extern bool btVolumeApplied;
 extern unsigned long btWaitStart;
 extern bool jblRecoveryDone;

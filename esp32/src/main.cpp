@@ -182,7 +182,9 @@ void loop()
     loopStep = 1;
     if (trackEndedFlag) {
         trackEndedFlag = false;
-        lastNfcUid[0] = '\0';
+        // NIE czyść lastNfcUid — karta może wciąż leżeć.
+        // UID zostaje ustawiony → NFC nie odtworzy ponownie (strcmp == 0).
+        // Czyszczenie następuje dopiero przy fizycznym zdjęciu karty.
         ledSetIdle();
     }
 
@@ -251,6 +253,7 @@ void loop()
             {
                 pendingPlaybackPath = "";
                 pendingPlaybackUid = "";
+                lastNfcUid[0] = '\0';  // karta zdjęta → wyczyść, żeby ponowne położenie zadziałało
                 if (isPlaying)
                     stopPlayback();
             }

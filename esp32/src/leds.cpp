@@ -32,6 +32,11 @@ enum LedMode
 static volatile LedMode ledMode = LED_OFF;
 static volatile unsigned long ledLastUpdate = 0;
 static volatile int ledAnimStep = 0;
+
+// Stan animacji beat (LED_PLAYING)
+static uint8_t beatHue    = 0;   // aktualny odcień tęczy, przesuwa się z każdym beatem
+static uint8_t beatBright = 60;  // jasność: 255 na beat, opada do 60
+static uint8_t beatRot    = 0;   // powolna rotacja tęczy
 static volatile int ledBootStep = -1;
 static volatile unsigned long ledVolumeShowTime = 0;
 static volatile int ledSyncLit = 0;
@@ -172,6 +177,9 @@ void ledSetIdle()
 
 void ledSetPlaying()
 {
+    beatHue    = 0;
+    beatBright = 60;
+    beatRot    = 0;
     ledMode = LED_PLAYING;
     ledAnimStep = 0;
     ledLastUpdate = millis();
@@ -380,25 +388,28 @@ static void ledTaskFunc(void *param)
         }
         case LED_PLAYING:
         {
-            ledAnimStep = (ledAnimStep + 1) % LED_COUNT;
+            // Na beat: błysk do 255 + przeskok koloru
+            if (g_beatDetected)
+            {
+                g_beatDetected = false;
+                beatBright = 255;
+                beatHue += 21;  // ~12 beatów = pełny spektrum
+            }
+
+            // Między beatami: flash po beacie łagodnie opada do bieżącej energii audio.
+            uint8_t target = g_audioEnergy;
+            if (beatBright > target)
+                beatBright = (uint8_t)max((int)target, (int)beatBright - 30);
+            else
+                beatBright = target;
+
+            // Tęczowy pierścień — szybsza rotacja
+            beatRot += 2;
+
             for (int i = 0; i < LED_COUNT; i++)
             {
-                int dist = (i - ledAnimStep + LED_COUNT) % LED_COUNT;
-                switch (dist)
-                {
-                case 0:
-                    leds[i] = CRGB(0, 100, 60);
-                    break;
-                case 1:
-                    leds[i] = CRGB(0, 60, 30);
-                    break;
-                case 2:
-                    leds[i] = CRGB(0, 25, 15);
-                    break;
-                default:
-                    leds[i] = CRGB(0, 8, 5);
-                    break;
-                }
+                uint8_t hue = beatHue + beatRot + (uint8_t)(i * 255 / LED_COUNT);
+                leds[i] = CHSV(hue, 230, beatBright);
             }
             FastLED.show();
             break;

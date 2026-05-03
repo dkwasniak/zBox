@@ -21,6 +21,71 @@ struct AudioCmd {
 };
 
 // =============================================================================
+// Beat detection passthrough
+// =============================================================================
+
+// Wkłada się między dekoder MP3 a A2DPStream.
+// write() dostaje zdekodowane PCM (int16_t), mierzy energię okna,
+// porównuje z lokalną średnią i ustawia g_beatDetected.
+// Overhead: ~90K operacji/s — pomijalny na 240 MHz.
+class BeatTracker : public AudioOutput
+{
+public:
+    void setSink(Print *s) { _sink = s; }
+
+    size_t write(const uint8_t *data, size_t len) override
+    {
+        if (len >= 2) detectBeat(data, len);
+        return _sink ? _sink->write(data, len) : len;
+    }
+
+private:
+    Print *_sink = nullptr;
+
+    static const int HIST = 43;  // ~1 s historii przy typowym rozmiarze ramki
+    uint32_t _hist[HIST] = {};
+    int _hIdx   = 0;
+    int _hCount = 0;
+    unsigned long _lastBeat = 0;
+
+    void detectBeat(const uint8_t *data, size_t len)
+    {
+        const int16_t *s = (const int16_t *)data;
+        int n = (int)(len / 2);
+
+        // Energia okna: mean(sample^2)
+        uint64_t sum = 0;
+        for (int i = 0; i < n; i++) { int32_t v = s[i]; sum += (uint32_t)(v * v); }
+        uint32_t e = (uint32_t)(sum / (uint32_t)n);
+
+        // Aktualizuj historię
+        _hist[_hIdx] = e;
+        _hIdx = (_hIdx + 1) % HIST;
+        if (_hCount < HIST) _hCount++;
+
+        // Lokalna średnia
+        uint64_t avg = 0;
+        for (int i = 0; i < _hCount; i++) avg += _hist[i];
+        avg /= _hCount;
+
+        // Energia → jasność 40-200 (ciągła, oddycha z muzyką)
+        if (avg > 0)
+        {
+            uint32_t ratio = (uint32_t)((uint64_t)e * 120 / avg); // 100 = średnia
+            g_audioEnergy = (uint8_t)(ratio < 40 ? 40 : ratio > 200 ? 200 : ratio);
+        }
+
+        // Beat: energia > 1.2× średnia + cooldown 150 ms
+        unsigned long now = millis();
+        if (avg > 0 && (uint64_t)e > avg + avg / 5 && (now - _lastBeat) > 150)
+        {
+            _lastBeat = now;
+            g_beatDetected = true;
+        }
+    }
+};
+
+// =============================================================================
 // Private objects (static — owned by this module)
 // =============================================================================
 
@@ -36,7 +101,8 @@ struct AudioInfoLogger : public AudioInfoSupport {
 
 static A2DPStream a2dp;
 static MP3DecoderHelix mp3Decoder;
-static EncodedAudioStream decoderStream(&a2dp, &mp3Decoder);
+static BeatTracker beatTracker;
+static EncodedAudioStream decoderStream(&beatTracker, &mp3Decoder);
 static QueueHandle_t audioQueue = NULL;
 static TaskHandle_t audioTaskHandle = NULL;
 static bool a2dpStarted = false;
@@ -177,6 +243,7 @@ void audioInit()
     delay(100);
     g_btConnected = a2dp.source().is_connected();
     LOG("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
+    beatTracker.setSink(&a2dp);
     decoderStream.begin();
     mp3Decoder.addNotifyAudioChange(audioInfoLogger);
 

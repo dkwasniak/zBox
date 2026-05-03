@@ -265,6 +265,7 @@ static void nfcTaskFunc(void *param)
 {
     int localNoTagCount = 0;
     char localLastUid[30] = {};
+    unsigned long lastTagSeenMs = 0;
 
     for (;;)
     {
@@ -282,6 +283,7 @@ static void nfcTaskFunc(void *param)
         if (!uid.isEmpty())
         {
             localNoTagCount = 0;
+            lastTagSeenMs = millis();
             if (strcmp(uid.c_str(), localLastUid) != 0)
             {
                 strlcpy(localLastUid, uid.c_str(), sizeof(localLastUid));
@@ -292,12 +294,22 @@ static void nfcTaskFunc(void *param)
         }
         else
         {
-            if (++localNoTagCount >= NO_TAG_THRESHOLD && localLastUid[0] != '\0')
+            if (localLastUid[0] != '\0')
             {
-                localLastUid[0] = '\0';
+                localNoTagCount++;
+                if (localNoTagCount >= NO_TAG_THRESHOLD &&
+                    millis() - lastTagSeenMs >= NFC_TAG_LOST_MS)
+                {
+                    localLastUid[0] = '\0';
+                    localNoTagCount = 0;
+                    lastTagSeenMs = 0;
+                    NfcEvent evt = {false, {}};
+                    xQueueSend(nfcQueue, &evt, 0);
+                }
+            }
+            else
+            {
                 localNoTagCount = 0;
-                NfcEvent evt = {false, {}};
-                xQueueSend(nfcQueue, &evt, 0);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(NFC_READ_INTERVAL));
