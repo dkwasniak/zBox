@@ -13,4 +13,5 @@ void audioDeleteTaskForSleep();
 void audioSetBtVolumePercent(int percent);
 bool audioBtIsConnected();
 void audioPollBtConnection();
+bool audioRestartDiscovery();
 uint32_t audioGetTaskHWM();

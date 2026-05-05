@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include <SD.h>
+#include <esp_idf_version.h>
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
@@ -20,9 +21,23 @@
 #include "playback.h"
 #include "sleep.h"
 #include "buttons.h"
-#include "sync_mode.h"
 #include "diagnostics.h"
 #include "diagnostic_mode.h"
+
+static void configureLoopWatchdog()
+{
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000,
+        .idle_core_mask = 0,
+        .trigger_panic = false
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+#else
+    esp_task_wdt_init(15, false);
+#endif
+    esp_task_wdt_add(NULL);
+}
 
 void setup()
 {
@@ -47,6 +62,10 @@ void setup()
     {
         LOGLN("WARNING: No SD card");
     }
+    else
+    {
+        ledLoadConfigFromSd();
+    }
     LOG("[T+%4lu] SD %s\n", millis() - bootStart, sdReady ? "OK" : "FAIL");
     ledSetBootProgress(0); // SD done
 
@@ -58,20 +77,12 @@ void setup()
               (int)reason, resetReasonName(reason), (int)esp_sleep_get_wakeup_cause());
     }
 
-    bool syncPending = SD.exists("/data/sync_pending");
     bool diagPending = SD.exists(DIAG_PENDING_PATH);
     LOG("[BOOT] diag_pending flag: %d\n", diagPending);
-    LOG("[BOOT] sync_pending flag: %d\n", syncPending);
 
     if (diagPending)
     {
         runDiagnosticMode();
-        return;
-    }
-
-    if (syncPending)
-    {
-        runSyncMode();
         return;
     }
 
@@ -157,13 +168,7 @@ void setup()
 
     nfcStartTask();
 
-    esp_task_wdt_config_t wdt_cfg = {
-        .timeout_ms = 15000,
-        .idle_core_mask = 0,
-        .trigger_panic = false  // reset, nie panic — żeby RTC recovery zadziałało
-    };
-    esp_task_wdt_reconfigure(&wdt_cfg);
-    esp_task_wdt_add(NULL);  // NULL = current task (loop task)
+    configureLoopWatchdog();  // NULL = current task (loop task)
 
     LOG("[T+%4lu] BT A2DP initiated\n", millis() - bootStart);
     LOG("[BOOT] Loop task core: %d\n", xPortGetCoreID());
@@ -177,6 +182,7 @@ void loop()
 {
     esp_task_wdt_reset();
     static volatile uint8_t loopStep = 0;
+    static bool btDiscoveryFallbackDone = false;
 
     audioPollBtConnection();
 
@@ -199,6 +205,7 @@ void loop()
     {
         LOG("[T+%4lu] BT connected!\n", millis() - bootStart);
         btVolumeApplied = true;
+        btDiscoveryFallbackDone = false;
         applyBtVolume();
         ledSetIdle();
         playbackHandleBtConnected();
@@ -217,6 +224,17 @@ void loop()
         delay(JBL_POWER_PRESS_MS);   // 500ms, jednorazowe; ISR-y działają
         digitalWrite(JBL_POWER, LOW);
         LOG("[T+%4lu] JBL power pulse (recovery)\n", millis() - bootStart);
+    }
+    else if (!g_btConnected && !btDiscoveryFallbackDone && btWaitStart > 0 &&
+             millis() - btWaitStart > 15000)
+    {
+        btDiscoveryFallbackDone = true;
+        PLOGF("[BT] Initial reconnect timed out - restarting with discovery");
+        if (audioRestartDiscovery())
+        {
+            btWaitStart = millis();
+            ledSetWaitBt();
+        }
     }
 
     loopStep = 5;

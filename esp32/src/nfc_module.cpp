@@ -199,7 +199,7 @@ static bool nfcInitSequence()
     if (ver)
     {
         rtcNfcPowerDownSent = false;
-        PLOGF("[NFC] fw=0x%08lX rawWake=%d", ver, (int)rawWakeAttempted);
+        PLOGF("[NFC] fw=0x%08lX rawWake=%d", (unsigned long)ver, (int)rawWakeAttempted);
         nfc.SAMConfig();
         nfc.setPassiveActivationRetries(0x10);
         return true;

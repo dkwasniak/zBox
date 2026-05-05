@@ -70,6 +70,7 @@
 
 // Diagnostic mode
 #define DIAG_PENDING_PATH "/data/diag_pending"
-#define DIAG_AP_NAME "MusicBox-Diag"
-#define DIAG_TELNET_PORT 23
+#define DIAG_AP_NAME "zBox-Diag"
+#define DIAG_HTTP_PORT 80
+#define DIAG_OTA_PORT 3232
 #define DIAG_LOG_INTERVAL_MS 5000

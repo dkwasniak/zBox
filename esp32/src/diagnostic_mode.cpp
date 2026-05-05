@@ -8,31 +8,47 @@
 #include "audio.h"
 #include "nfc_module.h"
 #include <Arduino.h>
+#include <ArduinoJson.h>
+#include <ArduinoOTA.h>
 #include <SD.h>
 #include <WiFi.h>
-#include <WiFiServer.h>
-#include <WiFiClient.h>
 #include <WiFiManager.h>
+#include <WebServer.h>
+#include <esp_idf_version.h>
 #include <esp_bt.h>
-#include <esp_heap_caps.h>
 #include <esp_task_wdt.h>
 #include <stdarg.h>
 #include <string.h>
 
-static WiFiServer diagServer(DIAG_TELNET_PORT);
-static WiFiClient diagClient;
+static WebServer httpServer(DIAG_HTTP_PORT);
+static File uploadFile;
+static String uploadTempPath;
+static String uploadFinalPath;
+static String uploadError;
+static uint32_t uploadSourceMtime = 0;
+static String diagHostname;
+static String diagDeviceId;
+
+static const char *DIAG_SYNC_META_PATH = "/data/diag_sync_meta.json";
 
 static void diagLogf(const char *fmt, ...)
 {
-    char line[192];
+    char line[224];
     va_list args;
     va_start(args, fmt);
     vsnprintf(line, sizeof(line), fmt, args);
     va_end(args);
 
     Serial.println(line);
-    if (diagClient && diagClient.connected())
-        diagClient.println(line);
+}
+
+static String buildDeviceId()
+{
+    uint64_t mac = ESP.getEfuseMac();
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%04X%08lX",
+             (uint16_t)(mac >> 32), (unsigned long)(mac & 0xFFFFFFFFULL));
+    return String(buf);
 }
 
 static void clearDiagnosticFlag()
@@ -48,13 +64,109 @@ static void disableBtForDiagnostic()
     esp_bt_mem_release(ESP_BT_MODE_BTDM);
 }
 
-static void sendBanner()
+static void configureDiagnosticWatchdog()
 {
-    diagClient.println();
-    diagClient.println("=== MusicBox Diagnostic Mode ===");
-    diagClient.printf("IP: %s\r\n", WiFi.localIP().toString().c_str());
-    diagClient.println("Commands: exit, quit");
-    diagClient.println();
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000,
+        .idle_core_mask = 0,
+        .trigger_panic = false
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+#else
+    esp_task_wdt_init(15, false);
+#endif
+    esp_task_wdt_add(NULL);
+}
+
+static void disableDiagnosticWatchdog()
+{
+    esp_task_wdt_delete(NULL);
+}
+
+static bool isPathSafe(const String &path)
+{
+    return path.startsWith("/") && path.indexOf("..") < 0 &&
+           path.indexOf('\\') < 0 && path.indexOf("//") < 0;
+}
+
+static bool isManagedPath(const String &path)
+{
+    if (!isPathSafe(path))
+        return false;
+    return path == "/data/mappings.json" ||
+           path == "/data/system_sounds.json" ||
+           path == "/data/led_config.json" ||
+           path.startsWith("/music/") ||
+           path.startsWith("/data/system/");
+}
+
+static bool isUploadPath(const String &path)
+{
+    if (!isManagedPath(path))
+        return false;
+    return path.startsWith("/music/") || path.startsWith("/data/system/");
+}
+
+static void ensureDataDirs()
+{
+    if (!SD.exists("/music"))
+        SD.mkdir("/music");
+    if (!SD.exists("/data"))
+        SD.mkdir("/data");
+    if (!SD.exists("/data/system"))
+        SD.mkdir("/data/system");
+}
+
+static void loadDiagSyncMeta(JsonDocument &doc)
+{
+    doc.clear();
+    File f = SD.open(DIAG_SYNC_META_PATH, FILE_READ);
+    if (!f)
+        return;
+    deserializeJson(doc, f);
+    f.close();
+    if (!doc.is<JsonObject>())
+        doc.to<JsonObject>();
+}
+
+static void saveDiagSyncMeta(JsonDocument &doc)
+{
+    if (SD.exists(DIAG_SYNC_META_PATH))
+        SD.remove(DIAG_SYNC_META_PATH);
+    File f = SD.open(DIAG_SYNC_META_PATH, FILE_WRITE);
+    if (!f)
+        return;
+    serializeJson(doc, f);
+    f.close();
+}
+
+static uint64_t getTrackedMtime(const String &path, File &file)
+{
+    JsonDocument doc;
+    loadDiagSyncMeta(doc);
+    JsonObject root = doc.as<JsonObject>();
+    if (root[path].is<uint64_t>())
+        return root[path].as<uint64_t>();
+    return (uint64_t)file.getLastWrite();
+}
+
+static void setTrackedMtime(const String &path, uint32_t mtime)
+{
+    JsonDocument doc;
+    loadDiagSyncMeta(doc);
+    JsonObject root = doc.as<JsonObject>();
+    root[path] = mtime;
+    saveDiagSyncMeta(doc);
+}
+
+static void removeTrackedMtime(const String &path)
+{
+    JsonDocument doc;
+    loadDiagSyncMeta(doc);
+    JsonObject root = doc.as<JsonObject>();
+    root.remove(path);
+    saveDiagSyncMeta(doc);
 }
 
 static void sendDiagnosticSnapshot()
@@ -66,37 +178,10 @@ static void sendDiagnosticSnapshot()
              WiFi.localIP().toString().c_str(), WiFi.RSSI());
     diagLogf("[DIAG] battery adc_pin_v=%.3f battery_v=%.3f bars=%d color=%s charging_known=false",
              bat.adcPinVoltage, bat.batteryVoltage, bat.bars, bat.color);
-    diagLogf("[DIAG] heap free=%u min=%u largest=%u",
-             ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
+    diagLogf("[DIAG] heap free=%u min=%u largest=%u sketch_free=%u",
+             ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreeSketchSpace());
     diagLogf("[DIAG] hwm loop=%u led=%u audio=%u nfc=%u",
              uxTaskGetStackHighWaterMark(NULL), ledGetTaskHWM(), audioGetTaskHWM(), nfcGetTaskHWM());
-}
-
-static bool handleClientInput()
-{
-    static char cmd[32] = {};
-    static size_t len = 0;
-
-    while (diagClient && diagClient.connected() && diagClient.available())
-    {
-        char c = (char)diagClient.read();
-        if (c == '\r')
-            continue;
-        if (c == '\n')
-        {
-            cmd[len] = '\0';
-            len = 0;
-            if (strcmp(cmd, "exit") == 0 || strcmp(cmd, "quit") == 0)
-                return true;
-            if (cmd[0])
-                diagClient.printf("Unknown command: %s\r\n", cmd);
-            cmd[0] = '\0';
-            continue;
-        }
-        if (len < sizeof(cmd) - 1)
-            cmd[len++] = c;
-    }
-    return false;
 }
 
 static bool handleButtonExit()
@@ -132,26 +217,410 @@ static void exitDiagnosticMode(const char *reason)
     ESP.restart();
 }
 
+static void sendJson(int code, JsonDocument &doc)
+{
+    String body;
+    serializeJson(doc, body);
+    httpServer.send(code, "application/json", body);
+}
+
+static void sendError(int code, const char *message)
+{
+    JsonDocument doc;
+    doc["error"] = message;
+    sendJson(code, doc);
+}
+
+static bool requireSdReady()
+{
+    if (sdReady)
+        return true;
+    sendError(503, "sd not ready");
+    return false;
+}
+
+static void appendFileInfo(JsonArray files, const String &path, File &file)
+{
+    JsonObject obj = files.add<JsonObject>();
+    obj["path"] = path;
+    obj["size"] = (uint64_t)file.size();
+    obj["mtime"] = getTrackedMtime(path, file);
+}
+
+static void appendDirectoryFiles(JsonArray files, const char *dirPath)
+{
+    File dir = SD.open(dirPath);
+    if (!dir || !dir.isDirectory())
+        return;
+
+    while (true)
+    {
+        File entry = dir.openNextFile();
+        if (!entry)
+            break;
+        if (!entry.isDirectory())
+        {
+            String path = entry.name();
+            if (!path.startsWith("/"))
+                path = String(dirPath) + "/" + path;
+            appendFileInfo(files, path, entry);
+        }
+        entry.close();
+    }
+    dir.close();
+}
+
+static void populateStatus(JsonDocument &doc)
+{
+    BatteryReading bat = readBatteryReading();
+    doc["device_id"] = diagDeviceId;
+    doc["hostname"] = diagHostname;
+    doc["mode"] = "diagnostic";
+    doc["ip"] = WiFi.localIP().toString();
+    doc["rssi"] = WiFi.RSSI();
+    doc["sd_ok"] = sdReady;
+    doc["battery_v"] = bat.batteryVoltage;
+    doc["battery_bars"] = bat.bars;
+    if (sdReady)
+    {
+        doc["sd_total"] = (uint64_t)SD.totalBytes();
+        doc["sd_used"] = (uint64_t)SD.usedBytes();
+    }
+}
+
+static void handleStatus()
+{
+    JsonDocument doc;
+    populateStatus(doc);
+    sendJson(200, doc);
+}
+
+static void handleFiles()
+{
+    if (!requireSdReady())
+        return;
+
+    JsonDocument doc;
+    populateStatus(doc);
+    JsonArray files = doc["files"].to<JsonArray>();
+    appendDirectoryFiles(files, "/music");
+    appendDirectoryFiles(files, "/data/system");
+
+    const char *singles[] = {
+        "/data/mappings.json",
+        "/data/system_sounds.json",
+        "/data/led_config.json",
+    };
+    for (const char *path : singles)
+    {
+        File f = SD.open(path, FILE_READ);
+        if (f && !f.isDirectory())
+            appendFileInfo(files, path, f);
+        if (f)
+            f.close();
+    }
+    sendJson(200, doc);
+}
+
+static bool writeJsonFile(const char *path, const String &body)
+{
+    JsonDocument doc;
+    if (deserializeJson(doc, body) != DeserializationError::Ok)
+        return false;
+
+    String tempPath = String(path) + ".tmp";
+    if (SD.exists(tempPath))
+        SD.remove(tempPath);
+
+    File f = SD.open(tempPath, FILE_WRITE);
+    if (!f)
+        return false;
+    size_t written = serializeJson(doc, f);
+    f.close();
+    if (written == 0)
+    {
+        SD.remove(tempPath);
+        return false;
+    }
+
+    if (SD.exists(path))
+        SD.remove(path);
+    if (!SD.rename(tempPath, path))
+    {
+        SD.remove(tempPath);
+        return false;
+    }
+    return true;
+}
+
+static void handleWriteMappings()
+{
+    if (!requireSdReady())
+        return;
+
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+    if (!writeJsonFile("/data/mappings.json", body))
+    {
+        sendError(400, "invalid mappings json");
+        return;
+    }
+    JsonDocument doc;
+    doc["saved"] = "/data/mappings.json";
+    sendJson(200, doc);
+}
+
+static void handleWriteSystemSounds()
+{
+    if (!requireSdReady())
+        return;
+
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+    if (!writeJsonFile("/data/system_sounds.json", body))
+    {
+        sendError(400, "invalid system_sounds json");
+        return;
+    }
+    JsonDocument doc;
+    doc["saved"] = "/data/system_sounds.json";
+    sendJson(200, doc);
+}
+
+static void handleGetLedConfig()
+{
+    if (!requireSdReady())
+        return;
+    httpServer.send(200, "application/json", ledGetConfigJson());
+}
+
+static void handleSaveLedConfig()
+{
+    if (!requireSdReady())
+        return;
+
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+    if (!ledSaveConfigJson(body))
+    {
+        sendError(400, "invalid led config");
+        return;
+    }
+    JsonDocument doc;
+    doc["saved"] = "/data/led_config.json";
+    sendJson(200, doc);
+}
+
+static void handleDeleteFile()
+{
+    if (!requireSdReady())
+        return;
+
+    String path = httpServer.arg("path");
+    if (!isManagedPath(path))
+    {
+        sendError(400, "invalid path");
+        return;
+    }
+    if (SD.exists(path) && !SD.remove(path))
+    {
+        sendError(500, "delete failed");
+        return;
+    }
+    removeTrackedMtime(path);
+
+    JsonDocument doc;
+    doc["deleted"] = path;
+    sendJson(200, doc);
+}
+
+static void handleRestart()
+{
+    JsonDocument doc;
+    doc["restart"] = true;
+    sendJson(200, doc);
+    delay(200);
+    exitDiagnosticMode("http restart");
+}
+
+static void handleUploadResult()
+{
+    if (!uploadError.isEmpty())
+    {
+        sendError(400, uploadError.c_str());
+        uploadError = "";
+        return;
+    }
+
+    JsonDocument doc;
+    doc["uploaded"] = uploadFinalPath;
+    sendJson(200, doc);
+}
+
+static void handleUploadStream()
+{
+    HTTPUpload &upload = httpServer.upload();
+
+    if (upload.status == UPLOAD_FILE_START)
+    {
+        esp_task_wdt_reset();
+        uploadError = "";
+        uploadTempPath = "";
+        uploadFinalPath = "";
+        uploadSourceMtime = 0;
+        uploadFile = File();
+
+        if (!sdReady)
+        {
+            uploadError = "sd not ready";
+            return;
+        }
+
+        uploadFinalPath = httpServer.arg("path");
+        if (!isUploadPath(uploadFinalPath))
+        {
+            uploadError = "invalid upload path";
+            return;
+        }
+        uploadSourceMtime = (uint32_t)httpServer.arg("mtime").toInt();
+
+        uploadTempPath = uploadFinalPath + ".tmp";
+        if (SD.exists(uploadTempPath))
+            SD.remove(uploadTempPath);
+        uploadFile = SD.open(uploadTempPath, FILE_WRITE);
+        if (!uploadFile)
+            uploadError = "cannot open temp file";
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE)
+    {
+        if (uploadError.isEmpty() && uploadFile)
+        {
+            esp_task_wdt_reset();
+            if (uploadFile.write(upload.buf, upload.currentSize) != upload.currentSize)
+                uploadError = "write failed";
+        }
+    }
+    else if (upload.status == UPLOAD_FILE_END)
+    {
+        esp_task_wdt_reset();
+        if (uploadFile)
+            uploadFile.close();
+        if (uploadError.isEmpty())
+        {
+            if (SD.exists(uploadFinalPath))
+                SD.remove(uploadFinalPath);
+            if (!SD.rename(uploadTempPath, uploadFinalPath))
+            {
+                SD.remove(uploadTempPath);
+                uploadError = "rename failed";
+            }
+            else if (uploadSourceMtime > 0)
+            {
+                setTrackedMtime(uploadFinalPath, uploadSourceMtime);
+            }
+        }
+        else if (uploadTempPath.length())
+        {
+            SD.remove(uploadTempPath);
+        }
+        uploadFile = File();
+    }
+    else if (upload.status == UPLOAD_FILE_ABORTED)
+    {
+        esp_task_wdt_reset();
+        if (uploadFile)
+            uploadFile.close();
+        if (uploadTempPath.length())
+            SD.remove(uploadTempPath);
+        uploadError = "upload aborted";
+        uploadFile = File();
+    }
+}
+
+static void handleNotFound()
+{
+    sendError(404, "not found");
+}
+
+static void setupHttpRoutes()
+{
+    httpServer.on("/diag/status", HTTP_GET, handleStatus);
+    httpServer.on("/diag/files", HTTP_GET, handleFiles);
+    httpServer.on("/diag/upload", HTTP_POST, handleUploadResult, handleUploadStream);
+    httpServer.on("/diag/file", HTTP_DELETE, handleDeleteFile);
+    httpServer.on("/diag/write-mappings", HTTP_POST, handleWriteMappings);
+    httpServer.on("/diag/write-system-sounds", HTTP_POST, handleWriteSystemSounds);
+    httpServer.on("/diag/config", HTTP_GET, handleGetLedConfig);
+    httpServer.on("/diag/config", HTTP_POST, handleSaveLedConfig);
+    httpServer.on("/diag/restart", HTTP_POST, handleRestart);
+    httpServer.onNotFound(handleNotFound);
+    httpServer.begin();
+}
+
+static void setupOta()
+{
+    ArduinoOTA.setHostname(diagHostname.c_str());
+    ArduinoOTA.setPort(DIAG_OTA_PORT);
+    ArduinoOTA.onStart([]() {
+        diagLogf("[OTA] start");
+        ledSetDiagnostic();
+    });
+    ArduinoOTA.onEnd([]() {
+        diagLogf("[OTA] complete");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        esp_task_wdt_reset();  // flash write blokuje pętlę — resetuj WDT przy każdym chunku
+        static unsigned int lastPct = 0;
+        unsigned int pct = total ? (progress * 100U) / total : 0;
+        if (pct >= lastPct + 10 || pct == 100)
+        {
+            lastPct = pct;
+            diagLogf("[OTA] %u%%", pct);
+        }
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        diagLogf("[OTA] error=%u", (unsigned int)error);
+    });
+    ArduinoOTA.begin();
+}
+
 void runDiagnosticMode()
 {
     LOGLN("\n=== MusicBox DIAGNOSTIC MODE ===\n");
     ledSetDiagnostic();
     disableBtForDiagnostic();
+    ensureDataDirs();
 
-    esp_task_wdt_config_t wdt_cfg = {
-        .timeout_ms = 15000,
-        .idle_core_mask = 0,
-        .trigger_panic = false
-    };
-    esp_task_wdt_reconfigure(&wdt_cfg);
-    esp_task_wdt_add(NULL);
+    diagDeviceId = buildDeviceId();
+    diagHostname = String("zbox-") + diagDeviceId.substring(max(0, (int)diagDeviceId.length() - 6));
 
     WiFiManager wm;
     wm.setConfigPortalTimeout(180);
     wm.setConnectTimeout(10);
+    wm.setAPCallback([](WiFiManager *mgr) {
+        (void)mgr;
+        diagLogf("[DIAG] WiFi connect failed - starting config portal SSID=%s ip=%s",
+                 DIAG_AP_NAME, WiFi.softAPIP().toString().c_str());
+    });
+
+    disableDiagnosticWatchdog();
+    diagLogf("[DIAG] Connecting to stored WiFi or starting config portal");
 
     if (!wm.autoConnect(DIAG_AP_NAME))
     {
+        diagLogf("[DIAG] Config portal timed out - returning to normal mode");
         LOGLN("[DIAG] WiFi not connected");
         ledFlashResult(false);
         clearDiagnosticFlag();
@@ -159,33 +628,23 @@ void runDiagnosticMode()
         ESP.restart();
     }
 
-    diagServer.begin();
-    diagServer.setNoDelay(true);
-    LOG("[DIAG] Telnet server listening on %s:%d\n",
-        WiFi.localIP().toString().c_str(), DIAG_TELNET_PORT);
-    LOGLN("[DIAG] Connect with: nc <ip> 23");
+    configureDiagnosticWatchdog();
+    diagLogf("[DIAG] WiFi connected ssid=%s ip=%s",
+             WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
+
+    setupHttpRoutes();
+    setupOta();
+
+    LOG("[DIAG] device=%s ip=%s ota=%d http=%d\n",
+        diagDeviceId.c_str(), WiFi.localIP().toString().c_str(),
+        DIAG_OTA_PORT, DIAG_HTTP_PORT);
 
     unsigned long lastSnapshot = 0;
     for (;;)
     {
         esp_task_wdt_reset();
-
-        if (!diagClient || !diagClient.connected())
-        {
-            WiFiClient incoming = diagServer.accept();
-            if (incoming)
-            {
-                diagClient.stop();
-                diagClient = incoming;
-                diagClient.setNoDelay(true);
-                sendBanner();
-                sendDiagnosticSnapshot();
-                lastSnapshot = millis();
-            }
-        }
-
-        if (handleClientInput())
-            exitDiagnosticMode("telnet");
+        ArduinoOTA.handle();
+        httpServer.handleClient();
 
         if (handleButtonExit())
             exitDiagnosticMode("buttons A+B long");

@@ -2,7 +2,9 @@
 #if ENABLE_LEDS
 
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include <FastLED.h>
+#include <SD.h>
 #include "musicbox_config.h"
 #include "persistent_log.h"
 #include "state.h"  // isPlaying
@@ -14,6 +16,7 @@
 static CRGB leds[LED_COUNT];
 static TaskHandle_t ledTaskHandle = NULL;
 static bool fastLedInitialized = false;
+static const char *LED_CONFIG_PATH = "/data/led_config.json";
 
 enum LedMode
 {
@@ -40,6 +43,80 @@ static uint8_t beatRot    = 0;   // powolna rotacja tęczy
 static volatile int ledBootStep = -1;
 static volatile unsigned long ledVolumeShowTime = 0;
 static volatile int ledSyncLit = 0;
+static LedConfig ledConfig = {
+    .waitBtColor = {0, 0, 80},
+    .idleColor = {0, 80, 0},
+    .playingColor = {0, 140, 180},
+    .volumeColor = {80, 80, 80},
+    .sleepReadyColor = {140, 0, 0},
+    .syncColor = {0, 0, 120},
+    .diagnosticHeadColor = {90, 0, 120},
+    .diagnosticTrailColor = {0, 70, 100},
+    .modeMusicColor = {0, 120, 0},
+    .modeNfcColor = {0, 0, 120},
+    .successColor = {0, 120, 0},
+    .errorColor = {120, 0, 0},
+    .warningColor = {120, 60, 0},
+    .animateWaitBt = true,
+    .animateIdle = true,
+    .animatePlaying = true,
+    .animateSleepReady = true,
+    .animateSync = true,
+    .animateDiagnostic = true,
+};
+
+static CRGB toCRGB(const LedColorConfig &cfg)
+{
+    return CRGB(cfg.r, cfg.g, cfg.b);
+}
+
+static bool parseColor(JsonObject obj, const char *key, LedColorConfig &out)
+{
+    JsonObject c = obj[key].as<JsonObject>();
+    if (!c)
+        return false;
+    out.r = c["r"] | out.r;
+    out.g = c["g"] | out.g;
+    out.b = c["b"] | out.b;
+    return true;
+}
+
+static void writeColor(JsonObject obj, const char *key, const LedColorConfig &cfg)
+{
+    JsonObject c = obj[key].to<JsonObject>();
+    c["r"] = cfg.r;
+    c["g"] = cfg.g;
+    c["b"] = cfg.b;
+}
+
+static bool applyLedConfigDocument(JsonDocument &doc)
+{
+    JsonObject root = doc.as<JsonObject>();
+    if (!root)
+        return false;
+
+    parseColor(root, "wait_bt_color", ledConfig.waitBtColor);
+    parseColor(root, "idle_color", ledConfig.idleColor);
+    parseColor(root, "playing_color", ledConfig.playingColor);
+    parseColor(root, "volume_color", ledConfig.volumeColor);
+    parseColor(root, "sleep_ready_color", ledConfig.sleepReadyColor);
+    parseColor(root, "sync_color", ledConfig.syncColor);
+    parseColor(root, "diagnostic_head_color", ledConfig.diagnosticHeadColor);
+    parseColor(root, "diagnostic_trail_color", ledConfig.diagnosticTrailColor);
+    parseColor(root, "mode_music_color", ledConfig.modeMusicColor);
+    parseColor(root, "mode_nfc_color", ledConfig.modeNfcColor);
+    parseColor(root, "success_color", ledConfig.successColor);
+    parseColor(root, "error_color", ledConfig.errorColor);
+    parseColor(root, "warning_color", ledConfig.warningColor);
+
+    ledConfig.animateWaitBt = root["animate_wait_bt"] | ledConfig.animateWaitBt;
+    ledConfig.animateIdle = root["animate_idle"] | ledConfig.animateIdle;
+    ledConfig.animatePlaying = root["animate_playing"] | ledConfig.animatePlaying;
+    ledConfig.animateSleepReady = root["animate_sleep_ready"] | ledConfig.animateSleepReady;
+    ledConfig.animateSync = root["animate_sync"] | ledConfig.animateSync;
+    ledConfig.animateDiagnostic = root["animate_diagnostic"] | ledConfig.animateDiagnostic;
+    return true;
+}
 
 // =============================================================================
 // Forward declaration
@@ -81,6 +158,76 @@ void ledInit()
 uint32_t ledGetTaskHWM()
 {
     return ledTaskHandle ? uxTaskGetStackHighWaterMark(ledTaskHandle) : 0;
+}
+
+bool ledLoadConfigFromSd()
+{
+    if (!SD.exists(LED_CONFIG_PATH))
+        return false;
+
+    File f = SD.open(LED_CONFIG_PATH, FILE_READ);
+    if (!f)
+        return false;
+
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, f);
+    f.close();
+    if (err)
+    {
+        PLOGF("[LED] Config parse error: %s", err.c_str());
+        return false;
+    }
+    bool ok = applyLedConfigDocument(doc);
+    PLOGF("[LED] Config loaded=%d", (int)ok);
+    return ok;
+}
+
+bool ledSaveConfigJson(const String &json)
+{
+    JsonDocument doc;
+    DeserializationError err = deserializeJson(doc, json);
+    if (err)
+        return false;
+    if (!applyLedConfigDocument(doc))
+        return false;
+
+    if (SD.exists(LED_CONFIG_PATH))
+        SD.remove(LED_CONFIG_PATH);
+    File f = SD.open(LED_CONFIG_PATH, FILE_WRITE);
+    if (!f)
+        return false;
+    size_t written = serializeJson(doc, f);
+    f.close();
+    return written > 0;
+}
+
+String ledGetConfigJson()
+{
+    JsonDocument doc;
+    JsonObject root = doc.to<JsonObject>();
+    writeColor(root, "wait_bt_color", ledConfig.waitBtColor);
+    writeColor(root, "idle_color", ledConfig.idleColor);
+    writeColor(root, "playing_color", ledConfig.playingColor);
+    writeColor(root, "volume_color", ledConfig.volumeColor);
+    writeColor(root, "sleep_ready_color", ledConfig.sleepReadyColor);
+    writeColor(root, "sync_color", ledConfig.syncColor);
+    writeColor(root, "diagnostic_head_color", ledConfig.diagnosticHeadColor);
+    writeColor(root, "diagnostic_trail_color", ledConfig.diagnosticTrailColor);
+    writeColor(root, "mode_music_color", ledConfig.modeMusicColor);
+    writeColor(root, "mode_nfc_color", ledConfig.modeNfcColor);
+    writeColor(root, "success_color", ledConfig.successColor);
+    writeColor(root, "error_color", ledConfig.errorColor);
+    writeColor(root, "warning_color", ledConfig.warningColor);
+    root["animate_wait_bt"] = ledConfig.animateWaitBt;
+    root["animate_idle"] = ledConfig.animateIdle;
+    root["animate_playing"] = ledConfig.animatePlaying;
+    root["animate_sleep_ready"] = ledConfig.animateSleepReady;
+    root["animate_sync"] = ledConfig.animateSync;
+    root["animate_diagnostic"] = ledConfig.animateDiagnostic;
+
+    String out;
+    serializeJson(doc, out);
+    return out;
 }
 
 void ledSuspendTask()
@@ -144,12 +291,12 @@ void ledSetBootProgress(int step)
     // Zakończone kroki świecą na stałe
     for (int i = 0; i < LED_COUNT; i++)
     {
-        leds[i] = (i < step) ? CRGB(0, 0, 80) : CRGB::Black;
+        leds[i] = (i < step) ? toCRGB(ledConfig.waitBtColor) : CRGB::Black;
     }
     // Aktualny krok - 3 szybkie mignięcia
     for (int flash = 0; flash < 3; flash++)
     {
-        leds[step] = CRGB(0, 0, 80);
+        leds[step] = toCRGB(ledConfig.waitBtColor);
         FastLED.show();
         delay(80);
         leds[step] = CRGB::Black;
@@ -157,7 +304,7 @@ void ledSetBootProgress(int step)
         delay(80);
     }
     // Zostaw zapalony po mignięciach
-    leds[step] = CRGB(0, 0, 80);
+    leds[step] = toCRGB(ledConfig.waitBtColor);
     FastLED.show();
 }
 
@@ -193,7 +340,7 @@ void ledShowVolume(int volumePercent)
         lit = 1;
     for (int i = 0; i < LED_COUNT; i++)
     {
-        leds[i] = (i < lit) ? CRGB(80, 80, 80) : CRGB::Black;
+        leds[i] = (i < lit) ? toCRGB(ledConfig.volumeColor) : CRGB::Black;
     }
     FastLED.show();
     ledVolumeShowTime = millis();
@@ -201,7 +348,7 @@ void ledShowVolume(int volumePercent)
 
 void ledShowModeChange(bool musicMode)
 {
-    CRGB color = musicMode ? CRGB(0, 120, 0) : CRGB(0, 0, 120);
+    CRGB color = musicMode ? toCRGB(ledConfig.modeMusicColor) : toCRGB(ledConfig.modeNfcColor);
     for (int flash = 0; flash < 2; flash++)
     {
         fill_solid(leds, LED_COUNT, color);
@@ -245,7 +392,7 @@ void ledSetSyncProgress(int current, int total)
     }
     for (int i = 0; i < LED_COUNT; i++)
     {
-        leds[i] = (i < ledSyncLit) ? CRGB(0, 0, 120) : CRGB(0, 0, 15);
+        leds[i] = (i < ledSyncLit) ? toCRGB(ledConfig.syncColor) : CRGB(0, 0, 15);
     }
     FastLED.show();
 }
@@ -259,7 +406,7 @@ void ledSetDiagnostic()
 
 void ledFlashResult(bool success)
 {
-    CRGB color = success ? CRGB(0, 120, 0) : CRGB(120, 0, 0);
+    CRGB color = success ? toCRGB(ledConfig.successColor) : toCRGB(ledConfig.errorColor);
     for (int flash = 0; flash < 3; flash++)
     {
         fill_solid(leds, LED_COUNT, color);
@@ -275,7 +422,7 @@ void ledFlashWarning()
 {
     for (int flash = 0; flash < 2; flash++)
     {
-        fill_solid(leds, LED_COUNT, CRGB(120, 60, 0));
+        fill_solid(leds, LED_COUNT, toCRGB(ledConfig.warningColor));
         FastLED.show();
         delay(200);
         FastLED.clear();
@@ -385,24 +532,48 @@ static void ledTaskFunc(void *param)
         {
         case LED_WAIT_BT:
         {
-            ledAnimStep = (ledAnimStep + 1) % 256;
-            uint8_t val = cubicwave8(ledAnimStep);
-            uint8_t b = map(val, 0, 255, 5, 80);
-            fill_solid(leds, LED_COUNT, CRGB(0, 0, b));
+            if (ledConfig.animateWaitBt)
+            {
+                ledAnimStep = (ledAnimStep + 1) % 256;
+                uint8_t val = cubicwave8(ledAnimStep);
+                CRGB base = toCRGB(ledConfig.waitBtColor);
+                fill_solid(leds, LED_COUNT, CRGB(map(val, 0, 255, 0, base.r),
+                                                map(val, 0, 255, 0, base.g),
+                                                map(val, 0, 255, 5, base.b)));
+            }
+            else
+            {
+                fill_solid(leds, LED_COUNT, toCRGB(ledConfig.waitBtColor));
+            }
             FastLED.show();
             break;
         }
         case LED_IDLE:
         {
-            ledAnimStep = (ledAnimStep + 1) % 256;
-            uint8_t val = cubicwave8(ledAnimStep);
-            uint8_t g = map(val, 0, 255, 5, 80);
-            fill_solid(leds, LED_COUNT, CRGB(0, g, 0));
+            if (ledConfig.animateIdle)
+            {
+                ledAnimStep = (ledAnimStep + 1) % 256;
+                uint8_t val = cubicwave8(ledAnimStep);
+                CRGB base = toCRGB(ledConfig.idleColor);
+                fill_solid(leds, LED_COUNT, CRGB(map(val, 0, 255, 0, base.r),
+                                                map(val, 0, 255, 5, base.g),
+                                                map(val, 0, 255, 0, base.b)));
+            }
+            else
+            {
+                fill_solid(leds, LED_COUNT, toCRGB(ledConfig.idleColor));
+            }
             FastLED.show();
             break;
         }
         case LED_PLAYING:
         {
+            if (!ledConfig.animatePlaying)
+            {
+                fill_solid(leds, LED_COUNT, toCRGB(ledConfig.playingColor));
+                FastLED.show();
+                break;
+            }
             // Na beat: błysk do 255 + przeskok koloru
             if (g_beatDetected)
             {
@@ -432,7 +603,9 @@ static void ledTaskFunc(void *param)
         case LED_SYNC_WIFI:
         {
             ledAnimStep = !ledAnimStep;
-            CRGB color = ledAnimStep ? CRGB(100, 80, 0) : CRGB::Black;
+            CRGB color = (ledConfig.animateSync && ledAnimStep) ? toCRGB(ledConfig.syncColor) : CRGB::Black;
+            if (!ledConfig.animateSync)
+                color = toCRGB(ledConfig.syncColor);
             fill_solid(leds, LED_COUNT, color);
             FastLED.show();
             break;
@@ -440,26 +613,44 @@ static void ledTaskFunc(void *param)
         case LED_SLEEP_READY:
         {
             ledAnimStep = !ledAnimStep;
-            CRGB color = ledAnimStep ? CRGB(140, 0, 0) : CRGB::Black;
+            CRGB color = (ledConfig.animateSleepReady && ledAnimStep) ? toCRGB(ledConfig.sleepReadyColor) : CRGB::Black;
+            if (!ledConfig.animateSleepReady)
+                color = toCRGB(ledConfig.sleepReadyColor);
             fill_solid(leds, LED_COUNT, color);
             FastLED.show();
             break;
         }
         case LED_DIAGNOSTIC:
         {
-            ledAnimStep = (ledAnimStep + 1) % (LED_COUNT * 2);
-            int head = ledAnimStep % LED_COUNT;
-            uint8_t breath = map(cubicwave8((uint8_t)(ledAnimStep * 8)), 0, 255, 20, 90);
-            for (int i = 0; i < LED_COUNT; i++)
+            if (ledConfig.animateDiagnostic)
             {
-                int dist = abs(i - head);
-                dist = min(dist, LED_COUNT - dist);
-                if (dist == 0)
-                    leds[i] = CRGB(90, 0, 120);
-                else if (dist == 1)
-                    leds[i] = CRGB(0, breath, 100);
-                else
-                    leds[i] = CRGB(8, 0, 18);
+                ledAnimStep = (ledAnimStep + 1) % (LED_COUNT * 2);
+                int head = ledAnimStep % LED_COUNT;
+                uint8_t breath = map(cubicwave8((uint8_t)(ledAnimStep * 8)), 0, 255, 20, 90);
+                for (int i = 0; i < LED_COUNT; i++)
+                {
+                    int dist = abs(i - head);
+                    dist = min(dist, LED_COUNT - dist);
+                    if (dist == 0)
+                    {
+                        leds[i] = toCRGB(ledConfig.diagnosticHeadColor);
+                    }
+                    else if (dist == 1)
+                    {
+                        CRGB trail = toCRGB(ledConfig.diagnosticTrailColor);
+                        leds[i] = CRGB(map(breath, 20, 90, 0, trail.r),
+                                       map(breath, 20, 90, 0, trail.g),
+                                       map(breath, 20, 90, 0, trail.b));
+                    }
+                    else
+                    {
+                        leds[i] = CRGB(8, 0, 18);
+                    }
+                }
+            }
+            else
+            {
+                fill_solid(leds, LED_COUNT, toCRGB(ledConfig.diagnosticHeadColor));
             }
             FastLED.show();
             break;

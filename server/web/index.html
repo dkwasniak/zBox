@@ -31,6 +31,12 @@
                     Utwory
                 </button>
                 <button
+                    @click="activeTab = 'devices'"
+                    :class="activeTab === 'devices' ? 'bg-blue-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
+                    class="px-4 py-2 rounded-lg font-medium transition-colors">
+                    Urzadzenia
+                </button>
+                <button
                     @click="activeTab = 'figurines'"
                     :class="activeTab === 'figurines' ? 'bg-blue-500 text-white' : 'bg-white text-gray-700 hover:bg-gray-50'"
                     class="px-4 py-2 rounded-lg font-medium transition-colors">
@@ -52,6 +58,450 @@
              :class="notification.type === 'error' ? 'bg-red-100 border-red-400 text-red-700' : 'bg-green-100 border-green-400 text-green-700'"
              class="mb-4 px-4 py-3 rounded border">
             <span x-text="notification.message"></span>
+        </div>
+
+        <!-- Devices Tab -->
+        <div x-show="activeTab === 'devices'" x-cloak class="space-y-6">
+            <div class="bg-white rounded-lg shadow p-6">
+                <div class="flex flex-col lg:flex-row lg:items-end lg:justify-between gap-4">
+                    <div class="flex-1">
+                        <h2 class="text-lg font-semibold">Portal urzadzenia zBox</h2>
+                        <p class="text-sm text-gray-500 mt-1">Stale IP, czytelny status urzadzenia, synchronizacja plikow i wizualna konfiguracja LED.</p>
+                    </div>
+                    <div class="flex flex-col sm:flex-row gap-2 sm:items-end">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-1">IP zBox</label>
+                            <input
+                                x-model="deviceSettings.ip"
+                                type="text"
+                                placeholder="192.168.x.x"
+                                class="w-full sm:w-48 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500">
+                        </div>
+                        <button
+                            @click="saveDeviceSettings()"
+                            class="bg-gray-800 text-white px-4 py-2 rounded-lg hover:bg-black">
+                            Zapisz IP
+                        </button>
+                        <button
+                            @click="loadDevices()"
+                            :disabled="loadingDevices"
+                            class="bg-blue-500 text-white px-4 py-2 rounded-lg hover:bg-blue-600 disabled:opacity-50">
+                            <span x-show="!loadingDevices">Sprawdz</span>
+                            <span x-show="loadingDevices">Laczenie...</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <template x-if="devices.length === 0">
+                <div class="bg-white rounded-lg shadow p-6 text-gray-500 text-center">
+                    Brak polaczenia z zBox. Sprawdz zapisane IP i uruchom glosnik w diagnostic mode.
+                </div>
+            </template>
+
+            <template x-for="device in devices" :key="device.device_id">
+                <div class="bg-white rounded-2xl shadow p-6 space-y-6">
+                    <div class="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
+                        <div class="space-y-2">
+                            <div class="flex flex-wrap items-center gap-2">
+                                <div class="text-xl font-semibold" x-text="device.hostname || device.device_id"></div>
+                                <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-emerald-100 text-emerald-700">Online</span>
+                                <span class="px-2.5 py-1 rounded-full text-xs font-medium bg-amber-100 text-amber-700" x-show="device.mode === 'diagnostic'">Diagnostic mode</span>
+                            </div>
+                            <div class="text-sm text-gray-500 font-mono" x-text="`${device.ip} • ${device.device_id}`"></div>
+                        </div>
+                        <div class="flex flex-wrap gap-2">
+                            <button
+                                @click="loadDevices()"
+                                :disabled="loadingDevices"
+                                class="bg-gray-100 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-200 disabled:opacity-50">
+                                Odswiez status
+                            </button>
+                            <button
+                                @click="loadDeviceFiles(device)"
+                                class="bg-gray-100 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-200">
+                                Pliki SD
+                            </button>
+                        </div>
+                    </div>
+
+                    <section class="bg-slate-50 rounded-xl p-4 space-y-4">
+                        <div>
+                            <div class="font-medium text-slate-900">Polaczenie i status urzadzenia</div>
+                            <div class="text-sm text-slate-500">Najwazniejsze informacje o zBoxie w jednym miejscu.</div>
+                        </div>
+                        <div class="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                            <div class="bg-white rounded-lg border border-slate-200 p-3">
+                                <div class="text-xs uppercase tracking-wide text-slate-500">Polaczenie</div>
+                                <div class="mt-1 text-sm text-slate-900">Online</div>
+                                <div class="text-xs text-slate-500" x-text="`IP: ${device.ip}`"></div>
+                            </div>
+                            <div class="bg-white rounded-lg border border-slate-200 p-3">
+                                <div class="text-xs uppercase tracking-wide text-slate-500">Sila sygnalu</div>
+                                <div class="mt-1 text-sm text-slate-900" x-text="formatRssi(device.rssi)"></div>
+                                <div class="text-xs text-slate-500">Im wyzsza wartosc, tym stabilniejsze polaczenie.</div>
+                            </div>
+                            <div class="bg-white rounded-lg border border-slate-200 p-3">
+                                <div class="text-xs uppercase tracking-wide text-slate-500">Bateria</div>
+                                <div class="mt-1 text-sm text-slate-900" x-text="formatBattery(device)"></div>
+                                <div class="text-xs text-slate-500" x-text="`Napiece: ${formatBatteryVoltage(device.battery_v)}`"></div>
+                            </div>
+                            <div class="bg-white rounded-lg border border-slate-200 p-3">
+                                <div class="text-xs uppercase tracking-wide text-slate-500">Karta SD</div>
+                                <div class="mt-1 text-sm" :class="device.sd_ok ? 'text-emerald-700' : 'text-red-700'" x-text="device.sd_ok ? 'SD OK' : 'Blad karty SD'"></div>
+                                <div class="text-xs text-slate-500" x-text="formatSdUsage(device)"></div>
+                            </div>
+                            <div class="bg-white rounded-lg border border-slate-200 p-3">
+                                <div class="text-xs uppercase tracking-wide text-slate-500">Tryb pracy</div>
+                                <div class="mt-1 text-sm text-slate-900" x-text="device.mode === 'diagnostic' ? 'Diagnostic mode' : (device.mode || 'Nieznany')"></div>
+                                <div class="text-xs text-slate-500">Po synchronizacji restart zostaje osobna akcja.</div>
+                            </div>
+                            <div class="bg-white rounded-lg border border-slate-200 p-3">
+                                <div class="text-xs uppercase tracking-wide text-slate-500">Restart</div>
+                                <button
+                                    @click="restartDevice(device)"
+                                    :disabled="isSyncBusy(device.device_id)"
+                                    class="mt-2 w-full bg-orange-100 text-orange-700 px-4 py-2 rounded-lg hover:bg-orange-200 disabled:opacity-50">
+                                    Restart urzadzenia
+                                </button>
+                            </div>
+                        </div>
+                        <div x-show="deviceFiles[device.device_id]" class="bg-white rounded-lg border border-slate-200 p-4 space-y-4">
+                            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                <div>
+                                    <div class="font-medium">Podglad plikow na SD</div>
+                                    <div class="text-sm text-slate-500">Lista plikow zarzadzanych przez panel wraz z rozmiarem i lokalizacja.</div>
+                                </div>
+                                <div class="text-sm text-slate-600" x-text="formatSdUsageDetailed(deviceFiles[device.device_id])"></div>
+                            </div>
+                            <div class="space-y-4">
+                                <template x-for="group in groupDeviceFiles(deviceFiles[device.device_id])" :key="group.name">
+                                    <div>
+                                        <div class="text-xs uppercase tracking-wide text-slate-500 mb-2" x-text="group.label"></div>
+                                        <div class="overflow-hidden rounded-xl border border-slate-200">
+                                            <template x-for="file in group.files" :key="file.path">
+                                                <div class="flex items-center justify-between gap-3 px-4 py-3 bg-white border-b border-slate-100 last:border-b-0">
+                                                    <div class="min-w-0">
+                                                        <div class="text-sm font-medium text-slate-900 truncate" x-text="file.name"></div>
+                                                    </div>
+                                                    <div class="text-sm text-slate-600 whitespace-nowrap" x-text="formatBytes(file.size)"></div>
+                                                </div>
+                                            </template>
+                                        </div>
+                                    </div>
+                                </template>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="bg-emerald-50 rounded-xl p-4 space-y-4">
+                        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                            <div>
+                                <div class="font-medium text-emerald-950">Synchronizacja</div>
+                                <div class="text-sm text-emerald-800">Muzyka, mapowania i dzwieki systemowe sa wysylane jako zadanie w tle z prawdziwym postepem etapow.</div>
+                            </div>
+                            <button
+                                @click="syncToDevice(device)"
+                                :disabled="isSyncBusy(device.device_id)"
+                                class="bg-emerald-600 text-white px-4 py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-50">
+                                <span x-show="!isSyncBusy(device.device_id)">Rozpocznij sync</span>
+                                <span x-show="isSyncBusy(device.device_id)">Sync w toku...</span>
+                            </button>
+                            <button
+                                @click="checkDeviceSync(device)"
+                                :disabled="isDeviceSyncCheckLoading(device.device_id)"
+                                class="bg-white text-emerald-700 px-4 py-2 rounded-lg border border-emerald-200 hover:bg-emerald-100 disabled:opacity-50">
+                                <span x-show="!isDeviceSyncCheckLoading(device.device_id)">Sprawdz stan syncu</span>
+                                <span x-show="isDeviceSyncCheckLoading(device.device_id)">Sprawdzanie...</span>
+                            </button>
+                        </div>
+
+                        <template x-if="deviceSyncChecks[device.device_id]?.result">
+                            <div class="bg-white rounded-xl border border-emerald-100 p-4 space-y-3">
+                                <div class="flex items-start justify-between gap-3">
+                                    <div>
+                                        <div class="text-sm font-medium text-slate-900">Stan przed synchronizacja</div>
+                                        <div class="text-sm text-slate-600" x-text="deviceSyncChecks[device.device_id].result.message"></div>
+                                    </div>
+                                    <span class="text-xs px-2.5 py-1 rounded-full"
+                                          :class="deviceSyncChecks[device.device_id].result.needs_sync ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'"
+                                          x-text="deviceSyncChecks[device.device_id].result.needs_sync ? 'Sa zmiany do syncu' : 'Brak pilnych zmian'"></span>
+                                </div>
+                                <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">Utwory</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeSyncCheckMusic(deviceSyncChecks[device.device_id].result)"></div>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">Zmiany lacznie</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeSyncCheckTotalChanges(deviceSyncChecks[device.device_id].result)"></div>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">Mapowania</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeSyncCheckMappings(deviceSyncChecks[device.device_id].result)"></div>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">System sounds</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeSyncCheckSystemSounds(deviceSyncChecks[device.device_id].result)"></div>
+                                    </div>
+                                </div>
+                                <div class="space-y-3">
+                                    <details class="rounded-lg border border-slate-200 bg-slate-50" :open="deviceSyncChecks[device.device_id].result.music_needs_update">
+                                        <summary class="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-3">
+                                            <div>
+                                                <div class="text-sm font-medium text-slate-900">Utwory</div>
+                                                <div class="text-xs text-slate-500" x-text="describeSyncCheckMusicDetails(deviceSyncChecks[device.device_id].result)"></div>
+                                            </div>
+                                            <span class="text-xs px-2.5 py-1 rounded-full"
+                                                  :class="deviceSyncChecks[device.device_id].result.music_needs_update ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'"
+                                                  x-text="deviceSyncChecks[device.device_id].result.music_needs_update ? 'Wymaga update' : 'Aktualne'"></span>
+                                        </summary>
+                                        <div class="px-4 pb-4 space-y-3" x-show="deviceSyncChecks[device.device_id].result.music_upload_count || deviceSyncChecks[device.device_id].result.music_delete_count">
+                                            <div x-show="deviceSyncChecks[device.device_id].result.music_upload_count">
+                                                <div class="text-xs uppercase tracking-wide text-slate-500 mb-2">Do przeslania</div>
+                                                <div class="space-y-1">
+                                                    <template x-for="path in deviceSyncChecks[device.device_id].result.music_files_to_upload" :key="path">
+                                                        <div class="text-sm text-slate-800 bg-white rounded px-3 py-2" x-text="resolveDeviceFileLabel(path)"></div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                            <div x-show="deviceSyncChecks[device.device_id].result.music_delete_count">
+                                                <div class="text-xs uppercase tracking-wide text-slate-500 mb-2">Do usuniecia</div>
+                                                <div class="space-y-1">
+                                                    <template x-for="path in deviceSyncChecks[device.device_id].result.music_files_to_delete" :key="path">
+                                                        <div class="text-sm text-slate-800 bg-white rounded px-3 py-2" x-text="resolveDeviceFileLabel(path)"></div>
+                                                    </template>
+                                                </div>
+                                            </div>
+                                            <div class="text-sm text-slate-600" x-show="!deviceSyncChecks[device.device_id].result.music_upload_count && !deviceSyncChecks[device.device_id].result.music_delete_count">
+                                                Brak zmian w utworach.
+                                            </div>
+                                        </div>
+                                    </details>
+
+                                    <details class="rounded-lg border border-slate-200 bg-slate-50" :open="deviceSyncChecks[device.device_id].result.mappings_needs_update">
+                                        <summary class="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-3">
+                                            <div>
+                                                <div class="text-sm font-medium text-slate-900">Mapowania</div>
+                                                <div class="text-xs text-slate-500" x-text="describeSyncCheckMappings(deviceSyncChecks[device.device_id].result)"></div>
+                                            </div>
+                                            <span class="text-xs px-2.5 py-1 rounded-full"
+                                                  :class="deviceSyncChecks[device.device_id].result.mappings_needs_update ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'"
+                                                  x-text="deviceSyncChecks[device.device_id].result.mappings_needs_update ? 'Wymaga update' : 'Aktualne'"></span>
+                                        </summary>
+                                        <div class="px-4 pb-4 text-sm text-slate-700 space-y-1">
+                                            <div x-text="`Zmapowanych figurek: ${deviceSyncChecks[device.device_id].result.mappings_count}`"></div>
+                                            <div x-show="!deviceSyncChecks[device.device_id].result.mappings_present">Plik mapowan nie istnieje jeszcze na urzadzeniu.</div>
+                                            <div x-show="deviceSyncChecks[device.device_id].result.mappings_needs_update && deviceSyncChecks[device.device_id].result.mappings_present">Plik mapowan na urzadzeniu rozni sie od tego, co jest w panelu.</div>
+                                            <div x-show="!deviceSyncChecks[device.device_id].result.mappings_needs_update">Mapowania na urzadzeniu zgadzaja sie z panelem.</div>
+                                        </div>
+                                    </details>
+
+                                    <details class="rounded-lg border border-slate-200 bg-slate-50" :open="deviceSyncChecks[device.device_id].result.system_sounds_needs_update">
+                                        <summary class="cursor-pointer list-none px-4 py-3 flex items-center justify-between gap-3">
+                                            <div>
+                                                <div class="text-sm font-medium text-slate-900">System sounds</div>
+                                                <div class="text-xs text-slate-500" x-text="describeSyncCheckSystemSounds(deviceSyncChecks[device.device_id].result)"></div>
+                                            </div>
+                                            <span class="text-xs px-2.5 py-1 rounded-full"
+                                                  :class="deviceSyncChecks[device.device_id].result.system_sounds_needs_update ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'"
+                                                  x-text="deviceSyncChecks[device.device_id].result.system_sounds_needs_update ? 'Wymaga update' : 'Aktualne'"></span>
+                                        </summary>
+                                        <div class="px-4 pb-4 space-y-3">
+                                            <div class="text-sm text-slate-700" x-text="`Skonfigurowanych dzwiekow: ${deviceSyncChecks[device.device_id].result.system_sounds_count}`"></div>
+                                            <div class="text-sm text-slate-700" x-show="deviceSyncChecks[device.device_id].result.system_sounds_manifest_needs_update">
+                                                Plik konfiguracji system sounds wymaga aktualizacji.
+                                            </div>
+                                            <div class="space-y-3" x-show="deviceSyncChecks[device.device_id].result.system_sound_upload_count || deviceSyncChecks[device.device_id].result.system_sound_delete_count">
+                                                <div x-show="deviceSyncChecks[device.device_id].result.system_sound_upload_count">
+                                                    <div class="text-xs uppercase tracking-wide text-slate-500 mb-2">Pliki do przeslania</div>
+                                                    <div class="space-y-1">
+                                                        <template x-for="path in deviceSyncChecks[device.device_id].result.system_sound_files_to_upload" :key="path">
+                                                            <div class="text-sm text-slate-800 bg-white rounded px-3 py-2" x-text="resolveDeviceFileLabel(path)"></div>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                                <div x-show="deviceSyncChecks[device.device_id].result.system_sound_delete_count">
+                                                    <div class="text-xs uppercase tracking-wide text-slate-500 mb-2">Pliki do usuniecia</div>
+                                                    <div class="space-y-1">
+                                                        <template x-for="path in deviceSyncChecks[device.device_id].result.system_sound_files_to_delete" :key="path">
+                                                            <div class="text-sm text-slate-800 bg-white rounded px-3 py-2" x-text="resolveDeviceFileLabel(path)"></div>
+                                                        </template>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="text-sm text-slate-600" x-show="!deviceSyncChecks[device.device_id].result.system_sounds_needs_update">
+                                                Brak zmian w dzwiekach systemowych.
+                                            </div>
+                                        </div>
+                                    </details>
+                                </div>
+                            </div>
+                        </template>
+
+                        <template x-if="getDeviceSyncState(device.device_id)">
+                            <div class="bg-white rounded-xl border border-emerald-100 p-4 space-y-4">
+                                <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                                    <div>
+                                        <div class="text-sm font-medium text-slate-900" x-text="getSyncStageLabel(getDeviceSyncState(device.device_id).stage)"></div>
+                                        <div class="text-sm text-slate-600" x-text="getDeviceSyncState(device.device_id).message"></div>
+                                    </div>
+                                    <div class="text-right">
+                                        <div class="text-2xl font-semibold text-slate-900" x-text="`${getDeviceSyncState(device.device_id).progress || 0}%`"></div>
+                                        <div class="text-xs" :class="syncStatusClass(getDeviceSyncState(device.device_id).status)" x-text="getSyncStatusLabel(getDeviceSyncState(device.device_id).status)"></div>
+                                    </div>
+                                </div>
+                                <div class="w-full h-3 bg-slate-200 rounded-full overflow-hidden">
+                                    <div class="h-full rounded-full transition-all duration-300"
+                                         :class="syncProgressBarClass(getDeviceSyncState(device.device_id).status)"
+                                         :style="`width: ${getDeviceSyncState(device.device_id).progress || 0}%`"></div>
+                                </div>
+                                <div class="text-xs text-slate-500" x-text="describeSyncTiming(getDeviceSyncState(device.device_id))"></div>
+                                <div x-show="getDeviceSyncState(device.device_id).current_file" class="bg-slate-50 rounded-lg p-3 space-y-2">
+                                    <div class="flex items-center justify-between gap-3">
+                                        <div class="min-w-0">
+                                            <div class="text-xs uppercase tracking-wide text-slate-500">Aktualny plik</div>
+                                            <div class="text-sm font-medium text-slate-900 truncate" x-text="resolveDeviceFileLabel(getDeviceSyncState(device.device_id).current_file)"></div>
+                                        </div>
+                                        <div class="text-sm text-slate-600 whitespace-nowrap" x-text="`${getDeviceSyncState(device.device_id).current_file_index || 0}/${getDeviceSyncState(device.device_id).current_file_total || 0}`"></div>
+                                    </div>
+                                    <div class="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                                        <div class="h-full bg-sky-500 rounded-full transition-all duration-150"
+                                             :style="`width: ${getDeviceSyncState(device.device_id).current_file_progress || 0}%`"></div>
+                                    </div>
+                                    <div class="text-xs text-slate-500" x-text="`${getDeviceSyncState(device.device_id).current_file_progress || 0}% aktualnego pliku`"></div>
+                                </div>
+                                <div class="grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">Muzyka</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeMusicSync(getDeviceSyncState(device.device_id))"></div>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">Mapowania figurek</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeMappingsSync(getDeviceSyncState(device.device_id))"></div>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">System sounds</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeSystemSoundsSync(getDeviceSyncState(device.device_id))"></div>
+                                    </div>
+                                    <div class="bg-slate-50 rounded-lg p-3">
+                                        <div class="text-xs uppercase tracking-wide text-slate-500">Konfiguracja LED</div>
+                                        <div class="mt-1 text-sm text-slate-900" x-text="describeLedSync(getDeviceSyncState(device.device_id))"></div>
+                                    </div>
+                                </div>
+                                <div class="space-y-1">
+                                    <div class="text-sm font-medium text-slate-900">Co zostalo zsynchronizowane</div>
+                                    <template x-for="line in buildSyncSummary(getDeviceSyncState(device.device_id))" :key="line">
+                                        <div class="text-sm text-slate-700" x-text="line"></div>
+                                    </template>
+                                    <div class="text-sm text-amber-700" x-show="getDeviceSyncState(device.device_id).restart_required">Restart urzadzenia wymagany, aby wyjsc z diagnostic mode.</div>
+                                    <div class="text-sm text-red-700" x-show="getDeviceSyncState(device.device_id).error" x-text="getDeviceSyncState(device.device_id).error"></div>
+                                </div>
+                            </div>
+                        </template>
+
+                        <template x-if="!getDeviceSyncState(device.device_id)">
+                            <div class="bg-white rounded-xl border border-dashed border-emerald-200 p-4 text-sm text-slate-600">
+                                Po rozpoczeciu synchronizacji tutaj pojawi sie pasek postepu, biezacy etap i trwale podsumowanie wyniku.
+                            </div>
+                        </template>
+                    </section>
+
+                    <section class="bg-indigo-50 rounded-xl p-4 space-y-4">
+                        <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                            <div>
+                                <div class="font-medium text-indigo-950">Konfiguracja LED</div>
+                                <div class="text-sm text-indigo-800">Edytor korzysta z tych samych pol co `/diag/config`, ale bez recznej edycji JSON.</div>
+                            </div>
+                            <div class="flex flex-wrap gap-2">
+                                <button
+                                    @click="loadDeviceConfig(device)"
+                                    :disabled="deviceConfigStates[device.device_id]?.loading"
+                                    class="bg-white text-indigo-700 px-4 py-2 rounded-lg border border-indigo-200 hover:bg-indigo-100 disabled:opacity-50">
+                                    Wczytaj z urzadzenia
+                                </button>
+                                <button
+                                    @click="restoreDeviceConfig(device.device_id)"
+                                    :disabled="!deviceConfigStates[device.device_id]?.loaded || !isLedConfigDirty(device.device_id)"
+                                    class="bg-white text-slate-700 px-4 py-2 rounded-lg border border-slate-200 hover:bg-slate-100 disabled:opacity-50">
+                                    Przywroc ostatnio pobrane
+                                </button>
+                                <button
+                                    @click="saveDeviceConfig(device)"
+                                    :disabled="!deviceConfigStates[device.device_id]?.loaded || !isLedConfigDirty(device.device_id) || isSyncBusy(device.device_id) || deviceConfigStates[device.device_id]?.saving"
+                                    class="bg-indigo-600 text-white px-4 py-2 rounded-lg hover:bg-indigo-700 disabled:opacity-50">
+                                    Zapisz konfiguracje
+                                </button>
+                            </div>
+                        </div>
+
+                        <template x-if="!deviceConfigStates[device.device_id]?.loaded">
+                            <div class="bg-white rounded-xl border border-dashed border-indigo-200 p-4 text-sm text-slate-600">
+                                Kliknij „Wczytaj z urzadzenia”, aby pobrac aktualna konfiguracje LED i edytowac ja w formularzu.
+                            </div>
+                        </template>
+
+                        <template x-if="deviceConfigStates[device.device_id]?.loaded">
+                            <div class="space-y-4">
+                                <div class="flex flex-wrap items-center gap-2 text-sm">
+                                    <span class="px-2.5 py-1 rounded-full bg-white border border-slate-200 text-slate-700">Aktualny stan pobrany z urzadzenia</span>
+                                    <span x-show="isLedConfigDirty(device.device_id)" class="px-2.5 py-1 rounded-full bg-amber-100 text-amber-700">Zmienione, niezapisane</span>
+                                    <span x-show="deviceConfigStates[device.device_id]?.saving" class="px-2.5 py-1 rounded-full bg-indigo-100 text-indigo-700">Zapisywanie...</span>
+                                </div>
+
+                                <div class="grid gap-3 lg:grid-cols-2">
+                                    <template x-for="field in ledColorFields" :key="field.key">
+                                        <div class="bg-white rounded-xl border border-indigo-100 p-4 space-y-3">
+                                            <div class="flex items-start justify-between gap-3">
+                                                <div>
+                                                    <div class="font-medium text-slate-900" x-text="field.label"></div>
+                                                    <div class="text-xs text-slate-500" x-text="field.help"></div>
+                                                </div>
+                                                <span x-show="isLedFieldDirty(device.device_id, field.key)" class="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700">Niezapisane</span>
+                                            </div>
+                                            <div class="flex flex-col sm:flex-row gap-3 sm:items-center">
+                                                <input
+                                                    type="color"
+                                                    :value="colorToHex(deviceConfigStates[device.device_id].draft[field.key])"
+                                                    @input="updateLedColorFromPicker(device.device_id, field.key, $event.target.value)"
+                                                    class="w-16 h-12 rounded border border-slate-200 bg-white">
+                                                <input
+                                                    type="text"
+                                                    :value="deviceConfigStates[device.device_id].colorText[field.key]"
+                                                    @input="updateLedColorFromText(device.device_id, field.key, $event.target.value)"
+                                                    class="flex-1 px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500"
+                                                    placeholder="#RRGGBB lub rgb(0, 0, 0)">
+                                            </div>
+                                            <div class="text-xs text-slate-500" x-text="`Aktualna wartosc: ${colorToRgbLabel(deviceConfigStates[device.device_id].draft[field.key])}`"></div>
+                                            <div class="text-xs text-red-600" x-show="deviceConfigStates[device.device_id].colorErrors[field.key]" x-text="deviceConfigStates[device.device_id].colorErrors[field.key]"></div>
+                                        </div>
+                                    </template>
+                                </div>
+
+                                <div class="grid gap-3 lg:grid-cols-2">
+                                    <template x-for="field in ledAnimationFields" :key="field.key">
+                                        <label class="bg-white rounded-xl border border-indigo-100 p-4 flex items-start justify-between gap-3 cursor-pointer">
+                                            <div>
+                                                <div class="font-medium text-slate-900" x-text="field.label"></div>
+                                                <div class="text-xs text-slate-500" x-text="field.help"></div>
+                                                <div class="text-xs mt-2" :class="deviceConfigStates[device.device_id].draft[field.key] ? 'text-emerald-700' : 'text-slate-500'" x-text="deviceConfigStates[device.device_id].draft[field.key] ? 'Animacja wlaczona' : 'Animacja wylaczona'"></div>
+                                            </div>
+                                            <div class="flex items-center gap-3">
+                                                <span x-show="isLedFieldDirty(device.device_id, field.key)" class="text-xs px-2 py-1 rounded-full bg-amber-100 text-amber-700">Niezapisane</span>
+                                                <input
+                                                    type="checkbox"
+                                                    :checked="deviceConfigStates[device.device_id].draft[field.key]"
+                                                    @change="updateLedToggle(device.device_id, field.key, $event.target.checked)"
+                                                    class="w-5 h-5 text-indigo-600 rounded border-slate-300 focus:ring-indigo-500">
+                                            </div>
+                                        </label>
+                                    </template>
+                                </div>
+                            </div>
+                        </template>
+                    </section>
+                </div>
+            </template>
         </div>
 
         <!-- Tracks Tab -->
@@ -171,6 +621,7 @@
                             <div class="bg-blue-600 h-2.5 rounded-full transition-all duration-300"
                                  :style="`width: ${downloadProgress.percent}%`"></div>
                         </div>
+                        <div x-show="downloadProgress.error" class="text-sm text-red-700 break-words" x-text="downloadProgress.error"></div>
                     </div>
 
                     <button
@@ -497,10 +948,41 @@
             return {
                 activeTab: 'tracks',
                 uploadMethod: 'file',
+                devices: [],
+                deviceSettings: { ip: '' },
                 tracks: [],
                 figurines: [],
                 systemSounds: [],
+                deviceFiles: {},
+                deviceConfigStates: {},
+                deviceSyncChecks: {},
+                deviceSyncTasks: {},
+                deviceSyncPollers: {},
+                loadingDevices: false,
                 playingSoundName: null,
+                ledColorFields: [
+                    { key: 'wait_bt_color', label: 'Oczekiwanie na Bluetooth', help: 'Kolor widoczny podczas czekania na polaczenie BT.' },
+                    { key: 'idle_color', label: 'Tryb bezczynny', help: 'Stan, gdy urzadzenie jest gotowe i nic nie odtwarza.' },
+                    { key: 'playing_color', label: 'Odtwarzanie', help: 'Kolor aktywny podczas grania muzyki.' },
+                    { key: 'volume_color', label: 'Glosnosc', help: 'Pokazywany przy zmianie glosnosci.' },
+                    { key: 'sleep_ready_color', label: 'Gotowosc do uspienia', help: 'Sygnal potwierdzajacy przejscie w sleep.' },
+                    { key: 'sync_color', label: 'Synchronizacja', help: 'Kolor aktywny podczas synchronizacji.' },
+                    { key: 'diagnostic_head_color', label: 'Diagnostic head', help: 'Kolor glownego punktu w diagnostic mode.' },
+                    { key: 'diagnostic_trail_color', label: 'Diagnostic trail', help: 'Kolor sladu animacji w diagnostic mode.' },
+                    { key: 'mode_music_color', label: 'Tryb Music', help: 'Kolor zmiany trybu na Music.' },
+                    { key: 'mode_nfc_color', label: 'Tryb NFC', help: 'Kolor zmiany trybu na NFC.' },
+                    { key: 'success_color', label: 'Sukces', help: 'Potwierdzenie poprawnej operacji.' },
+                    { key: 'error_color', label: 'Blad', help: 'Sygnal bledu.' },
+                    { key: 'warning_color', label: 'Ostrzezenie', help: 'Sygnal ostrzegawczy.' }
+                ],
+                ledAnimationFields: [
+                    { key: 'animate_wait_bt', label: 'Animuj oczekiwanie na Bluetooth', help: 'Miganie lub puls zamiast stalego koloru.' },
+                    { key: 'animate_idle', label: 'Animuj tryb bezczynny', help: 'Delikatna animacja, gdy nic nie gra.' },
+                    { key: 'animate_playing', label: 'Animuj odtwarzanie', help: 'Animacja podczas grania muzyki.' },
+                    { key: 'animate_sleep_ready', label: 'Animuj gotowosc do uspienia', help: 'Animacja potwierdzajaca sleep mode.' },
+                    { key: 'animate_sync', label: 'Animuj synchronizacje', help: 'Animacja podczas syncu z serwera.' },
+                    { key: 'animate_diagnostic', label: 'Animuj diagnostic mode', help: 'Animacja diagnostyczna podczas trybu serwisowego.' }
+                ],
                 soundLabels: {
                     vol_up: 'Glosniej',
                     vol_down: 'Ciszej',
@@ -533,7 +1015,8 @@
                 downloading: false,
                 downloadProgress: {
                     message: 'Inicjalizacja...',
-                    percent: 0
+                    percent: 0,
+                    error: ''
                 },
                 downloadTaskId: null,
                 downloadPollInterval: null,
@@ -549,6 +1032,8 @@
                 notification: { show: false, message: '', type: 'success' },
 
                 async init() {
+                    await this.loadDeviceSettings();
+                    await this.loadDevices();
                     await this.loadTracks();
                     await this.loadFigurines();
                     await this.loadSystemSounds();
@@ -559,6 +1044,436 @@
                     setTimeout(() => {
                         this.notification.show = false;
                     }, 3000);
+                },
+
+                cloneValue(value) {
+                    return JSON.parse(JSON.stringify(value));
+                },
+
+                ensureDeviceConfigState(deviceId) {
+                    if (!this.deviceConfigStates[deviceId]) {
+                        this.deviceConfigStates[deviceId] = {
+                            loading: false,
+                            loaded: false,
+                            saving: false,
+                            original: null,
+                            draft: null,
+                            colorText: {},
+                            colorErrors: {}
+                        };
+                    }
+                    return this.deviceConfigStates[deviceId];
+                },
+
+                normalizeLedConfig(config = {}) {
+                    const normalized = {};
+                    for (const field of this.ledColorFields) {
+                        const value = config[field.key] || {};
+                        normalized[field.key] = {
+                            r: Number.isFinite(Number(value.r)) ? Number(value.r) : 0,
+                            g: Number.isFinite(Number(value.g)) ? Number(value.g) : 0,
+                            b: Number.isFinite(Number(value.b)) ? Number(value.b) : 0
+                        };
+                    }
+                    for (const field of this.ledAnimationFields) {
+                        normalized[field.key] = Boolean(config[field.key]);
+                    }
+                    return normalized;
+                },
+
+                setDeviceConfigState(deviceId, config) {
+                    const state = this.ensureDeviceConfigState(deviceId);
+                    const normalized = this.normalizeLedConfig(config);
+                    state.loaded = true;
+                    state.original = this.cloneValue(normalized);
+                    state.draft = this.cloneValue(normalized);
+                    state.colorText = {};
+                    state.colorErrors = {};
+                    for (const field of this.ledColorFields) {
+                        state.colorText[field.key] = this.colorToHex(normalized[field.key]);
+                        state.colorErrors[field.key] = '';
+                    }
+                },
+
+                parseColorInput(value) {
+                    const text = (value || '').trim();
+                    const hexMatch = text.match(/^#?([0-9a-fA-F]{6})$/);
+                    if (hexMatch) {
+                        const hex = hexMatch[1];
+                        return {
+                            r: parseInt(hex.slice(0, 2), 16),
+                            g: parseInt(hex.slice(2, 4), 16),
+                            b: parseInt(hex.slice(4, 6), 16)
+                        };
+                    }
+                    const rgbMatch = text.match(/^rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)$/i);
+                    if (rgbMatch) {
+                        const [r, g, b] = rgbMatch.slice(1).map(Number);
+                        if ([r, g, b].every((channel) => channel >= 0 && channel <= 255)) {
+                            return { r, g, b };
+                        }
+                    }
+                    return null;
+                },
+
+                colorToHex(color) {
+                    const channel = (value) => {
+                        const safe = Math.max(0, Math.min(255, Number(value) || 0));
+                        return safe.toString(16).padStart(2, '0');
+                    };
+                    return `#${channel(color?.r)}${channel(color?.g)}${channel(color?.b)}`;
+                },
+
+                colorToRgbLabel(color) {
+                    return `rgb(${color?.r ?? 0}, ${color?.g ?? 0}, ${color?.b ?? 0})`;
+                },
+
+                updateLedColorFromPicker(deviceId, key, value) {
+                    const state = this.ensureDeviceConfigState(deviceId);
+                    const parsed = this.parseColorInput(value);
+                    if (!state.draft || !parsed) return;
+                    state.draft[key] = parsed;
+                    state.colorText[key] = this.colorToHex(parsed);
+                    state.colorErrors[key] = '';
+                },
+
+                updateLedColorFromText(deviceId, key, value) {
+                    const state = this.ensureDeviceConfigState(deviceId);
+                    state.colorText[key] = value;
+                    const parsed = this.parseColorInput(value);
+                    if (!parsed) {
+                        state.colorErrors[key] = 'Uzyj formatu #RRGGBB lub rgb(0, 0, 0).';
+                        return;
+                    }
+                    state.draft[key] = parsed;
+                    state.colorErrors[key] = '';
+                },
+
+                updateLedToggle(deviceId, key, checked) {
+                    const state = this.ensureDeviceConfigState(deviceId);
+                    if (!state.draft) return;
+                    state.draft[key] = checked;
+                },
+
+                isLedFieldDirty(deviceId, key) {
+                    const state = this.deviceConfigStates[deviceId];
+                    if (!state?.loaded || !state.original || !state.draft) return false;
+                    return JSON.stringify(state.original[key]) !== JSON.stringify(state.draft[key]);
+                },
+
+                isLedConfigDirty(deviceId) {
+                    const state = this.deviceConfigStates[deviceId];
+                    if (!state?.loaded || !state.original || !state.draft) return false;
+                    return JSON.stringify(state.original) !== JSON.stringify(state.draft);
+                },
+
+                restoreDeviceConfig(deviceId) {
+                    const state = this.deviceConfigStates[deviceId];
+                    if (!state?.loaded || !state.original) return;
+                    state.draft = this.cloneValue(state.original);
+                    for (const field of this.ledColorFields) {
+                        state.colorText[field.key] = this.colorToHex(state.original[field.key]);
+                        state.colorErrors[field.key] = '';
+                    }
+                },
+
+                isSyncBusy(deviceId) {
+                    return this.deviceSyncTasks[deviceId]?.status === 'running';
+                },
+
+                getDeviceSyncState(deviceId) {
+                    return this.deviceSyncTasks[deviceId] || null;
+                },
+
+                stopSyncPolling(deviceId) {
+                    if (this.deviceSyncPollers[deviceId]) {
+                        clearInterval(this.deviceSyncPollers[deviceId]);
+                        delete this.deviceSyncPollers[deviceId];
+                    }
+                },
+
+                resumeDeviceSyncPolling(deviceId, taskId) {
+                    if (!taskId || this.deviceSyncPollers[deviceId]) return;
+                    this.deviceSyncPollers[deviceId] = setInterval(() => {
+                        this.pollDeviceSyncStatus(deviceId, taskId);
+                    }, 1200);
+                },
+
+                ensureDeviceSyncCheckState(deviceId) {
+                    if (!this.deviceSyncChecks[deviceId]) {
+                        this.deviceSyncChecks[deviceId] = {
+                            loading: false,
+                            result: null
+                        };
+                    }
+                    return this.deviceSyncChecks[deviceId];
+                },
+
+                isDeviceSyncCheckLoading(deviceId) {
+                    return Boolean(this.deviceSyncChecks[deviceId] && this.deviceSyncChecks[deviceId].loading);
+                },
+
+                getSyncStageLabel(stage) {
+                    const labels = {
+                        queued: 'Oczekiwanie na start',
+                        fetching_device_state: 'Pobieranie stanu urzadzenia',
+                        comparing_files: 'Porownywanie plikow',
+                        uploading_audio: 'Przesylanie plikow audio',
+                        deleting_remote: 'Usuwanie zbednych plikow',
+                        writing_mappings: 'Zapisywanie mapowan figurek',
+                        writing_system_sounds: 'Zapisywanie dzwiekow systemowych',
+                        writing_led_config: 'Zapisywanie konfiguracji LED',
+                        completed: 'Synchronizacja zakonczona'
+                    };
+                    return labels[stage] || 'Synchronizacja';
+                },
+
+                getSyncStatusLabel(status) {
+                    if (status === 'completed') return 'Zakonczono';
+                    if (status === 'error') return 'Blad';
+                    return 'W toku';
+                },
+
+                syncStatusClass(status) {
+                    if (status === 'completed') return 'text-emerald-700';
+                    if (status === 'error') return 'text-red-700';
+                    return 'text-blue-700';
+                },
+
+                syncProgressBarClass(status) {
+                    if (status === 'completed') return 'bg-emerald-500';
+                    if (status === 'error') return 'bg-red-500';
+                    return 'bg-blue-500';
+                },
+
+                describeMusicSync(state) {
+                    if (!state) return 'Brak danych';
+                    if (state.status === 'error' && state.uploaded_count === 0 && state.deleted_count === 0) return 'Nie zakonczono';
+                    if ((state.uploaded_count || 0) === 0 && (state.deleted_count || 0) === 0) return 'Bez zmian w plikach';
+                    return `Przeslano ${state.uploaded_count || 0}, usunieto ${state.deleted_count || 0}`;
+                },
+
+                describeMappingsSync(state) {
+                    if (!state) return 'Brak danych';
+                    if (state.mappings_written) return `Zapisano ${state.mappings_count || 0} mapowan`;
+                    return state.status === 'error' ? 'Nie zapisano' : 'Oczekuje';
+                },
+
+                describeSystemSoundsSync(state) {
+                    if (!state) return 'Brak danych';
+                    if (state.system_sounds_written) return `Zapisano ${state.system_sounds_count || 0} dzwiekow`;
+                    return state.status === 'error' ? 'Nie zapisano' : 'Oczekuje';
+                },
+
+                describeLedSync(state) {
+                    if (!state) return 'Brak danych';
+                    if (state.led_config_written) return 'Zapisano konfiguracje LED';
+                    return 'Bez zmian w tym syncu';
+                },
+
+                buildSyncSummary(state) {
+                    if (!state) return [];
+                    const lines = [];
+                    lines.push(`Przeslano ${state.uploaded_count || 0} plikow`);
+                    lines.push(`Usunieto ${state.deleted_count || 0} plikow`);
+                    if (state.mappings_written) {
+                        lines.push(`Zapisano ${state.mappings_count || 0} mapowan figurek`);
+                    }
+                    if (state.system_sounds_written) {
+                        lines.push(`Zapisano ${state.system_sounds_count || 0} dzwiekow systemowych`);
+                    }
+                    if (state.led_config_written) {
+                        lines.push('Zapisano konfiguracje LED');
+                    }
+                    if (state.status === 'error' && state.error) {
+                        lines.push('Synchronizacja zatrzymala sie z bledem');
+                    }
+                    return lines;
+                },
+
+                describeSyncCheckMusic(result) {
+                    if (!result) return 'Brak danych';
+                    if (!result.music_needs_update) return 'Aktualne';
+                    const parts = [];
+                    if (result.music_upload_count) parts.push(`${result.music_upload_count} do przeslania`);
+                    if (result.music_delete_count) parts.push(`${result.music_delete_count} do usuniecia`);
+                    return parts.join(', ');
+                },
+
+                describeSyncCheckMusicDetails(result) {
+                    if (!result) return 'Brak danych';
+                    if (!result.music_needs_update) return 'Brak zmian w utworach.';
+                    return this.describeSyncCheckMusic(result);
+                },
+
+                describeSyncCheckTotalChanges(result) {
+                    if (!result) return 'Brak danych';
+                    const totalUploads = result.upload_count || 0;
+                    const totalDeletes = result.delete_count || 0;
+                    if (!totalUploads && !totalDeletes && !result.mappings_needs_update && !result.system_sounds_manifest_needs_update) {
+                        return 'Brak zmian';
+                    }
+                    const parts = [];
+                    if (totalUploads) parts.push(`${totalUploads} do przeslania`);
+                    if (totalDeletes) parts.push(`${totalDeletes} do usuniecia`);
+                    if (result.mappings_needs_update) parts.push('mapowania do zapisu');
+                    if (result.system_sounds_manifest_needs_update) parts.push('konfiguracja system sounds do zapisu');
+                    return parts.join(', ');
+                },
+
+                describeSyncCheckMappings(result) {
+                    if (!result) return 'Brak danych';
+                    if (!result.mappings_present) return 'Brakuje pliku mapowan';
+                    if (result.mappings_needs_update) return `Wymaga aktualizacji, ${result.mappings_count} mapowan`;
+                    return `Aktualne, ${result.mappings_count} mapowan`;
+                },
+
+                describeSyncCheckSystemSounds(result) {
+                    if (!result) return 'Brak danych';
+                    if (!result.system_sounds_present) return 'Brakuje pliku system sounds';
+                    if (result.system_sounds_needs_update) {
+                        const parts = [];
+                        if (result.system_sound_upload_count) parts.push(`${result.system_sound_upload_count} plikow do przeslania`);
+                        if (result.system_sound_delete_count) parts.push(`${result.system_sound_delete_count} do usuniecia`);
+                        if (result.system_sounds_manifest_needs_update) parts.push('konfiguracja do zapisu');
+                        return parts.length ? `Wymaga aktualizacji, ${parts.join(', ')}` : `Wymaga aktualizacji, ${result.system_sounds_count} dzwiekow`;
+                    }
+                    return `Aktualne, ${result.system_sounds_count} dzwiekow`;
+                },
+
+                formatDuration(seconds) {
+                    const totalSeconds = Math.max(0, Math.round(Number(seconds) || 0));
+                    const minutes = Math.floor(totalSeconds / 60);
+                    const secs = totalSeconds % 60;
+                    if (minutes === 0) return `${secs}s`;
+                    if (minutes < 60) return `${minutes}m ${secs}s`;
+                    const hours = Math.floor(minutes / 60);
+                    const remainingMinutes = minutes % 60;
+                    return `${hours}h ${remainingMinutes}m`;
+                },
+
+                describeSyncTiming(state) {
+                    if (!state?.started_at) return 'Szacowanie czasu pojawi sie po rozpoczeciu synchronizacji.';
+                    const startedAt = new Date(state.started_at).getTime();
+                    if (Number.isNaN(startedAt)) return 'Szacowanie czasu niedostepne.';
+
+                    const finishedAt = state.finished_at ? new Date(state.finished_at).getTime() : null;
+                    if (state.status === 'completed' && finishedAt && !Number.isNaN(finishedAt)) {
+                        return `Synchronizacja zajela ${this.formatDuration((finishedAt - startedAt) / 1000)}.`;
+                    }
+                    if (state.status === 'error' && finishedAt && !Number.isNaN(finishedAt)) {
+                        return `Synchronizacja przerwana po ${this.formatDuration((finishedAt - startedAt) / 1000)}.`;
+                    }
+                    if (!state.progress || state.progress < 5) {
+                        return 'Szacowanie czasu pojawi sie po chwili.';
+                    }
+
+                    const now = Date.now();
+                    const elapsedSeconds = Math.max(1, (now - startedAt) / 1000);
+                    const estimatedTotalSeconds = elapsedSeconds / (state.progress / 100);
+                    const remainingSeconds = Math.max(0, estimatedTotalSeconds - elapsedSeconds);
+                    return `Szacowany czas calkowity: ${this.formatDuration(estimatedTotalSeconds)}. Pozostalo okolo ${this.formatDuration(remainingSeconds)}.`;
+                },
+
+                formatBytes(bytes) {
+                    const size = Number(bytes) || 0;
+                    if (size < 1024) return `${size} B`;
+                    if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+                    return `${(size / (1024 * 1024)).toFixed(1)} MB`;
+                },
+
+                formatRssi(rssi) {
+                    if (rssi === null || rssi === undefined) return 'Brak danych';
+                    if (rssi >= -60) return `${rssi} dBm - bardzo dobry`;
+                    if (rssi >= -70) return `${rssi} dBm - dobry`;
+                    if (rssi >= -80) return `${rssi} dBm - sredni`;
+                    return `${rssi} dBm - slaby`;
+                },
+
+                formatBattery(device) {
+                    const bars = device?.battery_bars;
+                    if (bars === null || bars === undefined) return 'Brak danych';
+                    return `${bars}/5 paskow`;
+                },
+
+                formatBatteryVoltage(voltage) {
+                    if (voltage === null || voltage === undefined) return 'brak danych';
+                    return `${Number(voltage).toFixed(2)} V`;
+                },
+
+                formatSdUsage(device) {
+                    if (!device?.sd_ok) return 'Sprawdz karte SD w urzadzeniu.';
+                    if (!device?.sd_total) return 'Karta SD gotowa.';
+                    const totalMb = Math.round(device.sd_total / (1024 * 1024));
+                    const usedMb = Math.round((device.sd_used || 0) / (1024 * 1024));
+                    const percent = Math.max(0, Math.min(100, Math.round(((device.sd_used || 0) / device.sd_total) * 100)));
+                    return `Wykorzystano ${usedMb} MB z ${totalMb} MB (${percent}%)`;
+                },
+
+                formatSdUsageDetailed(device) {
+                    if (!device?.sd_total) return 'Brak danych o pojemnosci SD.';
+                    const totalMb = Math.round(device.sd_total / (1024 * 1024));
+                    const usedMb = Math.round((device.sd_used || 0) / (1024 * 1024));
+                    const freeMb = Math.max(0, totalMb - usedMb);
+                    const percent = Math.max(0, Math.min(100, Math.round(((device.sd_used || 0) / device.sd_total) * 100)));
+                    return `${usedMb} MB zajete, ${freeMb} MB wolne (${percent}% zajetosci)`;
+                },
+
+                cleanDeviceFilename(path) {
+                    const rawName = path.split('/').filter(Boolean).pop() || path;
+                    return rawName
+                        .replace(/^([0-9a-f]{8}_)+/i, '')
+                        .replace(/_trimmed(?=\.mp3$)/i, '')
+                        .replace(/\.mp3$/i, '')
+                        .replace(/_/g, ' ');
+                },
+
+                resolveDeviceFileLabel(path) {
+                    const track = this.tracks.find((item) => `/music/${item.filename}` === path);
+                    if (track) {
+                        return track.title;
+                    }
+
+                    const systemSound = this.systemSounds.find((item) => item.filename && `/data/system/${item.filename}` === path);
+                    if (systemSound) {
+                        return this.soundLabels[systemSound.name] || systemSound.name;
+                    }
+
+                    const configLabels = {
+                        '/data/mappings.json': 'Mapowania figurek',
+                        '/data/system_sounds.json': 'Konfiguracja system sounds',
+                        '/data/led_config.json': 'Konfiguracja LED'
+                    };
+                    if (configLabels[path]) {
+                        return configLabels[path];
+                    }
+
+                    return this.cleanDeviceFilename(path);
+                },
+
+                groupDeviceFiles(deviceState) {
+                    const files = Array.isArray(deviceState?.files) ? deviceState.files : [];
+                    const groups = [
+                        { name: 'music', label: 'Muzyka', files: [] },
+                        { name: 'system', label: 'Dzwieki systemowe', files: [] },
+                        { name: 'config', label: 'Pliki konfiguracyjne', files: [] }
+                    ];
+                    for (const entry of files) {
+                        const file = {
+                            path: entry.path,
+                            size: entry.size,
+                            name: this.resolveDeviceFileLabel(entry.path),
+                            technicalName: entry.path.split('/').filter(Boolean).pop() || entry.path
+                        };
+                        if (entry.path.startsWith('/music/')) {
+                            groups[0].files.push(file);
+                        } else if (entry.path.startsWith('/data/system/')) {
+                            groups[1].files.push(file);
+                        } else {
+                            groups[2].files.push(file);
+                        }
+                    }
+                    return groups.filter((group) => group.files.length > 0);
                 },
 
                 async loadTracks() {
@@ -577,6 +1492,240 @@
                     } catch (e) {
                         this.showNotification('Błąd ładowania figurek', 'error');
                     }
+                },
+
+                async loadDevices() {
+                    this.loadingDevices = true;
+                    try {
+                        const res = await fetch('/admin/devices');
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad polaczenia z zBox', 'error');
+                            this.devices = [];
+                            return;
+                        }
+                        this.devices = await res.json();
+                        for (const device of this.devices) {
+                            this.ensureDeviceSyncCheckState(device.device_id);
+                            this.loadDeviceConfig(device);
+                            this.restoreCurrentDeviceSync(device.device_id);
+                        }
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z zBox', 'error');
+                    } finally {
+                        this.loadingDevices = false;
+                    }
+                },
+
+                async loadDeviceSettings() {
+                    try {
+                        const res = await fetch('/admin/device-settings');
+                        if (!res.ok) return;
+                        this.deviceSettings = await res.json();
+                    } catch (e) {
+                    }
+                },
+
+                async saveDeviceSettings() {
+                    try {
+                        const payload = { ip: (this.deviceSettings.ip || '').trim() };
+                        const res = await fetch('/admin/device-settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad zapisu IP zBox', 'error');
+                            return;
+                        }
+                        this.deviceSettings = await res.json();
+                        this.showNotification('IP zBox zapisane');
+                        await this.loadDevices();
+                    } catch (e) {
+                        this.showNotification('Blad zapisu IP zBox', 'error');
+                    }
+                },
+
+                async loadDeviceFiles(device) {
+                    try {
+                        const res = await fetch(`/admin/devices/${device.device_id}/files`);
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad pobierania listy plikow', 'error');
+                            return;
+                        }
+                        this.deviceFiles[device.device_id] = await res.json();
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    }
+                },
+
+                async checkDeviceSync(device) {
+                    const state = this.ensureDeviceSyncCheckState(device.device_id);
+                    state.loading = true;
+                    try {
+                        const res = await fetch(`/admin/devices/${device.device_id}/sync/check`);
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad sprawdzania stanu synchronizacji', 'error');
+                            return;
+                        }
+                        state.result = await res.json();
+                        this.showNotification(state.result.needs_sync ? 'Wykryto zmiany do synchronizacji' : 'Brak zmian wymagajacych pilnego syncu');
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    } finally {
+                        state.loading = false;
+                    }
+                },
+
+                async loadDeviceConfig(device) {
+                    const state = this.ensureDeviceConfigState(device.device_id);
+                    state.loading = true;
+                    try {
+                        const res = await fetch(`/admin/devices/${device.device_id}/config`);
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad pobierania konfiguracji', 'error');
+                            return;
+                        }
+                        const config = await res.json();
+                        this.setDeviceConfigState(device.device_id, config);
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    } finally {
+                        state.loading = false;
+                    }
+                },
+
+                async saveDeviceConfig(device) {
+                    const state = this.ensureDeviceConfigState(device.device_id);
+                    if (!state.loaded || !state.draft) return;
+                    state.saving = true;
+                    try {
+                        const payload = this.cloneValue(state.draft);
+                        const res = await fetch(`/admin/devices/${device.device_id}/config`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(payload)
+                        });
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad zapisu konfiguracji', 'error');
+                            return;
+                        }
+                        state.original = this.cloneValue(payload);
+                        for (const field of this.ledColorFields) {
+                            state.colorText[field.key] = this.colorToHex(payload[field.key]);
+                            state.colorErrors[field.key] = '';
+                        }
+                        this.showNotification('Konfiguracja LED zapisana');
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    } finally {
+                        state.saving = false;
+                    }
+                },
+
+                async restoreCurrentDeviceSync(deviceId) {
+                    try {
+                        const res = await fetch(`/admin/devices/${deviceId}/sync/current`);
+                        if (!res.ok) return;
+                        const payload = await res.json();
+                        this.deviceSyncTasks[deviceId] = payload;
+                        if (payload.status === 'running') {
+                            this.resumeDeviceSyncPolling(deviceId, payload.task_id);
+                            await this.pollDeviceSyncStatus(deviceId, payload.task_id);
+                        }
+                    } catch (e) {
+                    }
+                },
+
+                async syncToDevice(device) {
+                    try {
+                        const res = await fetch(`/admin/devices/${device.device_id}/sync`, { method: 'POST' });
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad synchronizacji', 'error');
+                            return;
+                        }
+                        const payload = await res.json();
+                        this.deviceSyncTasks[device.device_id] = {
+                            task_id: payload.task_id,
+                            device_id: device.device_id,
+                            status: 'running',
+                            started_at: new Date().toISOString(),
+                            finished_at: null,
+                            progress: 0,
+                            message: 'Przygotowanie synchronizacji...',
+                            stage: 'queued',
+                            uploaded: [],
+                            deleted: [],
+                            uploaded_count: 0,
+                            deleted_count: 0,
+                            mappings_written: false,
+                            mappings_count: 0,
+                            mappings_path: '/data/mappings.json',
+                            system_sounds_written: false,
+                            system_sounds_count: 0,
+                            system_sounds_path: '/data/system_sounds.json',
+                            led_config_written: false,
+                            led_config_path: null,
+                            restart_required: false,
+                            error: null
+                        };
+                        this.stopSyncPolling(device.device_id);
+                        this.resumeDeviceSyncPolling(device.device_id, payload.task_id);
+                        await this.pollDeviceSyncStatus(device.device_id, payload.task_id);
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    }
+                },
+
+                async pollDeviceSyncStatus(deviceId, taskId) {
+                    try {
+                        const res = await fetch(`/admin/devices/${deviceId}/sync/${taskId}/status`);
+                        if (!res.ok) {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad odczytu statusu synchronizacji', 'error');
+                            this.stopSyncPolling(deviceId);
+                            return;
+                        }
+                        const payload = await res.json();
+                        this.deviceSyncTasks[deviceId] = payload;
+                        if (payload.status === 'completed') {
+                            this.stopSyncPolling(deviceId);
+                            this.showNotification('Synchronizacja zakonczona', 'success');
+                            this.loadDevices();
+                            this.loadDeviceFiles({ device_id: deviceId });
+                        } else if (payload.status === 'error') {
+                            this.stopSyncPolling(deviceId);
+                            this.showNotification(payload.message || 'Synchronizacja zakonczona bledem', 'error');
+                        }
+                    } catch (e) {
+                        this.stopSyncPolling(deviceId);
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    }
+                },
+
+                async restartDevice(device) {
+                    if (!confirm(`Zrestartowac urzadzenie ${device.hostname || device.device_id}?`)) return;
+                    try {
+                        const res = await fetch(`/admin/devices/${device.device_id}/restart`, { method: 'POST' });
+                        if (res.ok) {
+                            this.showNotification('Restart wyslany');
+                        } else {
+                            const err = await res.json();
+                            this.showNotification(err.detail || 'Blad restartu', 'error');
+                        }
+                    } catch (e) {
+                        this.showNotification('Blad polaczenia z urzadzeniem', 'error');
+                    }
+                },
+
+                prettyJson(value) {
+                    return JSON.stringify(value, null, 2);
                 },
 
                 uploadTrack() {
@@ -656,6 +1805,7 @@
                     this.downloading = true;
                     this.downloadProgress.message = '🔍 Łączenie z YouTube...';
                     this.downloadProgress.percent = 0;
+                    this.downloadProgress.error = '';
 
                     const formData = new FormData();
                     formData.append('title', this.youtubeTrack.title);
@@ -695,10 +1845,12 @@
 
                                     this.downloadProgress.percent = status.progress || 0;
                                     this.downloadProgress.message = status.message || 'Przetwarzanie...';
+                                    this.downloadProgress.error = status.status === 'error' ? (status.error || '') : '';
 
                                     if (status.status === 'completed') {
                                         clearInterval(this.downloadPollInterval);
                                         this.downloadProgress.message = '✅ Gotowe!';
+                                        this.downloadProgress.error = '';
                                         this.showNotification('Utwór pobrany z YouTube', 'success');
                                         this.youtubeTrack = { title: '', url: '' };
                                         this.downloading = false;
@@ -717,6 +1869,7 @@
                     } catch (e) {
                         this.showNotification('Błąd połączenia: ' + e.message, 'error');
                         console.error('YouTube download exception:', e);
+                        this.downloadProgress.error = e.message || 'Blad polaczenia';
                         this.downloading = false;
                     }
                 },

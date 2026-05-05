@@ -1,8 +1,37 @@
 #pragma once
+#include <Arduino.h>
 #include <stdint.h>
 #include "musicbox_config.h"
 
 #if ENABLE_LEDS
+
+struct LedColorConfig {
+    uint8_t r;
+    uint8_t g;
+    uint8_t b;
+};
+
+struct LedConfig {
+    LedColorConfig waitBtColor;
+    LedColorConfig idleColor;
+    LedColorConfig playingColor;
+    LedColorConfig volumeColor;
+    LedColorConfig sleepReadyColor;
+    LedColorConfig syncColor;
+    LedColorConfig diagnosticHeadColor;
+    LedColorConfig diagnosticTrailColor;
+    LedColorConfig modeMusicColor;
+    LedColorConfig modeNfcColor;
+    LedColorConfig successColor;
+    LedColorConfig errorColor;
+    LedColorConfig warningColor;
+    bool animateWaitBt;
+    bool animateIdle;
+    bool animatePlaying;
+    bool animateSleepReady;
+    bool animateSync;
+    bool animateDiagnostic;
+};
 
 // Hardware-only init — bez FreeRTOS.
 // Wywołać PRZED initLeds() gdy boot pochodzi z deep sleep (handleWakeFromDeepSleep).
@@ -39,6 +68,9 @@ void ledFlashResult(bool success);
 void ledFlashWarning();
 void ledShutdownAnim();
 void ledShowBattery(int bars);
+bool ledLoadConfigFromSd();
+bool ledSaveConfigJson(const String &json);
+String ledGetConfigJson();
 
 #else // !ENABLE_LEDS — stubs
 
@@ -64,5 +96,8 @@ inline void ledFlashResult(bool) {}
 inline void ledFlashWarning() {}
 inline void ledShutdownAnim() {}
 inline void ledShowBattery(int) {}
+inline bool ledLoadConfigFromSd() { return false; }
+inline bool ledSaveConfigJson(const String &) { return false; }
+inline String ledGetConfigJson() { return "{}"; }
 
 #endif // ENABLE_LEDS

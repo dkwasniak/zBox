@@ -6,14 +6,35 @@ import subprocess
 import tempfile
 import threading
 import re
+import unicodedata
+from datetime import datetime, UTC
 from pathlib import Path
 from typing import List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from requests import RequestException
 from sqlalchemy.orm import Session, joinedload
 
-from database import get_db, Track, Figurine, SystemSound
+from database import get_db, SessionLocal, Track, Figurine, SystemSound
+from device_sync import (
+    build_sync_plan,
+    fetch_device_files,
+    fetch_device_status,
+    fetch_led_config,
+    get_configured_device,
+    get_device_settings,
+    push_led_config,
+    restart_device,
+    save_device_settings,
+    sync_device,
+)
 from models import (
+    DeviceFilesResponse,
+    DeviceSettings,
+    DeviceSyncCheckResponse,
+    DeviceStatus,
+    DeviceSyncStartResponse,
+    DeviceSyncTaskStatus,
     TrackResponse,
     FigurineCreate,
     FigurineUpdate,
@@ -40,6 +61,153 @@ VALID_SYSTEM_SOUNDS = {
 
 # Globalny dict do trzymania progressu zadań YouTube
 youtube_tasks: Dict[str, dict] = {}
+device_sync_tasks: Dict[str, dict] = {}
+
+
+def _slugify_filename_component(value: str, fallback: str = "track") -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    ascii_only = normalized.encode("ascii", "ignore").decode("ascii")
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", ascii_only).strip("._-")
+    return cleaned or fallback
+
+
+def _safe_track_filename(name: str, unique_id: str | None = None) -> str:
+    raw_name = Path(name).name
+    stem = Path(raw_name).stem
+    safe_stem = _slugify_filename_component(stem)
+    prefix = f"{unique_id}_" if unique_id else ""
+    return f"{prefix}{safe_stem}.mp3"
+
+
+def _normalize_track_filenames(db: Session) -> bool:
+    changed = False
+    tracks = db.query(Track).order_by(Track.id.asc()).all()
+
+    for track in tracks:
+        current_name = Path(track.filename).name
+        if current_name.lower().endswith(".mp3"):
+            stem_source = current_name[:-4]
+        else:
+            stem_source = current_name
+
+        if "_" in stem_source:
+            prefix, remainder = stem_source.split("_", 1)
+            if re.fullmatch(r"[0-9a-fA-F]{8}", prefix):
+                safe_name = _safe_track_filename(remainder, unique_id=prefix.lower())
+            else:
+                safe_name = _safe_track_filename(current_name)
+        else:
+            safe_name = _safe_track_filename(current_name)
+
+        if safe_name == current_name:
+            continue
+
+        old_path = MUSIC_DIR / current_name
+        new_name = safe_name
+        new_path = MUSIC_DIR / new_name
+
+        if new_path.exists() and new_path != old_path:
+            new_name = _safe_track_filename(current_name, unique_id=uuid.uuid4().hex[:8])
+            new_path = MUSIC_DIR / new_name
+
+        if old_path.exists() and old_path != new_path:
+            os.replace(old_path, new_path)
+        elif not old_path.exists() and not new_path.exists():
+            continue
+
+        track.filename = new_name
+        changed = True
+
+    if changed:
+        db.commit()
+
+    return changed
+
+
+def _summarize_command_output(output: str, limit: int = 300) -> str:
+    lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
+    if not lines:
+        return "Brak szczegolow bledu."
+    for line in reversed(lines):
+        if "ERROR:" in line or "Requested format is not available" in line:
+            return line[:limit]
+    return lines[-1][:limit]
+
+
+def _create_sync_task_state(task_id: str, device_id: str) -> dict:
+    return {
+        "task_id": task_id,
+        "device_id": device_id,
+        "status": "running",
+        "started_at": datetime.now(UTC).isoformat(),
+        "finished_at": None,
+        "progress": 0,
+        "message": "Przygotowanie synchronizacji...",
+        "stage": "queued",
+        "current_file": None,
+        "current_file_index": None,
+        "current_file_total": None,
+        "current_file_progress": None,
+        "uploaded": [],
+        "deleted": [],
+        "uploaded_count": 0,
+        "deleted_count": 0,
+        "mappings_written": False,
+        "mappings_count": 0,
+        "mappings_path": "/data/mappings.json",
+        "system_sounds_written": False,
+        "system_sounds_count": 0,
+        "system_sounds_path": "/data/system_sounds.json",
+        "led_config_written": False,
+        "led_config_path": None,
+        "restart_required": False,
+        "error": None,
+    }
+
+
+def _get_current_sync_task(device_id: str) -> dict | None:
+    running_tasks = [
+        task for task in device_sync_tasks.values()
+        if task.get("device_id") == device_id and task.get("status") == "running"
+    ]
+    if not running_tasks:
+        return None
+    return max(running_tasks, key=lambda task: task.get("started_at") or "")
+
+
+def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
+    db = SessionLocal()
+    try:
+        _normalize_track_filenames(db)
+        result = sync_device(
+            device,
+            db,
+            progress_callback=lambda update: device_sync_tasks[task_id].update(update),
+        )
+        device_sync_tasks[task_id].update(result)
+        device_sync_tasks[task_id]["finished_at"] = datetime.now(UTC).isoformat()
+    except RequestException as exc:
+        current = device_sync_tasks.get(task_id, _create_sync_task_state(task_id, requested_device_id))
+        current.update({
+            "status": "error",
+            "finished_at": datetime.now(UTC).isoformat(),
+            "progress": current.get("progress", 0),
+            "message": f"Blad polaczenia z urzadzeniem: {exc}",
+            "error": str(exc),
+        })
+        device_sync_tasks[task_id] = current
+    except Exception as exc:
+        current = device_sync_tasks.get(task_id, _create_sync_task_state(task_id, requested_device_id))
+        current.update({
+            "status": "error",
+            "finished_at": datetime.now(UTC).isoformat(),
+            "progress": current.get("progress", 0),
+            "message": f"Synchronizacja nie powiodla sie: {exc}",
+            "error": str(exc),
+        })
+        device_sync_tasks[task_id] = current
+    finally:
+        db.close()
 
 
 # === Tracks (Utwory) ===
@@ -64,7 +232,7 @@ async def upload_track(
 
     # Generuj unikalną nazwę pliku
     unique_id = uuid.uuid4().hex[:8]
-    safe_filename = f"{unique_id}_{file.filename}"
+    safe_filename = _safe_track_filename(file.filename, unique_id=unique_id)
     final_path = MUSIC_DIR / safe_filename
 
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -127,7 +295,7 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
 
         # Generuj unikalną nazwę pliku
         unique_id = uuid.uuid4().hex[:8]
-        safe_filename = f"{unique_id}_{title}.mp3"
+        safe_filename = _safe_track_filename(title, unique_id=unique_id)
         final_path = MUSIC_DIR / safe_filename
 
         MUSIC_DIR.mkdir(parents=True, exist_ok=True)
@@ -157,8 +325,10 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
                 text=True
             )
 
+            yt_dlp_output: list[str] = []
             # Parsuj output w czasie rzeczywistym
             for line in process.stdout:
+                yt_dlp_output.append(line.rstrip())
                 # Szukaj linii z procentami, np: "[download]  45.2% of 5.23MiB"
                 match = re.search(r'\[download\]\s+(\d+\.?\d*)%', line)
                 if match:
@@ -170,7 +340,8 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
             process.wait()
 
             if process.returncode != 0:
-                raise Exception("Błąd pobierania z YouTube")
+                details = _summarize_command_output("\n".join(yt_dlp_output))
+                raise Exception(f"Blad yt-dlp: {details}")
 
             youtube_tasks[task_id]['progress'] = 60
             youtube_tasks[task_id]['message'] = 'Szukanie pobranego pliku...'
@@ -206,7 +377,8 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
             )
 
             if result.returncode != 0:
-                raise Exception(f"Błąd konwersji: {result.stderr[:200]}")
+                details = _summarize_command_output(result.stderr or result.stdout)
+                raise Exception(f"Blad ffmpeg: {details}")
 
             youtube_tasks[task_id]['progress'] = 90
             youtube_tasks[task_id]['message'] = 'Zapisywanie do bazy...'
@@ -228,7 +400,7 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
                 db.close()
 
     except Exception as e:
-        logger.error(f"YouTube download error: {str(e)}")
+        logger.exception("YouTube download error for %s", youtube_url)
         youtube_tasks[task_id]['status'] = 'error'
         youtube_tasks[task_id]['error'] = str(e)
         youtube_tasks[task_id]['message'] = f'Błąd: {str(e)}'
@@ -298,7 +470,7 @@ async def trim_track(
     # Usuń poprzedni sufiks _trimmed jeśli istnieje
     clean_name = clean_name.replace("_trimmed", "")
 
-    new_filename = f"{unique_id}_{clean_name}_trimmed.mp3"
+    new_filename = _safe_track_filename(f"{clean_name}_trimmed.mp3", unique_id=unique_id)
     trimmed_path = MUSIC_DIR / new_filename
 
     try:
@@ -541,3 +713,142 @@ def delete_system_sound(name: str, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "Dźwięk usunięty", "name": name}
+
+
+def _get_device_or_404() -> dict:
+    try:
+        return get_configured_device()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/device-settings", response_model=DeviceSettings)
+def read_device_settings():
+    return get_device_settings()
+
+
+@router.post("/device-settings", response_model=DeviceSettings)
+def update_device_settings(payload: DeviceSettings):
+    return save_device_settings(payload.ip)
+
+
+@router.get("/devices", response_model=List[DeviceStatus])
+def list_devices():
+    """Zwraca skonfigurowany zBox po stałym IP."""
+    try:
+        return [fetch_device_status(_get_device_or_404())]
+    except RequestException:
+        return []
+
+
+@router.get("/devices/{device_id}/files", response_model=DeviceFilesResponse)
+def get_device_files(device_id: str):
+    """Zwraca listę plików dostępnych na SD urządzenia."""
+    try:
+        return fetch_device_files(_get_device_or_404())
+    except RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+
+
+@router.get("/devices/{device_id}/sync/check", response_model=DeviceSyncCheckResponse)
+def check_device_sync(device_id: str, db: Session = Depends(get_db)):
+    """Sprawdza, czy na urządzeniu są zmiany do synchronizacji."""
+    try:
+        _normalize_track_filenames(db)
+        plan = build_sync_plan(_get_device_or_404(), db)
+        return {
+            "device_id": plan["device_id"],
+            "needs_sync": plan["needs_sync"],
+            "message": plan["message"],
+            "files_to_upload": plan["files_to_upload"],
+            "files_to_delete": plan["files_to_delete"],
+            "upload_count": plan["upload_count"],
+            "delete_count": plan["delete_count"],
+            "music_needs_update": plan["music_needs_update"],
+            "music_files_to_upload": plan["music_files_to_upload"],
+            "music_files_to_delete": plan["music_files_to_delete"],
+            "music_upload_count": plan["music_upload_count"],
+            "music_delete_count": plan["music_delete_count"],
+            "mappings_count": plan["mappings_count"],
+            "mappings_present": plan["mappings_present"],
+            "mappings_needs_update": plan["mappings_needs_update"],
+            "mappings_path": plan["mappings_path"],
+            "system_sounds_count": plan["system_sounds_count"],
+            "system_sounds_present": plan["system_sounds_present"],
+            "system_sounds_needs_update": plan["system_sounds_needs_update"],
+            "system_sounds_path": plan["system_sounds_path"],
+            "system_sound_files_to_upload": plan["system_sound_files_to_upload"],
+            "system_sound_files_to_delete": plan["system_sound_files_to_delete"],
+            "system_sound_upload_count": plan["system_sound_upload_count"],
+            "system_sound_delete_count": plan["system_sound_delete_count"],
+            "system_sounds_manifest_needs_update": plan["system_sounds_manifest_needs_update"],
+        }
+    except RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+
+
+@router.get("/devices/{device_id}/config")
+def get_device_config(device_id: str):
+    """Zwraca aktualną konfigurację animacji LED z urządzenia."""
+    try:
+        return fetch_led_config(_get_device_or_404())
+    except RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+
+
+@router.post("/devices/{device_id}/config")
+def save_device_config(device_id: str, payload: dict):
+    """Zapisuje konfigurację animacji LED na urządzeniu."""
+    try:
+        device = _get_device_or_404()
+        push_led_config(device, payload)
+        return {"saved": True, "device_id": device_id}
+    except RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+
+
+@router.post("/devices/{device_id}/sync", response_model=DeviceSyncStartResponse)
+def sync_device_now(device_id: str):
+    """Uruchamia synchronizację w tle i zwraca task_id do pollingu."""
+    try:
+        current_task = _get_current_sync_task(device_id)
+        if current_task:
+            return {"task_id": current_task["task_id"]}
+        device = _get_device_or_404()
+        task_id = uuid.uuid4().hex
+        device_sync_tasks[task_id] = _create_sync_task_state(task_id, device_id)
+        thread = threading.Thread(
+            target=_run_device_sync_task,
+            args=(task_id, device, device_id),
+            daemon=True,
+        )
+        thread.start()
+        return {"task_id": task_id}
+    except RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+
+
+@router.get("/devices/{device_id}/sync/current", response_model=DeviceSyncTaskStatus)
+def get_current_device_sync(device_id: str):
+    task = _get_current_sync_task(device_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Brak aktywnej synchronizacji")
+    return task
+
+
+@router.get("/devices/{device_id}/sync/{task_id}/status", response_model=DeviceSyncTaskStatus)
+def get_device_sync_status(device_id: str, task_id: str):
+    task = device_sync_tasks.get(task_id)
+    if not task or task.get("device_id") != device_id:
+        raise HTTPException(status_code=404, detail="Nie znaleziono zadania synchronizacji")
+    return task
+
+
+@router.post("/devices/{device_id}/restart")
+def restart_device_now(device_id: str):
+    """Restartuje urządzenie po operacjach serwisowych."""
+    try:
+        restart_device(_get_device_or_404())
+        return {"restart": True, "device_id": device_id}
+    except RequestException as exc:
+        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc

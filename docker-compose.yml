@@ -13,3 +13,4 @@ services:
     restart: unless-stopped
     environment:
       - TZ=Europe/Warsaw
+      - ZBOX_IP=${ZBOX_IP:-}

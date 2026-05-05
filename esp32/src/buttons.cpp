@@ -96,7 +96,6 @@ void markComboHandled(Button &a, Button &b)
 void handleButtons()
 {
     static bool bothABHandled = false;
-    static bool bothCDHandled = false;
     static bool cSleepReadyShown = false;
     unsigned long now = millis();
 
@@ -136,34 +135,6 @@ void handleButtons()
             bool written = (bool)f;
             if (f) f.close();
             LOG(">>> Diagnostic flag written & verified: %d\n", written);
-
-            delay(100);
-            ESP.restart();
-        }
-    }
-
-    // Combo: BTN_C + BTN_D trzymane LONG_PRESS_MS -> SYNC MODE.
-    // Wymagamy pressStart>0 dla OBU - inaczej trzymanie BTN_D z hold-to-wake
-    // (które omija ISR) + późniejsze BTN_C mogłyby fałszywie wejść w sync.
-    if (down[2] && down[3] && !bothCDHandled &&
-        buttons[2].pressStart > 0 && buttons[3].pressStart > 0)
-    {
-        unsigned long earliest = max(buttons[2].pressStart, buttons[3].pressStart);
-        if (now - earliest >= LONG_PRESS_MS)
-        {
-            bothCDHandled = true;
-            markComboHandled(buttons[2], buttons[3]);
-            LOGLN("\n>>> SYNC MODE");
-
-            playSystemSoundSync("sync");
-            audioStop();
-
-            {
-                File f = SD.open("/data/sync_pending", FILE_WRITE);
-                bool written = (bool)f;
-                if (f) f.close();
-                LOG(">>> Sync flag written & verified: %d\n", written);
-            }
 
             delay(100);
             ESP.restart();
@@ -262,6 +233,4 @@ void handleButtons()
     // Flaga combo resetuje się gdy którykolwiek z C/D zostanie puszczony
     if (!down[0] || !down[1])
         bothABHandled = false;
-    if (!down[2] || !down[3])
-        bothCDHandled = false;
 }

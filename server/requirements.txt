@@ -4,3 +4,5 @@ sqlalchemy==2.0.25
 python-multipart==0.0.6
 aiofiles==23.2.1
 pydantic==2.5.3
+requests==2.32.3
+requests-toolbelt==1.0.0

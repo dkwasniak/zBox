@@ -107,6 +107,21 @@ static QueueHandle_t audioQueue = NULL;
 static TaskHandle_t audioTaskHandle = NULL;
 static bool a2dpStarted = false;
 
+static void startA2dpTransport()
+{
+    auto cfg = a2dp.defaultConfig(TX_MODE);
+    cfg.name = BT_SPEAKER_NAME;
+    cfg.auto_reconnect = true;
+    cfg.wait_for_connection = false;
+    a2dp.source().set_avrc_rn_events({});  // ESP jest master volume — ignoruj AVRCP notify od JBL
+    a2dp.begin(cfg);
+    a2dpStarted = true;
+    // Bootstrap: na wypadek race condition gdy callback ominął pierwsze połączenie
+    delay(100);
+    g_btConnected = a2dp.source().is_connected();
+    LOG("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
+}
+
 static bool audioSendCmd(const AudioCmd &cmd, TickType_t timeout, bool front = false)
 {
     if (!audioQueue) return false;
@@ -155,7 +170,12 @@ static void audioTaskFunc(void *param)
                     isPlaying = true;
                     isPaused = false;
                     ledSetPlaying();
-                    PLOGF("[AUDIO] Playing: %s", cmd.path);
+                    const char *logPath = cmd.path;
+                    const size_t logPathLen = strlen(cmd.path);
+                    if (logPathLen > 56) logPath = cmd.path + (logPathLen - 56);
+                    PLOGF("[AUDIO] Playing: %s%s",
+                          logPathLen > 56 ? "..." : "",
+                          logPath);
                     telSdBytes = telWrittenBytes = telDrops = 0;
                     telWindowStart = millis();
                     telWindows = 0;
@@ -262,17 +282,7 @@ static void audioTaskFunc(void *param)
 
 void audioInit()
 {
-    auto cfg = a2dp.defaultConfig(TX_MODE);
-    cfg.name = BT_SPEAKER_NAME;
-    cfg.auto_reconnect = true;
-    cfg.wait_for_connection = false;
-    a2dp.source().set_avrc_rn_events({});  // ESP jest master volume — ignoruj AVRCP notify od JBL
-    a2dp.begin(cfg);
-    a2dpStarted = true;
-    // Bootstrap: na wypadek race condition gdy callback ominął pierwsze połączenie
-    delay(100);
-    g_btConnected = a2dp.source().is_connected();
-    LOG("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
+    startA2dpTransport();
     beatTracker.setSink(&a2dp);
     decoderStream.begin();
     mp3Decoder.addNotifyAudioChange(audioInfoLogger);
@@ -362,6 +372,21 @@ void audioPollBtConnection()
 
     g_btConnected = connected;
     PLOGF("[BT] polled connected=%d", (int)g_btConnected);
+}
+
+bool audioRestartDiscovery()
+{
+    if (!a2dpStarted)
+        return false;
+
+    PLOGF("[BT] Restarting A2DP in discovery mode");
+    a2dp.clear();
+    a2dp.source().end(false);  // czyści connected_bda/last_connection i pozwala ruszyć discovery po nazwie
+    a2dpStarted = false;
+    g_btConnected = false;
+    delay(200);
+    startA2dpTransport();
+    return true;
 }
 
 uint32_t audioGetTaskHWM()
