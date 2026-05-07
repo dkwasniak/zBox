@@ -12,7 +12,7 @@
 
 void enterDeepSleep()
 {
-    LOGLN("Preparing for deep sleep...");
+    LOGC("[SLEEP] Preparing for deep sleep\n");
 
     // 0. Zagraj dźwięk "sleep" przez BT (jeśli przypisany).
     playSystemSoundSync("power_off");
@@ -37,7 +37,7 @@ void enterDeepSleep()
     //    A2DP state machine nie dostaje żadnego eventu disconnect.
     //    Musi być wywołane PRZED jblPowerOff() — fizyczne odłączenie JBL
     //    triggeruje bta_av_str_stopped → crash jeśli controller nadal aktywny.
-    LOGLN("[SLEEP] Disabling BT controller...");
+    LOGC("[SLEEP] Disabling BT controller\n");
     esp_bt_controller_disable();
     delay(50);
 
@@ -49,7 +49,7 @@ void enterDeepSleep()
     // 3. JBL OFF — bezpieczne, BT controller już wyłączony, brak eventów.
     jblPowerOff();
 
-    LOGLN("Entering deep sleep...");
+    LOGC("[SLEEP] Entering deep sleep\n");
     Serial.flush();
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
@@ -57,7 +57,7 @@ void enterDeepSleep()
 
 void enterEmergencyDeepSleep()
 {
-    LOGLN("[SLEEP] Emergency deep sleep");
+    LOGC("[SLEEP] Emergency deep sleep\n");
 
     pinMode(JBL_POWER, OUTPUT);
     digitalWrite(JBL_POWER, LOW);
@@ -96,7 +96,7 @@ void handleWakeFromDeepSleep()
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
         return;
 
-    LOGLN("[WAKE] Hold BTN_D to confirm wake-up...");
+    LOGC("[WAKE] Hold BTN_D to confirm wake-up\n");
 
     pinMode(BTN_D, INPUT_PULLUP);
 
@@ -126,7 +126,7 @@ void handleWakeFromDeepSleep()
         {
             // Przytrzymanie kompletne - kontynuuj normalny boot.
             // LEDy zostaną nadpisane przez ledInit()/ledSetBootProgress().
-            LOGLN("[WAKE] Hold confirmed - booting");
+            LOGC("[WAKE] Hold confirmed - booting\n");
             return;
         }
 
@@ -142,7 +142,7 @@ void handleWakeFromDeepSleep()
     }
 
     // Puszczony za wcześnie - cicho z powrotem do deep sleep.
-    LOGLN("[WAKE] Released too early - back to deep sleep");
+    LOGC("[WAKE] Released too early - back to deep sleep\n");
     Serial.flush();
     ledPowerOff(); // clear + wyłącz zasilanie LEDów
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);

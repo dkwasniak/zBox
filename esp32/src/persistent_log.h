@@ -2,15 +2,11 @@
 #include <Arduino.h>
 
 #define PLOG_LINE_LEN 96
-#define PLOG_LINES 80
+#define PLOG_LINES 40
 
-void plogInit();
+void plogInit(bool sdAvailable = true);
 void plogWrite(const char* line);
 void plogFlushToSd();
-void plogMark(const char* tag);
-
-#define PLOGF(fmt, ...) do { \
-    char _b[PLOG_LINE_LEN]; \
-    snprintf(_b, sizeof(_b), "<%lu> " fmt, millis(), ##__VA_ARGS__); \
-    plogWrite(_b); \
-} while(0)
+void plogMark(const char* level, const char* tag);
+void logWritef(const char* level, bool persistent, const char* fmt, ...);
+void formatUptime(char* out, size_t outSize, unsigned long ms);

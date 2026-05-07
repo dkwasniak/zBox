@@ -6,12 +6,14 @@ import subprocess
 import tempfile
 import threading
 import re
+import json
 import unicodedata
 from datetime import datetime, UTC
 from pathlib import Path
 from typing import List, Dict
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from requests import RequestException
 from sqlalchemy.orm import Session, joinedload
 
@@ -19,6 +21,8 @@ from database import get_db, SessionLocal, Track, Figurine, SystemSound
 from device_sync import (
     build_sync_plan,
     fetch_device_files,
+    fetch_device_log_content,
+    fetch_device_logs,
     fetch_device_status,
     fetch_led_config,
     get_configured_device,
@@ -27,9 +31,12 @@ from device_sync import (
     restart_device,
     save_device_settings,
     sync_device,
+    download_device_log,
 )
 from models import (
     DeviceFilesResponse,
+    DeviceLogContentResponse,
+    DeviceLogsResponse,
     DeviceSettings,
     DeviceSyncCheckResponse,
     DeviceStatus,
@@ -62,6 +69,27 @@ VALID_SYSTEM_SOUNDS = {
 # Globalny dict do trzymania progressu zadań YouTube
 youtube_tasks: Dict[str, dict] = {}
 device_sync_tasks: Dict[str, dict] = {}
+
+
+def _device_error_detail(exc: RequestException) -> str:
+    if exc.response is None:
+        return f"Błąd połączenia z urządzeniem: {exc}"
+
+    text = (exc.response.text or "").strip()
+    if not text:
+        return f"Błąd urządzenia HTTP {exc.response.status_code}"
+
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+    if isinstance(payload, dict):
+        if isinstance(payload.get("error"), str) and payload["error"].strip():
+            return payload["error"].strip()
+        if isinstance(payload.get("detail"), str) and payload["detail"].strip():
+            return payload["detail"].strip()
+    return text
 
 
 def _slugify_filename_component(value: str, fallback: str = "track") -> str:
@@ -748,6 +776,51 @@ def get_device_files(device_id: str):
         return fetch_device_files(_get_device_or_404())
     except RequestException as exc:
         raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+
+
+@router.get("/devices/{device_id}/logs", response_model=DeviceLogsResponse)
+def get_device_logs(device_id: str):
+    try:
+        return fetch_device_logs(_get_device_or_404())
+    except RequestException as exc:
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+@router.get("/devices/{device_id}/logs/content", response_model=DeviceLogContentResponse)
+def get_device_log_content(device_id: str, name: str, tail: int = 200):
+    try:
+        return fetch_device_log_content(_get_device_or_404(), name=name, tail=tail)
+    except RequestException as exc:
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+@router.get("/devices/{device_id}/logs/download")
+def get_device_log_download(device_id: str, name: str):
+    try:
+        response = download_device_log(_get_device_or_404(), name=name)
+    except RequestException as exc:
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+    media_type = response.headers.get("Content-Type", "text/plain; charset=utf-8")
+    disposition = response.headers.get("Content-Disposition", f'attachment; filename="{name}"')
+
+    def iter_chunks():
+        try:
+            yield from response.iter_content(chunk_size=8192)
+        finally:
+            response.close()
+
+    return StreamingResponse(
+        iter_chunks(),
+        media_type=media_type,
+        headers={"Content-Disposition": disposition},
+    )
 
 
 @router.get("/devices/{device_id}/sync/check", response_model=DeviceSyncCheckResponse)

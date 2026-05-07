@@ -23,7 +23,7 @@ static void saveBtVolume()
     preferences.begin("musicbox", false);
     preferences.putInt("bt_volume", btVolume);
     preferences.end();
-    PLOGF("[VOL] Saved: %d%%", btVolume);
+    LOGI("[VOL] Saved: %d%%\n", btVolume);
 }
 
 void loadBtVolume()
@@ -32,7 +32,7 @@ void loadBtVolume()
     btVolume = preferences.getInt("bt_volume", BT_VOL_DEFAULT);
     preferences.end();
     btVolume = constrain(btVolume, BT_VOL_MIN, BT_VOL_MAX);
-    LOG("[VOL] Restored: %d%%\n", btVolume);
+    LOGI("[VOL] Restored: %d%%\n", btVolume);
 }
 
 void applyBtVolume()
@@ -48,13 +48,13 @@ void applyBtVolume()
     {
         volumeApplyPending = true;
         volumeApplyDueMs = lastApplyMs + VOLUME_APPLY_THROTTLE_MS;
-        LOG("[VOL] Skipped (throttle): %d%%\n", btVolume);
+        LOGI("[VOL] Skipped (throttle): %d%%\n", btVolume);
         return;
     }
     volumeApplyPending = false;
     lastApplyMs = now;
     audioSetBtVolumePercent(btVolume);
-    PLOGF("[VOL] Queued apply: %d%%", btVolume);
+    LOGI("[VOL] Queued apply: %d%%\n", btVolume);
 }
 
 static void scheduleVolumeSave()
@@ -81,7 +81,7 @@ void volumeUp()
 {
     int oldVolume = btVolume;
     btVolume = min(btVolume + BT_VOL_STEP, BT_VOL_MAX);
-    PLOGF("[VOL] Up %d%% -> %d%%", oldVolume, btVolume);
+    LOGI("[VOL] Up %d%% -> %d%%\n", oldVolume, btVolume);
     applyBtVolume();
     scheduleVolumeSave();
     ledShowVolume(btVolume);
@@ -91,7 +91,7 @@ void volumeDown()
 {
     int oldVolume = btVolume;
     btVolume = max(btVolume - BT_VOL_STEP, BT_VOL_MIN);
-    PLOGF("[VOL] Down %d%% -> %d%%", oldVolume, btVolume);
+    LOGI("[VOL] Down %d%% -> %d%%\n", oldVolume, btVolume);
     applyBtVolume();
     scheduleVolumeSave();
     ledShowVolume(btVolume);

@@ -6,7 +6,7 @@
 #include <FastLED.h>
 #include <SD.h>
 #include "musicbox_config.h"
-#include "persistent_log.h"
+#include "logging.h"
 #include "state.h"  // isPlaying
 
 // =============================================================================
@@ -174,11 +174,11 @@ bool ledLoadConfigFromSd()
     f.close();
     if (err)
     {
-        PLOGF("[LED] Config parse error: %s", err.c_str());
+        LOGE("[LED] Config parse error: %s\n", err.c_str());
         return false;
     }
     bool ok = applyLedConfigDocument(doc);
-    PLOGF("[LED] Config loaded=%d", (int)ok);
+    LOGC("[BOOT] led_config_loaded=%d\n", (int)ok);
     return ok;
 }
 
@@ -404,6 +404,39 @@ void ledSetDiagnostic()
     ledLastUpdate = millis();
 }
 
+void ledFlashDiagnosticTransition(bool entering)
+{
+    CRGB outer = toCRGB(ledConfig.diagnosticTrailColor);
+    CRGB inner = toCRGB(ledConfig.diagnosticHeadColor);
+
+    for (int flash = 0; flash < 2; ++flash)
+    {
+        fill_solid(leds, LED_COUNT, outer);
+        int mid = LED_COUNT / 2;
+        leds[mid] = inner;
+        if (mid > 0)
+            leds[mid - 1] = inner;
+        FastLED.show();
+        delay(120);
+
+        FastLED.clear();
+        for (int i = 0; i < LED_COUNT; ++i)
+        {
+            bool edge = entering ? (i <= flash || i >= LED_COUNT - 1 - flash)
+                                 : (i >= mid - flash - 1 && i <= mid + flash);
+            CRGB dimOuter = outer;
+            dimOuter.nscale8_video(80);
+            leds[i] = edge ? inner : dimOuter;
+        }
+        FastLED.show();
+        delay(140);
+
+        FastLED.clear();
+        FastLED.show();
+        delay(90);
+    }
+}
+
 void ledFlashResult(bool success)
 {
     CRGB color = success ? toCRGB(ledConfig.successColor) : toCRGB(ledConfig.errorColor);
@@ -516,7 +549,7 @@ static void ledTaskFunc(void *param)
         // Heartbeat co 5s — PRZED FastLED.show(), żeby log był widoczny nawet gdy show() wisi
         if (now - lastLedHeartbeat > 5000) {
             lastLedHeartbeat = now;
-            PLOGF("[LED] alive mode=%d hwm=%u", (int)ledMode, uxTaskGetStackHighWaterMark(NULL));
+            LOGI("[LED] alive mode=%d hwm=%u\n", (int)ledMode, uxTaskGetStackHighWaterMark(NULL));
         }
 
         // Volume overlay - powrót do poprzedniego trybu po 1s

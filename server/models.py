@@ -105,6 +105,22 @@ class DeviceFilesResponse(DeviceStatus):
     files: list[DeviceFileEntry]
 
 
+class DeviceLogEntry(BaseModel):
+    name: str
+    size: int
+    mtime: int | None = None
+
+
+class DeviceLogsResponse(BaseModel):
+    logs: list[DeviceLogEntry]
+
+
+class DeviceLogContentResponse(BaseModel):
+    name: str
+    text: str
+    truncated: bool
+
+
 class DeviceSyncStartResponse(BaseModel):
     task_id: str
 

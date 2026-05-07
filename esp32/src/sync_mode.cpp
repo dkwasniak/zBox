@@ -51,12 +51,16 @@ static void syncTelnetPoll()
 
 static void syncLogf(const char *fmt, ...)
 {
+    char uptime[16];
+    char msg[192];
     char line[224];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(line, sizeof(line), fmt, args);
+    vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
 
+    formatUptime(uptime, sizeof(uptime), millis());
+    snprintf(line, sizeof(line), "[%s] %s", uptime, msg);
     Serial.println(line);
     if (syncTelnetClient && syncTelnetClient.connected())
         syncTelnetClient.println(line);

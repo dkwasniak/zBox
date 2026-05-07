@@ -43,8 +43,9 @@ void setup()
 {
     bootStart = millis();
     Serial.begin(115200);
-    LOGLN("\n\n=== MusicBox ===");
-    LOG("[T+%4lu] Boot start\n", 0UL);
+    plogInit(false);
+    LOGI("\n\n=== MusicBox ===\n");
+    LOGI("Boot start\n");
 
     handleWakeFromDeepSleep();
     bootStart = millis();
@@ -55,30 +56,33 @@ void setup()
     pinMode(JBL_POWER, OUTPUT);
     digitalWrite(JBL_POWER, LOW);
     pinMode(JBL_STATUS, INPUT);
-    LOG("[T+%4lu] GPIO ready\n", millis() - bootStart);
+    LOGI("GPIO ready\n");
 
     sdReady = initSD();
     if (!sdReady)
     {
-        LOGLN("WARNING: No SD card");
+        LOGW("[BOOT] No SD card\n");
     }
     else
     {
         ledLoadConfigFromSd();
     }
-    LOG("[T+%4lu] SD %s\n", millis() - bootStart, sdReady ? "OK" : "FAIL");
+    LOGI("SD %s\n", sdReady ? "OK" : "FAIL");
     ledSetBootProgress(0); // SD done
 
-    plogInit();
-    plogMark("BOOT");
+    plogInit(sdReady);
+    plogMark("CRIT", "BOOT");
     {
         esp_reset_reason_t reason = esp_reset_reason();
-        PLOGF("[BOOT] reset_reason=%d(%s) wake_cause=%d",
-              (int)reason, resetReasonName(reason), (int)esp_sleep_get_wakeup_cause());
+        LOGC("[BOOT] reset_reason=%d(%s) wake_cause=%d sd=%s heap=%u min_heap=%u\n",
+             (int)reason, resetReasonName(reason), (int)esp_sleep_get_wakeup_cause(),
+             sdReady ? "OK" : "FAIL", ESP.getFreeHeap(), ESP.getMinFreeHeap());
     }
 
     bool diagPending = SD.exists(DIAG_PENDING_PATH);
-    LOG("[BOOT] diag_pending flag: %d\n", diagPending);
+    LOGI("[BOOT] diag_pending flag: %d\n", diagPending);
+    if (diagPending)
+        LOGC("[BOOT] diagnostic mode requested via %s\n", DIAG_PENDING_PATH);
 
     if (diagPending)
     {
@@ -86,25 +90,26 @@ void setup()
         return;
     }
 
-    LOGLN("\n--- Normal mode (fast boot) ---");
+    LOGI("\n--- Normal mode (fast boot) ---\n");
 
     bool jblNeedsPower = !isJblOn();
     unsigned long jblPulseStart = 0;
     if (jblNeedsPower)
     {
-        LOG("[T+%4lu] JBL OFF - starting power pulse\n", millis() - bootStart);
+        LOGI("JBL OFF - starting power pulse\n");
         digitalWrite(JBL_POWER, HIGH);
         jblPulseStart = millis();
     }
     else
     {
-        LOG("[T+%4lu] JBL already ON\n", millis() - bootStart);
+        LOGI("JBL already ON\n");
     }
 
-    LOG("[NFC] init: wake_cause=%d\n", (int)esp_sleep_get_wakeup_cause());
+    LOGI("[NFC] init: wake_cause=%d\n", (int)esp_sleep_get_wakeup_cause());
     if (!nfcInit())
-        PLOGF("ERROR: PN532 not found! (setup)");
-    LOG("[T+%4lu] NFC %s\n", millis() - bootStart, nfcReady ? "OK" : "FAIL");
+        LOGE("[NFC] PN532 not found during setup\n");
+    LOGC("[BOOT] nfc_init=%s\n", nfcReady ? "OK" : "FAIL");
+    LOGI("NFC %s\n", nfcReady ? "OK" : "FAIL");
     ledSetBootProgress(1); // NFC done
 
     if (sdReady)
@@ -113,7 +118,8 @@ void setup()
         loadSystemSounds();
     }
     playbackInit();
-    LOG("[T+%4lu] Mappings loaded (%d)\n", millis() - bootStart, figurineMap.size());
+    LOGC("[BOOT] mappings=%d system_sounds=%d\n", (int)figurineMap.size(), (int)systemSoundMap.size());
+    LOGI("Mappings loaded (%d)\n", figurineMap.size());
     ledSetBootProgress(2); // Mappings done
 
     if (playbackIsNfcMode() && nfcReady && sdReady)
@@ -122,7 +128,7 @@ void setup()
         if (nfcPrescan(preUidBuf, sizeof(preUidBuf)))
         {
             String preUid = preUidBuf;
-            LOG("[T+%4lu] NFC pre-scan: %s\n", millis() - bootStart, preUid.c_str());
+            LOGI("NFC pre-scan: %s\n", preUid.c_str());
 
             auto it = figurineMap.find(preUid);
             if (it != figurineMap.end())
@@ -132,13 +138,13 @@ void setup()
                 {
                     pendingPlaybackPath = path;
                     pendingPlaybackUid = preUid;
-                    LOG("[T+%4lu] Queued: %s\n", millis() - bootStart, path.c_str());
+                    LOGI("Queued: %s\n", path.c_str());
                 }
             }
         }
         else
         {
-            LOG("[T+%4lu] NFC pre-scan: no tag\n", millis() - bootStart);
+            LOGI("NFC pre-scan: no tag\n");
         }
     }
 
@@ -150,8 +156,7 @@ void setup()
             delay(JBL_POWER_PRESS_MS - elapsed);
         }
         digitalWrite(JBL_POWER, LOW);
-        LOG("[T+%4lu] JBL power pulse done (%lu ms)\n",
-                      millis() - bootStart, millis() - jblPulseStart);
+        LOGI("JBL power pulse done (%lu ms)\n", millis() - jblPulseStart);
     }
 
     ledSetBootProgress(3); // JBL done
@@ -159,7 +164,7 @@ void setup()
     loadBtVolume();
 
     ledSetBootProgress(4); // BT step
-    LOG("[T+%4lu] BT A2DP starting -> %s\n", millis() - bootStart, BT_SPEAKER_NAME);
+    LOGI("BT A2DP starting -> %s\n", BT_SPEAKER_NAME);
     ledSetWaitBt(); // PRZED audioInit() - bo a2dp.begin() może blokować
     audioInit();
 
@@ -170,12 +175,13 @@ void setup()
 
     configureLoopWatchdog();  // NULL = current task (loop task)
 
-    LOG("[T+%4lu] BT A2DP initiated\n", millis() - bootStart);
-    LOG("[BOOT] Loop task core: %d\n", xPortGetCoreID());
-    LOG("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
+    LOGC("[BOOT] bt_init=started loop_core=%d setup_ms=%lu\n", xPortGetCoreID(), millis() - bootStart);
+    LOGI("BT A2DP initiated\n");
+    LOGI("[BOOT] Loop task core: %d\n", xPortGetCoreID());
+    LOGI("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
 
     lastActivityMs = millis();
-    LOGLN("Ready! Waiting for BT connection...");
+    LOGI("Ready! Waiting for BT connection...\n");
 }
 
 void loop()
@@ -203,7 +209,7 @@ void loop()
     loopStep = 3;
     if (!btVolumeApplied && g_btConnected)
     {
-        LOG("[T+%4lu] BT connected!\n", millis() - bootStart);
+        LOGI("BT connected!\n");
         btVolumeApplied = true;
         btDiscoveryFallbackDone = false;
         applyBtVolume();
@@ -219,21 +225,23 @@ void loop()
              millis() - btWaitStart > 5000)
     {
         jblRecoveryDone = true;
-        PLOGF("[JBL] BT timeout - ADC false positive, pressing power");
+        LOGW("[JBL] BT timeout - ADC false positive, pressing power\n");
         digitalWrite(JBL_POWER, HIGH);
         delay(JBL_POWER_PRESS_MS);   // 500ms, jednorazowe; ISR-y działają
         digitalWrite(JBL_POWER, LOW);
-        LOG("[T+%4lu] JBL power pulse (recovery)\n", millis() - bootStart);
+        LOGC("[RECOVERY] JBL recovery power pulse after BT timeout\n");
+        LOGI("JBL power pulse (recovery)\n");
     }
     else if (!g_btConnected && !btDiscoveryFallbackDone && btWaitStart > 0 &&
              millis() - btWaitStart > 15000)
     {
         btDiscoveryFallbackDone = true;
-        PLOGF("[BT] Initial reconnect timed out - restarting with discovery");
+        LOGW("[BT] Initial reconnect timed out - restarting with discovery\n");
         if (audioRestartDiscovery())
         {
             btWaitStart = millis();
             ledSetWaitBt();
+            LOGC("[RECOVERY] BT restart with discovery requested\n");
         }
     }
 
@@ -264,7 +272,7 @@ void loop()
         lastActivityMs = millis();
     else if (lastActivityMs > 0 && millis() - lastActivityMs > IDLE_TIMEOUT_MS)
     {
-        LOGLN("[IDLE] Timeout - entering deep sleep");
+        LOGC("[SLEEP] Idle timeout - entering deep sleep\n");
         enterDeepSleep();
     }
 
@@ -272,19 +280,19 @@ void loop()
     static unsigned long lastHeartbeat = 0;
     if (millis() - lastHeartbeat > 5000) {
         lastHeartbeat = millis();
-        PLOGF("[LOOP] alive step=%u isPlaying=%d btConn=%d", loopStep, (int)isPlaying, (int)g_btConnected);
+        LOGI("[LOOP] alive step=%u isPlaying=%d btConn=%d\n", loopStep, (int)isPlaying, (int)g_btConnected);
         plogFlushToSd();
     }
 
     static unsigned long lastDiag = 0;
     if (millis() - lastDiag > 30000) {
         lastDiag = millis();
-        PLOGF("[DIAG] HWM loop=%u led=%u audio=%u nfc=%u",
+        LOGI("[DIAG] HWM loop=%u led=%u audio=%u nfc=%u\n",
             uxTaskGetStackHighWaterMark(NULL),
             ledGetTaskHWM(),
             audioGetTaskHWM(),
             nfcGetTaskHWM());
-        PLOGF("[DIAG] heap free=%u min=%u largest=%u",
+        LOGI("[DIAG] heap free=%u min=%u largest=%u\n",
             ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     }
 }

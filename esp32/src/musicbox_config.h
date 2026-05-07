@@ -28,7 +28,8 @@
 #define JBL_POWER 13  // Tranzystor NPN -> przycisk POWER na JBL
 #define JBL_STATUS 34 // ADC - linia statusowa JBL (dzielnik 10k/22k)
 #define BAT_ADC_PIN 35 // GPIO35 (I35) - onboard D32 Pro dzielnik 100k/100k VBAT->I35->GND
-#define BAT_ADC_SCALE 1.972f // calibrated: multimeter 4.08-4.09V when ADC pin reads 2.072V
+#define BAT_ADC_DIVIDER_RATIO 2.0f // schemat D32 Pro: VBAT --100k-- GPIO35 --100k-- GND
+#define BAT_ADC_CALIBRATION 0.983f // kalibracja pod realny egzemplarz po ustabilizowaniu toru ADC
 
 // =============================================================================
 // KONFIGURACJA

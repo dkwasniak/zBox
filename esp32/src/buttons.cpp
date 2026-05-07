@@ -43,7 +43,7 @@ void resolveButtonAction(int idx, uint8_t clicks)
     case BTN_IDX_A:
         if (!playbackIsMusicMode())
         {
-            LOG("[BTN] A click ignored in NFC mode\n");
+            LOGI("[BTN] A click ignored in NFC mode\n");
             return;
         }
         if (clicks >= 2)
@@ -54,13 +54,13 @@ void resolveButtonAction(int idx, uint8_t clicks)
     case BTN_IDX_B:
         if (!playbackIsMusicMode())
         {
-            LOG("[BTN] B click ignored in NFC mode\n");
+            LOGI("[BTN] B click ignored in NFC mode\n");
             return;
         }
         if (clicks >= 2)
             playbackNextTrack();
         else
-            LOG("[BTN] B single click: no action\n");
+            LOGI("[BTN] B single click: no action\n");
         break;
     case BTN_IDX_C:
         volumeDown();
@@ -127,15 +127,18 @@ void handleButtons()
         {
             bothABHandled = true;
             markComboHandled(buttons[0], buttons[1]);
-            LOGLN("\n>>> DIAGNOSTIC MODE");
+            LOGC(">>> DIAGNOSTIC MODE\n");
 
             audioStop();
 
             File f = SD.open(DIAG_PENDING_PATH, FILE_WRITE);
             bool written = (bool)f;
             if (f) f.close();
-            LOG(">>> Diagnostic flag written & verified: %d\n", written);
+            if (!written)
+                LOGE("[DIAG] Failed to write diagnostic flag\n");
+            LOGC("[DIAG] Diagnostic flag written=%d\n", written);
 
+            ledFlashDiagnosticTransition(true);
             delay(100);
             ESP.restart();
         }
@@ -149,7 +152,7 @@ void handleButtons()
     {
         buttons[2].longHandled = true;
         suppressButton(buttons[2]);
-        LOGLN("\n>>> EMERGENCY DEEP SLEEP");
+        LOGC(">>> EMERGENCY DEEP SLEEP\n");
         enterEmergencyDeepSleep();
     }
 
@@ -158,7 +161,7 @@ void handleButtons()
     {
         cSleepReadyShown = true;
         buttons[2].clickSuppressed = true;
-        LOGLN("[SLEEP] Release BTN_C now for normal deep sleep; keep holding for emergency");
+        LOGI("[SLEEP] Release BTN_C now for normal deep sleep; keep holding for emergency\n");
         ledSetSleepReady();
     }
 
@@ -170,7 +173,7 @@ void handleButtons()
         suppressButton(buttons[0]);
         float v = readBatteryVoltage();
         int bars = batteryBars(v);
-        PLOGF("[BAT] Voltage: %.2fV -> %d bar(s)", v, bars);
+        LOGI("[BAT] Voltage: %.2fV -> %d bar(s)\n", v, bars);
         ledShowBattery(bars);
         // Wyczyść lastNfcUid - jeśli figurka nadal stoi, NFC wznowi muzykę
         lastNfcUid[0] = '\0';
@@ -181,7 +184,7 @@ void handleButtons()
     {
         buttons[1].longHandled = true;
         suppressButton(buttons[1]);
-        PLOGF("[MODE] Toggle requested by long press B");
+        LOGI("[MODE] Toggle requested by long press B\n");
         playbackToggleMode();
     }
 
@@ -197,7 +200,7 @@ void handleButtons()
                 pressDuration >= LONG_PRESS_MS && !b.longHandled)
             {
                 b.longHandled = true;
-                LOGLN("\n>>> DEEP SLEEP");
+                LOGC(">>> DEEP SLEEP\n");
                 enterDeepSleep();
             }
 

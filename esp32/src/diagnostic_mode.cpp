@@ -7,6 +7,8 @@
 #include "diagnostics.h"
 #include "audio.h"
 #include "nfc_module.h"
+#include "buttons_isr.h"
+#include "sleep.h"
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
@@ -30,15 +32,21 @@ static String diagHostname;
 static String diagDeviceId;
 
 static const char *DIAG_SYNC_META_PATH = "/data/diag_sync_meta.json";
+static const char *DIAG_LOG_NAMES[] = {"debug.log", "debug.log.old"};
+static const size_t DIAG_LOG_COUNT = sizeof(DIAG_LOG_NAMES) / sizeof(DIAG_LOG_NAMES[0]);
 
 static void diagLogf(const char *fmt, ...)
 {
+    char uptime[16];
+    char msg[192];
     char line[224];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(line, sizeof(line), fmt, args);
+    vsnprintf(msg, sizeof(msg), fmt, args);
     va_end(args);
 
+    formatUptime(uptime, sizeof(uptime), millis());
+    snprintf(line, sizeof(line), "[%s] %s", uptime, msg);
     Serial.println(line);
 }
 
@@ -106,6 +114,23 @@ static bool isUploadPath(const String &path)
     if (!isManagedPath(path))
         return false;
     return path.startsWith("/music/") || path.startsWith("/data/system/");
+}
+
+static bool isDiagnosticLogName(const String &name)
+{
+    for (size_t i = 0; i < DIAG_LOG_COUNT; i++)
+    {
+        if (name == DIAG_LOG_NAMES[i])
+            return true;
+    }
+    return false;
+}
+
+static String diagnosticLogPath(const String &name)
+{
+    if (!isDiagnosticLogName(name))
+        return String();
+    return "/data/" + name;
 }
 
 static void ensureDataDirs()
@@ -208,10 +233,66 @@ static bool handleButtonExit()
     return millis() - holdStart >= LONG_PRESS_MS;
 }
 
+enum DiagSleepAction
+{
+    DIAG_SLEEP_NONE = 0,
+    DIAG_SLEEP_NORMAL,
+    DIAG_SLEEP_EMERGENCY
+};
+
+static DiagSleepAction handleSleepButton()
+{
+    Button &btnC = buttons[2];
+    bool cDown = digitalRead(btnC.pin) == LOW;
+    bool dDown = digitalRead(BTN_D) == LOW;
+
+    if (cDown && !dDown && btnC.pressed && btnC.pressStart == 0)
+    {
+        btnC.pressStart = millis();
+        btnC.longHandled = false;
+        btnC.clickSuppressed = true;
+    }
+
+    if (cDown && !dDown && btnC.pressStart > 0)
+    {
+        unsigned long heldMs = millis() - btnC.pressStart;
+        if (!btnC.longHandled && heldMs >= EMERGENCY_SLEEP_MS)
+        {
+            btnC.longHandled = true;
+            btnC.pressed = false;
+            diagLogf("[DIAG] emergency sleep requested by long BTN_C");
+            return DIAG_SLEEP_EMERGENCY;
+        }
+
+        if (!btnC.longHandled && heldMs >= LONG_PRESS_MS)
+        {
+            btnC.longHandled = true;
+            diagLogf("[DIAG] sleep armed - release BTN_C for deep sleep");
+        }
+
+        return DIAG_SLEEP_NONE;
+    }
+
+    if (!cDown && btnC.pressStart > 0)
+    {
+        unsigned long heldMs = millis() - btnC.pressStart;
+        DiagSleepAction action = (btnC.longHandled && heldMs >= LONG_PRESS_MS) ? DIAG_SLEEP_NORMAL : DIAG_SLEEP_NONE;
+        btnC.pressed = false;
+        btnC.longHandled = false;
+        btnC.pressStart = 0;
+        return action;
+    }
+
+    if (!cDown)
+        btnC.pressed = false;
+
+    return DIAG_SLEEP_NONE;
+}
+
 static void exitDiagnosticMode(const char *reason)
 {
     diagLogf("[DIAG] exit requested: %s", reason);
-    ledFlashResult(true);
+    ledFlashDiagnosticTransition(false);
     clearDiagnosticFlag();
     delay(500);
     ESP.restart();
@@ -455,6 +536,124 @@ static void handleRestart()
     exitDiagnosticMode("http restart");
 }
 
+static void appendDiagnosticLogInfo(JsonArray logs, const char *name)
+{
+    String path = diagnosticLogPath(name);
+    if (!path.length())
+        return;
+
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory())
+    {
+        if (f)
+            f.close();
+        return;
+    }
+
+    JsonObject obj = logs.add<JsonObject>();
+    obj["name"] = name;
+    obj["size"] = (uint64_t)f.size();
+    obj["mtime"] = (uint64_t)f.getLastWrite();
+    f.close();
+}
+
+static void handleLogs()
+{
+    if (!requireSdReady())
+        return;
+
+    JsonDocument doc;
+    JsonArray logs = doc["logs"].to<JsonArray>();
+    for (size_t i = 0; i < DIAG_LOG_COUNT; i++)
+        appendDiagnosticLogInfo(logs, DIAG_LOG_NAMES[i]);
+    sendJson(200, doc);
+}
+
+static void handleLogContent()
+{
+    if (!requireSdReady())
+        return;
+
+    String name = httpServer.arg("name");
+    if (!isDiagnosticLogName(name))
+    {
+        sendError(400, "invalid log name");
+        return;
+    }
+
+    int tail = httpServer.arg("tail").toInt();
+    if (tail <= 0)
+        tail = 200;
+    if (tail > 500)
+        tail = 500;
+
+    String path = diagnosticLogPath(name);
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory())
+    {
+        if (f)
+            f.close();
+        sendError(404, "log not found");
+        return;
+    }
+
+    String *ring = new String[tail];
+    int totalLines = 0;
+    while (f.available())
+    {
+        String line = f.readStringUntil('\n');
+        while (line.endsWith("\n") || line.endsWith("\r"))
+            line.remove(line.length() - 1);
+        ring[totalLines % tail] = line;
+        totalLines++;
+    }
+    f.close();
+
+    int count = totalLines < tail ? totalLines : tail;
+    int start = totalLines > tail ? (totalLines % tail) : 0;
+    String text;
+    for (int i = 0; i < count; i++)
+    {
+        const String &line = ring[(start + i) % tail];
+        text += line;
+        text += '\n';
+    }
+    delete[] ring;
+
+    JsonDocument doc;
+    doc["name"] = name;
+    doc["text"] = text;
+    doc["truncated"] = totalLines > tail;
+    sendJson(200, doc);
+}
+
+static void handleLogDownload()
+{
+    if (!requireSdReady())
+        return;
+
+    String name = httpServer.arg("name");
+    if (!isDiagnosticLogName(name))
+    {
+        sendError(400, "invalid log name");
+        return;
+    }
+
+    String path = diagnosticLogPath(name);
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory())
+    {
+        if (f)
+            f.close();
+        sendError(404, "log not found");
+        return;
+    }
+
+    httpServer.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+    httpServer.streamFile(f, "text/plain; charset=utf-8");
+    f.close();
+}
+
 static void handleUploadResult()
 {
     if (!uploadError.isEmpty())
@@ -560,6 +759,9 @@ static void setupHttpRoutes()
     httpServer.on("/diag/files", HTTP_GET, handleFiles);
     httpServer.on("/diag/upload", HTTP_POST, handleUploadResult, handleUploadStream);
     httpServer.on("/diag/file", HTTP_DELETE, handleDeleteFile);
+    httpServer.on("/diag/logs", HTTP_GET, handleLogs);
+    httpServer.on("/diag/log-content", HTTP_GET, handleLogContent);
+    httpServer.on("/diag/log-download", HTTP_GET, handleLogDownload);
     httpServer.on("/diag/write-mappings", HTTP_POST, handleWriteMappings);
     httpServer.on("/diag/write-system-sounds", HTTP_POST, handleWriteSystemSounds);
     httpServer.on("/diag/config", HTTP_GET, handleGetLedConfig);
@@ -599,6 +801,7 @@ static void setupOta()
 void runDiagnosticMode()
 {
     LOGLN("\n=== MusicBox DIAGNOSTIC MODE ===\n");
+    ledFlashDiagnosticTransition(true);
     ledSetDiagnostic();
     disableBtForDiagnostic();
     ensureDataDirs();
@@ -648,6 +851,16 @@ void runDiagnosticMode()
 
         if (handleButtonExit())
             exitDiagnosticMode("buttons A+B long");
+        DiagSleepAction sleepAction = handleSleepButton();
+        if (sleepAction == DIAG_SLEEP_NORMAL)
+        {
+            diagLogf("[DIAG] deep sleep requested by BTN_C");
+            enterDeepSleep();
+        }
+        else if (sleepAction == DIAG_SLEEP_EMERGENCY)
+        {
+            enterEmergencyDeepSleep();
+        }
 
         unsigned long now = millis();
         if (now - lastSnapshot >= DIAG_LOG_INTERVAL_MS)

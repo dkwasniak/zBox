@@ -93,7 +93,7 @@ struct AudioInfoLogger : public AudioInfoSupport {
     AudioInfo lastInfo;
     void setAudioInfo(AudioInfo info) override {
         lastInfo = info;
-        LOG("[AUDIO] Decoder: SR=%d Hz, Ch=%d, Bits=%d\n",
+        LOGI("[AUDIO] Decoder: SR=%d Hz, Ch=%d, Bits=%d\n",
             info.sample_rate, info.channels, info.bits_per_sample);
     }
     AudioInfo audioInfo() override { return lastInfo; }
@@ -119,7 +119,7 @@ static void startA2dpTransport()
     // Bootstrap: na wypadek race condition gdy callback ominął pierwsze połączenie
     delay(100);
     g_btConnected = a2dp.source().is_connected();
-    LOG("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
+    LOGI("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
 }
 
 static bool audioSendCmd(const AudioCmd &cmd, TickType_t timeout, bool front = false)
@@ -130,7 +130,7 @@ static bool audioSendCmd(const AudioCmd &cmd, TickType_t timeout, bool front = f
         : xQueueSend(audioQueue, &cmd, timeout);
     if (ok != pdTRUE)
     {
-        PLOGF("[AUDIO] Queue full, cmd dropped: %d", (int)cmd.type);
+        LOGW("[AUDIO] Queue full, cmd dropped: %d\n", (int)cmd.type);
         return false;
     }
     return true;
@@ -155,7 +155,7 @@ static void audioTaskFunc(void *param)
         static unsigned long lastAudioHb = 0;
         if (millis() - lastAudioHb > 5000) {
             lastAudioHb = millis();
-            PLOGF("[AUDIO] alive isPlaying=%d hwm=%u", (int)isPlaying, uxTaskGetStackHighWaterMark(NULL));
+            LOGI("[AUDIO] alive isPlaying=%d hwm=%u\n", (int)isPlaying, uxTaskGetStackHighWaterMark(NULL));
         }
 
         AudioCmd cmd;
@@ -173,7 +173,7 @@ static void audioTaskFunc(void *param)
                     const char *logPath = cmd.path;
                     const size_t logPathLen = strlen(cmd.path);
                     if (logPathLen > 56) logPath = cmd.path + (logPathLen - 56);
-                    PLOGF("[AUDIO] Playing: %s%s",
+                    LOGI("[AUDIO] Playing: %s%s\n",
                           logPathLen > 56 ? "..." : "",
                           logPath);
                     telSdBytes = telWrittenBytes = telDrops = 0;
@@ -184,7 +184,7 @@ static void audioTaskFunc(void *param)
                 {
                     isPlaying = false;
                     isPaused = false;
-                    LOG("[AUDIO] Open failed: %s\n", cmd.path);
+                    LOGE("[AUDIO] Open failed: %s\n", cmd.path);
                     a2dp.clear();
                 }
             }
@@ -194,7 +194,7 @@ static void audioTaskFunc(void *param)
                 isPlaying = false;
                 isPaused = false;
                 ledSetIdle();
-                PLOGF("[AUDIO] Stopped");
+                LOGI("[AUDIO] Stopped\n");
                 telWindows = 6; // wyłącz telemetrię po stopie
                 a2dp.clear();
             }
@@ -205,7 +205,7 @@ static void audioTaskFunc(void *param)
                     isPlaying = false;
                     isPaused = true;
                     ledSetIdle();
-                    PLOGF("[AUDIO] Paused");
+                    LOGI("[AUDIO] Paused\n");
                     a2dp.clear();
                 }
             }
@@ -216,13 +216,13 @@ static void audioTaskFunc(void *param)
                     isPlaying = true;
                     isPaused = false;
                     ledSetPlaying();
-                    PLOGF("[AUDIO] Resumed");
+                    LOGI("[AUDIO] Resumed\n");
                 }
             }
             else if (cmd.type == AudioCmdType::VOLUME)
             {
                 a2dp.setVolume(cmd.volumePercent / 100.0);
-                PLOGF("[VOL] Applied in audio task: %d%%", cmd.volumePercent);
+                LOGI("[VOL] Applied in audio task: %d%%\n", cmd.volumePercent);
             }
         }
 
@@ -247,7 +247,7 @@ static void audioTaskFunc(void *param)
                     if (now - telWindowStart >= 5000)
                     {
                         float s = (now - telWindowStart) / 1000.0f;
-                        LOG("[AUDIO_TEL] SD=%u B/s dec_in=%u B/s drops=%u (write<n)\n",
+                        LOGI("[AUDIO_TEL] SD=%u B/s dec_in=%u B/s drops=%u (write<n)\n",
                             (uint32_t)(telSdBytes / s),
                             (uint32_t)(telWrittenBytes / s),
                             telDrops);
@@ -265,7 +265,7 @@ static void audioTaskFunc(void *param)
             isPlaying = false;
             isPaused = false;
             trackEndedFlag = true;   // loop() wyczyści lastNfcUid i wywoła ledSetIdle()
-            PLOGF("[AUDIO] Track ended heap=%u largest=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+            LOGI("[AUDIO] Track ended heap=%u largest=%u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
             telWindows = 6;
             a2dp.clear();
         }
@@ -289,7 +289,7 @@ void audioInit()
 
     audioQueue = xQueueCreate(5, sizeof(AudioCmd));
     xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, NULL, 2, &audioTaskHandle, 1);
-    LOG("[T+%4lu] Audio task started (core 1, prio 2)\n", millis() - bootStart);
+    LOGI("Audio task started (core 1, prio 2)\n");
 }
 
 void audioStartFile(const char *path)
@@ -371,7 +371,7 @@ void audioPollBtConnection()
         return;
 
     g_btConnected = connected;
-    PLOGF("[BT] polled connected=%d", (int)g_btConnected);
+    LOGI("[BT] polled connected=%d\n", (int)g_btConnected);
 }
 
 bool audioRestartDiscovery()
@@ -379,7 +379,7 @@ bool audioRestartDiscovery()
     if (!a2dpStarted)
         return false;
 
-    PLOGF("[BT] Restarting A2DP in discovery mode");
+    LOGC("[RECOVERY] Restarting A2DP in discovery mode\n");
     a2dp.clear();
     a2dp.source().end(false);  // czyści connected_bda/last_connection i pozwala ruszyć discovery po nazwie
     a2dpStarted = false;

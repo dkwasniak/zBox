@@ -63,7 +63,7 @@ void refreshMusicLibrary()
     File dir = SD.open("/music");
     if (!dir || !dir.isDirectory())
     {
-        PLOGF("[MUSIC] Cannot open /music directory");
+        LOGW("[MUSIC] Cannot open /music directory\n");
         return;
     }
 
@@ -87,7 +87,7 @@ void refreshMusicLibrary()
     std::sort(musicLibrary.begin(), musicLibrary.end(),
               [](const String &a, const String &b) { return strcmp(a.c_str(), b.c_str()) < 0; });
 
-    PLOGF("[MUSIC] Library size=%d", (int)musicLibrary.size());
+    LOGI("[MUSIC] Library size=%d\n", (int)musicLibrary.size());
 }
 
 bool hasMusicLibrary()
@@ -102,7 +102,7 @@ void savePlaybackMode()
     playbackPrefs.begin(PLAYBACK_PREF_NS, false);
     playbackPrefs.putUChar(PLAYBACK_MODE_KEY, static_cast<uint8_t>(currentMode));
     playbackPrefs.end();
-    PLOGF("[MODE] Saved mode=%d", static_cast<int>(currentMode));
+    LOGI("[MODE] Saved mode=%d\n", static_cast<int>(currentMode));
 }
 
 void loadPlaybackMode()
@@ -111,7 +111,8 @@ void loadPlaybackMode()
     uint8_t raw = playbackPrefs.getUChar(PLAYBACK_MODE_KEY, static_cast<uint8_t>(PlaybackMode::NFC));
     playbackPrefs.end();
     currentMode = (raw == static_cast<uint8_t>(PlaybackMode::MUSIC)) ? PlaybackMode::MUSIC : PlaybackMode::NFC;
-    PLOGF("[MODE] Restored mode=%d", static_cast<int>(currentMode));
+    LOGC("[BOOT] playback_mode=%d\n", static_cast<int>(currentMode));
+    LOGI("[MODE] Restored mode=%d\n", static_cast<int>(currentMode));
 }
 
 int wrapTrackIndex(int index)
@@ -132,8 +133,8 @@ void markPlaybackStarted(const char *reason)
     isPaused = false;
     if (!bootTimingDone)
     {
-        LOG("[T+%4lu] >>> PLAYBACK START (%s)\n", millis() - bootStart, reason);
-        LOG("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
+        LOGI(">>> PLAYBACK START (%s)\n", reason);
+        LOGI("[BOOT] Total boot-to-play: %lu ms\n", millis() - bootStart);
         bootTimingDone = true;
     }
 }
@@ -142,7 +143,7 @@ bool startMusicTrackAt(int index, const char *reason)
 {
     if (!hasMusicLibrary())
     {
-        PLOGF("[MUSIC] Library empty");
+        LOGI("[MUSIC] Library empty\n");
         ledFlashWarning();
         return false;
     }
@@ -154,7 +155,7 @@ bool startMusicTrackAt(int index, const char *reason)
     String path = musicLibrary[index];
     if (!SD.exists(path))
     {
-        PLOGF("[MUSIC] Missing file: %s", path.c_str());
+        LOGE("[MUSIC] Missing file: %s\n", path.c_str());
         ledFlashWarning();
         return false;
     }
@@ -163,7 +164,8 @@ bool startMusicTrackAt(int index, const char *reason)
 
     if (!ensureJblReady())
     {
-        LOGLN("[MUSIC] JBL not ready - deferring until BT connects");
+        LOGW("[MUSIC] JBL not ready - deferring until BT connects\n");
+        LOGC("[RECOVERY] Deferred music playback until BT connects\n");
         pendingPlaybackPath = path;
         pendingPlaybackUid = "";
         musicAutostartPending = true;
@@ -237,7 +239,7 @@ bool ensureJblReady()
     static unsigned long lastPulseMs = 0;
     if (!isJblOn() && millis() - lastPulseMs > 10000)
     {
-        LOGLN("[JBL] ADC says OFF - pressing power");
+        LOGW("[JBL] ADC says OFF - pressing power\n");
         lastPulseMs = millis();
         digitalWrite(JBL_POWER, HIGH);
         delay(JBL_POWER_PRESS_MS);
@@ -382,17 +384,17 @@ void playbackPrevTrack()
 
 void startPlayback(const String &uid)
 {
-    PLOGF("[PLAY] startPlayback uid=%s", uid.c_str());
+    LOGI("[PLAY] startPlayback uid=%s\n", uid.c_str());
     if (!sdReady)
     {
-        LOGLN("SD not ready");
+        LOGW("[PLAY] SD not ready\n");
         return;
     }
 
     auto it = figurineMap.find(uid);
     if (it == figurineMap.end())
     {
-        LOG("No mapping for UID: %s\n", uid.c_str());
+        LOGI("[PLAY] No mapping for UID: %s\n", uid.c_str());
         ledFlashWarning();
         return;
     }
@@ -400,14 +402,15 @@ void startPlayback(const String &uid)
     String path = "/music/" + it->second;
     if (!SD.exists(path))
     {
-        LOG("File missing: %s\n", path.c_str());
+        LOGE("[PLAY] File missing: %s\n", path.c_str());
         ledFlashWarning();
         return;
     }
 
     if (!ensureJblReady())
     {
-        LOGLN("[PLAY] JBL not ready - deferring until BT connects");
+        LOGW("[PLAY] JBL not ready - deferring until BT connects\n");
+        LOGC("[RECOVERY] Deferred NFC playback until BT connects\n");
         pendingPlaybackPath = path;
         pendingPlaybackUid = uid;
         ledSetWaitBt();
@@ -422,7 +425,7 @@ void startPlayback(const String &uid)
 
 void stopPlayback()
 {
-    PLOGF("[STOP] stopPlayback");
+    LOGI("[STOP] stopPlayback\n");
     audioStop();
     isPaused = false;
     lastNfcUid[0] = '\0';

@@ -64,6 +64,7 @@ void ledSetSleepReady();
 void ledSetSyncWifi();
 void ledSetSyncProgress(int current, int total);
 void ledSetDiagnostic();
+void ledFlashDiagnosticTransition(bool entering);
 void ledFlashResult(bool success);
 void ledFlashWarning();
 void ledShutdownAnim();
@@ -92,6 +93,7 @@ inline void ledSetSleepReady() {}
 inline void ledSetSyncWifi() {}
 inline void ledSetSyncProgress(int, int) {}
 inline void ledSetDiagnostic() {}
+inline void ledFlashDiagnosticTransition(bool) {}
 inline void ledFlashResult(bool) {}
 inline void ledFlashWarning() {}
 inline void ledShutdownAnim() {}

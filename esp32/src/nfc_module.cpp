@@ -159,7 +159,7 @@ static bool nfcRawSpiWakeWithFirmwareCommand()
         response[2] == PN532_STARTCODE2 &&
         response[5] == PN532_PN532TOHOST &&
         response[6] == (PN532_COMMAND_GETFIRMWAREVERSION + 1);
-    PLOGF("[NFC] raw SPI wake ack=%d response=%d", (int)ackOk, (int)responseOk);
+    LOGW("[NFC] raw SPI wake ack=%d response=%d\n", (int)ackOk, (int)responseOk);
     return ackOk && responseOk;
 }
 
@@ -186,7 +186,7 @@ static bool nfcInitSequence()
     uint32_t ver = nfc.getFirmwareVersion();
     for (int attempt = 1; attempt < 3 && !ver; attempt++)
     {
-        PLOGF("[NFC] init retry %d/3", attempt);
+        LOGW("[NFC] init retry %d/3\n", attempt);
         if (!rawWakeAttempted)
         {
             rawWakeAttempted = true;
@@ -199,7 +199,7 @@ static bool nfcInitSequence()
     if (ver)
     {
         rtcNfcPowerDownSent = false;
-        PLOGF("[NFC] fw=0x%08lX rawWake=%d", (unsigned long)ver, (int)rawWakeAttempted);
+        LOGC("[BOOT] nfc_fw=0x%08lX raw_wake=%d\n", (unsigned long)ver, (int)rawWakeAttempted);
         nfc.SAMConfig();
         nfc.setPassiveActivationRetries(0x10);
         return true;
@@ -209,10 +209,10 @@ static bool nfcInitSequence()
 
 static void reinitNfc()
 {
-    PLOGF("[NFC] reinit attempt");
+    LOGW("[NFC] reinit attempt\n");
     if (!nfcCriticalBegin(pdMS_TO_TICKS(1000)))
     {
-        PLOGF("[NFC] reinit skipped - bus busy");
+        LOGW("[NFC] reinit skipped - bus busy\n");
         return;
     }
     bool ok = nfcInitSequence();
@@ -221,12 +221,12 @@ static void reinitNfc()
     {
         nfcReady = true;
         nfcErrorCount = 0;
-        PLOGF("[NFC] reinit OK");
+        LOGC("[RECOVERY] NFC reinit OK\n");
     }
     else
     {
         nfcReady = false;
-        PLOGF("[NFC] reinit FAIL");
+        LOGE("[NFC] reinit FAIL\n");
     }
 }
 
@@ -251,7 +251,7 @@ static String readNfcTag()
     if (found)
     {
         String uidStr = uidToString(uid, uidLength);
-        LOG("\nNFC Tag: %s\n", uidStr.c_str());
+        LOGI("\nNFC Tag: %s\n", uidStr.c_str());
         return uidStr;
     }
     return "";
@@ -275,7 +275,7 @@ static void nfcTaskFunc(void *param)
         static unsigned long lastNfcHb = 0;
         if (millis() - lastNfcHb > 5000) {
             lastNfcHb = millis();
-            PLOGF("[NFC] alive hwm=%u err=%d", uxTaskGetStackHighWaterMark(NULL), nfcErrorCount);
+            LOGI("[NFC] alive hwm=%u err=%d\n", uxTaskGetStackHighWaterMark(NULL), nfcErrorCount);
         }
 
         String uid = readNfcTag();
@@ -361,7 +361,7 @@ void nfcStartTask()
     nfcTaskStopRequested = false;
     nfcQueue = xQueueCreate(5, sizeof(NfcEvent));
     xTaskCreatePinnedToCore(nfcTaskFunc, "nfc", 4096, NULL, 1, &nfcTaskHandle, 1);
-    LOG("[T+%4lu] NFC task started (core 1)\n", millis() - bootStart);
+    LOGI("NFC task started (core 1)\n");
 }
 
 bool nfcGetEvent(NfcEvent *e, TickType_t timeout)
@@ -378,7 +378,7 @@ void nfcStopTaskForSleep()
         while (nfcTaskHandle && millis() - stopStart < (NFC_READ_INTERVAL + 250))
             delay(10);
         if (nfcTaskHandle)
-            LOGLN("[NFC] task stop timeout - PowerDown will wait for bus");
+            LOGW("[NFC] task stop timeout - PowerDown will wait for bus\n");
     }
 }
 
@@ -386,13 +386,13 @@ void nfcPowerDown()
 {
     if (!nfcReady)
     {
-        LOGLN("[NFC] PowerDown skipped - not ready");
+        LOGW("[NFC] PowerDown skipped - not ready\n");
         rtcNfcPowerDownSent = false;
         return;
     }
     if (!nfcCriticalBegin(pdMS_TO_TICKS(1000)))
     {
-        LOGLN("[NFC] PowerDown skipped - bus busy");
+        LOGW("[NFC] PowerDown skipped - bus busy\n");
         rtcNfcPowerDownSent = false;
         return;
     }
@@ -403,7 +403,7 @@ void nfcPowerDown()
     rtcNfcPowerDownSent = ack;
     nfcReady = false;
     nfcCriticalEnd();
-    LOG("[NFC] PowerDown wake=SPI(0x%02X) ack=%d\n", PN532_WAKEUP_SPI, (int)ack);
+    LOGC("[SLEEP] NFC PowerDown wake=SPI(0x%02X) ack=%d\n", PN532_WAKEUP_SPI, (int)ack);
     if (ack)
         delay(2); // PN532 potrzebuje ok. 1ms żeby faktycznie wejść w PowerDown.
 }

@@ -83,6 +83,45 @@ def fetch_led_config(device: dict | None = None, session: requests.Session | Non
     return response.json()
 
 
+def fetch_device_logs(device: dict | None = None, session: requests.Session | None = None) -> dict:
+    device = device or get_configured_device()
+    response = _http_client(session).get(f"{_base_url(device)}/diag/logs", timeout=HTTP_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def fetch_device_log_content(
+    device: dict | None = None,
+    name: str = "debug.log",
+    tail: int = 200,
+    session: requests.Session | None = None,
+) -> dict:
+    device = device or get_configured_device()
+    response = _http_client(session).get(
+        f"{_base_url(device)}/diag/log-content",
+        params={"name": name, "tail": tail},
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
+def download_device_log(
+    device: dict | None = None,
+    name: str = "debug.log",
+    session: requests.Session | None = None,
+) -> requests.Response:
+    device = device or get_configured_device()
+    response = _http_client(session).get(
+        f"{_base_url(device)}/diag/log-download",
+        params={"name": name},
+        timeout=(HTTP_TIMEOUT, UPLOAD_TIMEOUT),
+        stream=True,
+    )
+    response.raise_for_status()
+    return response
+
+
 def push_led_config(device: dict | None, config: dict, session: requests.Session | None = None) -> None:
     device = device or get_configured_device()
     response = _http_client(session).post(
