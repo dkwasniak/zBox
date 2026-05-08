@@ -1,40 +1,40 @@
-"""MusicBox - Serwer muzyczny dla ESP32 z NFC."""
-
-from pathlib import Path
+"""zBox server for the ESP32-based NFC audio box."""
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from database import create_tables, SessionLocal, SystemSound
+from paths import DATA_DIR, MUSIC_DIR, SYSTEM_SOUNDS_DIR, WEB_DIR
 from routers import api, admin
+from system_sounds import ACTIVE_SYSTEM_SOUND_NAMES
 
 
-# Utwórz katalogi jeśli nie istnieją
-Path("./music").mkdir(parents=True, exist_ok=True)
-Path("./music/system").mkdir(parents=True, exist_ok=True)
-Path("./data").mkdir(parents=True, exist_ok=True)
+# Create runtime directories if they do not exist yet.
+MUSIC_DIR.mkdir(parents=True, exist_ok=True)
+SYSTEM_SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
+DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Inicjalizacja bazy danych
+# Initialize the database.
 create_tables()
 
-SYSTEM_SOUND_NAMES = [
-    "vol_up",
-    "vol_down",
-    "power_on",
-    "power_off",
-    "sync",
-    "ready",
-    "nfc_mode",
-    "music_mode",
-]
-
-
 def seed_system_sounds():
-    """Tworzy sloty dźwięków systemowych jeśli nie istnieją."""
+    """Reconcile system sound slots with the firmware-supported list."""
     db = SessionLocal()
     try:
-        for name in SYSTEM_SOUND_NAMES:
+        stale_sounds = (
+            db.query(SystemSound)
+            .filter(SystemSound.name.notin_(ACTIVE_SYSTEM_SOUND_NAMES))
+            .all()
+        )
+        for sound in stale_sounds:
+            if sound.filename:
+                stale_file = SYSTEM_SOUNDS_DIR / sound.filename
+                if stale_file.exists():
+                    stale_file.unlink()
+            db.delete(sound)
+
+        for name in ACTIVE_SYSTEM_SOUND_NAMES:
             existing = db.query(SystemSound).filter(SystemSound.name == name).first()
             if not existing:
                 db.add(SystemSound(name=name))
@@ -45,14 +45,13 @@ def seed_system_sounds():
 
 seed_system_sounds()
 
-# Aplikacja FastAPI
 app = FastAPI(
-    title="MusicBox",
-    description="Serwer muzyczny dla pudełka z figurkami NFC",
+    title="zBox",
+    description="Admin and sync server for the zBox NFC audio device",
     version="1.0.0",
 )
 
-# CORS - dla panelu webowego
+# CORS for the built-in web admin portal.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -61,12 +60,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Routery
+# Routers
 app.include_router(api.router)
 app.include_router(admin.router)
 
-# Statyczne pliki - panel webowy
-app.mount("/", StaticFiles(directory="web", html=True), name="web")
+# Static admin portal
+app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
 
 
 if __name__ == "__main__":

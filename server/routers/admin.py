@@ -1,4 +1,4 @@
-"""API endpoints dla panelu administracyjnego."""
+"""Admin API endpoints for the zBox portal."""
 
 import os
 import uuid
@@ -48,36 +48,26 @@ from models import (
     FigurineResponse,
     SystemSoundResponse,
 )
+from paths import MUSIC_DIR, SYSTEM_SOUNDS_DIR
+from system_sounds import ACTIVE_SYSTEM_SOUND_NAMES, ACTIVE_SYSTEM_SOUND_SET
 
 
-router = APIRouter(prefix="/admin", tags=["Panel administracyjny"])
+router = APIRouter(prefix="/admin", tags=["Admin"])
 
-MUSIC_DIR = Path("./music")
-SYSTEM_SOUNDS_DIR = Path("./music/system")
+VALID_SYSTEM_SOUNDS = ACTIVE_SYSTEM_SOUND_SET
 
-VALID_SYSTEM_SOUNDS = {
-    "vol_up",
-    "vol_down",
-    "power_on",
-    "power_off",
-    "sync",
-    "ready",
-    "nfc_mode",
-    "music_mode",
-}
-
-# Globalny dict do trzymania progressu zadań YouTube
+# Global dictionaries tracking background task progress.
 youtube_tasks: Dict[str, dict] = {}
 device_sync_tasks: Dict[str, dict] = {}
 
 
 def _device_error_detail(exc: RequestException) -> str:
     if exc.response is None:
-        return f"Błąd połączenia z urządzeniem: {exc}"
+        return f"Device connection error: {exc}"
 
     text = (exc.response.text or "").strip()
     if not text:
-        return f"Błąd urządzenia HTTP {exc.response.status_code}"
+        return f"Device HTTP error {exc.response.status_code}"
 
     try:
         payload = json.loads(text)
@@ -155,7 +145,7 @@ def _normalize_track_filenames(db: Session) -> bool:
 def _summarize_command_output(output: str, limit: int = 300) -> str:
     lines = [line.strip() for line in (output or "").splitlines() if line.strip()]
     if not lines:
-        return "Brak szczegolow bledu."
+        return "No additional error details."
     for line in reversed(lines):
         if "ERROR:" in line or "Requested format is not available" in line:
             return line[:limit]
@@ -170,7 +160,7 @@ def _create_sync_task_state(task_id: str, device_id: str) -> dict:
         "started_at": datetime.now(UTC).isoformat(),
         "finished_at": None,
         "progress": 0,
-        "message": "Przygotowanie synchronizacji...",
+        "message": "Preparing sync...",
         "stage": "queued",
         "current_file": None,
         "current_file_index": None,
@@ -220,7 +210,7 @@ def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
             "status": "error",
             "finished_at": datetime.now(UTC).isoformat(),
             "progress": current.get("progress", 0),
-            "message": f"Blad polaczenia z urzadzeniem: {exc}",
+            "message": f"Device connection error: {exc}",
             "error": str(exc),
         })
         device_sync_tasks[task_id] = current
@@ -230,7 +220,7 @@ def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
             "status": "error",
             "finished_at": datetime.now(UTC).isoformat(),
             "progress": current.get("progress", 0),
-            "message": f"Synchronizacja nie powiodla sie: {exc}",
+            "message": f"Sync failed: {exc}",
             "error": str(exc),
         })
         device_sync_tasks[task_id] = current
@@ -238,12 +228,12 @@ def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
         db.close()
 
 
-# === Tracks (Utwory) ===
+# === Tracks ===
 
 
 @router.get("/tracks", response_model=List[TrackResponse])
 def list_tracks(db: Session = Depends(get_db)):
-    """Zwraca listę wszystkich utworów."""
+    """Return all tracks."""
     tracks = db.query(Track).order_by(Track.created_at.desc()).all()
     return tracks
 
@@ -254,25 +244,25 @@ async def upload_track(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Upload nowego utworu MP3 z automatyczną konwersją do 64kbps."""
+    """Upload a new MP3 track and normalize it to 64 kbps."""
     if not file.filename.lower().endswith(".mp3"):
-        raise HTTPException(status_code=400, detail="Dozwolone tylko pliki MP3")
+        raise HTTPException(status_code=400, detail="Only MP3 files are allowed")
 
-    # Generuj unikalną nazwę pliku
+    # Generate a unique filename.
     unique_id = uuid.uuid4().hex[:8]
     safe_filename = _safe_track_filename(file.filename, unique_id=unique_id)
     final_path = MUSIC_DIR / safe_filename
 
     MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
-    # Zapisz plik tymczasowy
+    # Save the temporary upload.
     content = await file.read()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_input:
         temp_input.write(content)
         temp_input_path = temp_input.name
 
     try:
-        # Konwertuj do 64kbps używając ffmpeg
+        # Convert to 64 kbps with ffmpeg.
         result = subprocess.run(
             [
                 "ffmpeg",
@@ -291,14 +281,14 @@ async def upload_track(
         if result.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=f"Błąd konwersji MP3: {result.stderr}"
+                detail=f"MP3 conversion failed: {result.stderr}"
             )
 
     finally:
-        # Usuń plik tymczasowy
+        # Remove the temporary file.
         os.unlink(temp_input_path)
 
-    # Zapisz w bazie
+    # Store in the database.
     track = Track(title=title, filename=safe_filename)
     db.add(track)
     db.commit()
@@ -308,7 +298,7 @@ async def upload_track(
 
 
 def download_youtube_task(task_id: str, title: str, youtube_url: str):
-    """Background task dla pobierania z YouTube."""
+    """Background task for YouTube audio import."""
     import logging
     logger = logging.getLogger(__name__)
 
@@ -316,26 +306,26 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
         youtube_tasks[task_id] = {
             'status': 'downloading',
             'progress': 0,
-            'message': 'Łączenie z YouTube...',
+            'message': 'Connecting to YouTube...',
             'error': None,
             'track_id': None
         }
 
-        # Generuj unikalną nazwę pliku
+        # Generate a unique filename.
         unique_id = uuid.uuid4().hex[:8]
         safe_filename = _safe_track_filename(title, unique_id=unique_id)
         final_path = MUSIC_DIR / safe_filename
 
         MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Pobierz z YouTube do pliku tymczasowego
+        # Download to a temporary file.
         with tempfile.TemporaryDirectory() as temp_dir:
             temp_audio = os.path.join(temp_dir, "audio")
 
             youtube_tasks[task_id]['progress'] = 10
-            youtube_tasks[task_id]['message'] = 'Pobieranie z YouTube...'
+            youtube_tasks[task_id]['message'] = 'Downloading from YouTube...'
 
-            # Pobierz audio używając yt-dlp
+            # Download audio with yt-dlp.
             process = subprocess.Popen(
                 [
                     "yt-dlp",
@@ -345,7 +335,7 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
                     "-o", temp_audio,
                     "--no-playlist",
                     "--max-filesize", "50M",
-                    "--newline",  # Każdy progress w nowej linii
+                    "--newline",  # Emit each progress update on its own line.
                     youtube_url,
                 ],
                 stdout=subprocess.PIPE,
@@ -354,27 +344,27 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
             )
 
             yt_dlp_output: list[str] = []
-            # Parsuj output w czasie rzeczywistym
+            # Parse output in real time.
             for line in process.stdout:
                 yt_dlp_output.append(line.rstrip())
-                # Szukaj linii z procentami, np: "[download]  45.2% of 5.23MiB"
+                # Look for percentage progress lines.
                 match = re.search(r'\[download\]\s+(\d+\.?\d*)%', line)
                 if match:
                     percent = float(match.group(1))
-                    # Mapuj 0-100% downloadu na 10-60% całości
+                    # Map 0-100% download progress to the overall task range.
                     youtube_tasks[task_id]['progress'] = int(10 + (percent * 0.5))
-                    youtube_tasks[task_id]['message'] = f'Pobieranie: {percent:.1f}%'
+                    youtube_tasks[task_id]['message'] = f'Downloading: {percent:.1f}%'
 
             process.wait()
 
             if process.returncode != 0:
                 details = _summarize_command_output("\n".join(yt_dlp_output))
-                raise Exception(f"Blad yt-dlp: {details}")
+                raise Exception(f"yt-dlp failed: {details}")
 
             youtube_tasks[task_id]['progress'] = 60
-            youtube_tasks[task_id]['message'] = 'Szukanie pobranego pliku...'
+            youtube_tasks[task_id]['message'] = 'Locating the downloaded file...'
 
-            # Znajdź pobrany plik
+            # Locate the downloaded file.
             downloaded_file = temp_audio + ".mp3"
             if not os.path.exists(downloaded_file):
                 downloaded_file = temp_audio
@@ -383,12 +373,12 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
                     if files:
                         downloaded_file = os.path.join(temp_dir, files[0])
                     else:
-                        raise Exception("Nie znaleziono pobranego pliku")
+                        raise Exception("Downloaded file not found")
 
             youtube_tasks[task_id]['progress'] = 70
-            youtube_tasks[task_id]['message'] = 'Konwersja do MP3 64kbps...'
+            youtube_tasks[task_id]['message'] = 'Converting to 64 kbps MP3...'
 
-            # Konwertuj do 64kbps
+            # Convert to 64 kbps.
             result = subprocess.run(
                 [
                     "ffmpeg",
@@ -406,12 +396,12 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
 
             if result.returncode != 0:
                 details = _summarize_command_output(result.stderr or result.stdout)
-                raise Exception(f"Blad ffmpeg: {details}")
+                raise Exception(f"ffmpeg failed: {details}")
 
             youtube_tasks[task_id]['progress'] = 90
-            youtube_tasks[task_id]['message'] = 'Zapisywanie do bazy...'
+            youtube_tasks[task_id]['message'] = 'Saving to the database...'
 
-            # Zapisz w bazie - używamy nowej sesji dla background task
+            # Save using a new session dedicated to the background task.
             from database import SessionLocal
             db = SessionLocal()
             try:
@@ -422,7 +412,7 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
 
                 youtube_tasks[task_id]['progress'] = 100
                 youtube_tasks[task_id]['status'] = 'completed'
-                youtube_tasks[task_id]['message'] = 'Gotowe!'
+                youtube_tasks[task_id]['message'] = 'Done'
                 youtube_tasks[task_id]['track_id'] = track.id
             finally:
                 db.close()
@@ -431,7 +421,7 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
         logger.exception("YouTube download error for %s", youtube_url)
         youtube_tasks[task_id]['status'] = 'error'
         youtube_tasks[task_id]['error'] = str(e)
-        youtube_tasks[task_id]['message'] = f'Błąd: {str(e)}'
+        youtube_tasks[task_id]['message'] = f'Error: {str(e)}'
 
 
 @router.post("/tracks/youtube")
@@ -440,10 +430,10 @@ async def start_youtube_download(
     youtube_url: str = Form(...),
     background_tasks: BackgroundTasks = None,
 ):
-    """Rozpoczyna pobieranie z YouTube w tle."""
+    """Start a background YouTube import."""
     task_id = uuid.uuid4().hex
 
-    # Uruchom w tle
+    # Run in the background.
     thread = threading.Thread(
         target=download_youtube_task,
         args=(task_id, title, youtube_url)
@@ -456,9 +446,9 @@ async def start_youtube_download(
 
 @router.get("/tracks/youtube/{task_id}/status")
 async def get_youtube_task_status(task_id: str):
-    """Zwraca status zadania YouTube."""
+    """Return YouTube task status."""
     if task_id not in youtube_tasks:
-        raise HTTPException(status_code=404, detail="Zadanie nie znalezione")
+        raise HTTPException(status_code=404, detail="Task not found")
 
     return youtube_tasks[task_id]
 
@@ -470,39 +460,39 @@ async def trim_track(
     end_time: float = Form(...),
     db: Session = Depends(get_db),
 ):
-    """Przycina utwór do określonych czasów."""
+    """Trim a track to the requested time range."""
     track = db.query(Track).filter(Track.id == track_id).first()
     if not track:
-        raise HTTPException(status_code=404, detail="Nie znaleziono utworu")
+        raise HTTPException(status_code=404, detail="Track not found")
 
     original_path = MUSIC_DIR / track.filename
     if not original_path.exists():
-        raise HTTPException(status_code=404, detail="Plik nie istnieje")
+        raise HTTPException(status_code=404, detail="File does not exist")
 
-    # Walidacja czasów
+    # Validate time range.
     if start_time < 0 or end_time <= start_time:
         raise HTTPException(
             status_code=400,
-            detail="Nieprawidłowe czasy (start >= 0 i end > start)"
+            detail="Invalid time range (start >= 0 and end > start)"
         )
 
-    # Nowa nazwa z sufiksem _trimmed + timestamp
+    # New filename with a trimmed suffix and fresh ID.
     unique_id = uuid.uuid4().hex[:8]
-    # Wyciągnij tytuł bez poprzednich ID
+    # Strip old IDs from the basename.
     parts = track.filename.split("_", 1)
     if len(parts) > 1:
-        clean_name = parts[1].rsplit(".", 1)[0]  # Usuń też .mp3
+        clean_name = parts[1].rsplit(".", 1)[0]  # Strip the .mp3 suffix too.
     else:
         clean_name = track.filename.rsplit(".", 1)[0]
 
-    # Usuń poprzedni sufiks _trimmed jeśli istnieje
+    # Remove any previous _trimmed suffix.
     clean_name = clean_name.replace("_trimmed", "")
 
     new_filename = _safe_track_filename(f"{clean_name}_trimmed.mp3", unique_id=unique_id)
     trimmed_path = MUSIC_DIR / new_filename
 
     try:
-        # Przytnij używając ffmpeg
+        # Trim with ffmpeg.
         duration = end_time - start_time
         result = subprocess.run(
             [
@@ -524,13 +514,13 @@ async def trim_track(
         if result.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=f"Błąd przycinania: {result.stderr}"
+                detail=f"Trim failed: {result.stderr}"
             )
 
-        # Usuń stary plik
+        # Remove the previous file.
         os.remove(original_path)
 
-        # Zaktualizuj w bazie
+        # Update the database record.
         track.filename = new_filename
         db.commit()
         db.refresh(track)
@@ -538,35 +528,35 @@ async def trim_track(
         return track
 
     except subprocess.TimeoutExpired:
-        raise HTTPException(status_code=500, detail="Timeout podczas przycinania")
+        raise HTTPException(status_code=500, detail="Trim timed out")
 
 
 @router.delete("/tracks/{track_id}")
 def delete_track(track_id: int, db: Session = Depends(get_db)):
-    """Usuwa utwór i plik MP3."""
+    """Delete a track and its MP3 file."""
     track = db.query(Track).filter(Track.id == track_id).first()
 
     if not track:
-        raise HTTPException(status_code=404, detail="Nie znaleziono utworu")
+        raise HTTPException(status_code=404, detail="Track not found")
 
-    # Usuń plik
+    # Remove the file.
     file_path = MUSIC_DIR / track.filename
     if file_path.exists():
         os.remove(file_path)
 
-    # Usuń z bazy
+    # Remove the database record.
     db.delete(track)
     db.commit()
 
-    return {"message": "Utwór usunięty", "id": track_id}
+    return {"message": "Track deleted", "id": track_id}
 
 
-# === Figurines (Figurki) ===
+# === Figurines ===
 
 
 @router.get("/figurines", response_model=List[FigurineResponse])
 def list_figurines(db: Session = Depends(get_db)):
-    """Zwraca listę wszystkich figurek z przypisanymi utworami."""
+    """Return all figurines with their assigned tracks."""
     figurines = (
         db.query(Figurine)
         .options(joinedload(Figurine.track))
@@ -578,19 +568,19 @@ def list_figurines(db: Session = Depends(get_db)):
 
 @router.post("/figurines", response_model=FigurineResponse)
 def create_figurine(data: FigurineCreate, db: Session = Depends(get_db)):
-    """Tworzy nową figurkę (opcjonalnie z przypisanym utworem)."""
-    # Sprawdź czy NFC UID już istnieje
+    """Create a new figurine, optionally with an assigned track."""
+    # Check whether the NFC UID already exists.
     existing = db.query(Figurine).filter(Figurine.nfc_uid == data.nfc_uid).first()
     if existing:
         raise HTTPException(
-            status_code=400, detail="Figurka z tym kodem NFC już istnieje"
+            status_code=400, detail="A figurine with this NFC UID already exists"
         )
 
-    # Sprawdź czy utwór istnieje (jeśli podano)
+    # Check whether the requested track exists.
     if data.track_id:
         track = db.query(Track).filter(Track.id == data.track_id).first()
         if not track:
-            raise HTTPException(status_code=404, detail="Nie znaleziono utworu")
+            raise HTTPException(status_code=404, detail="Track not found")
 
     figurine = Figurine(
         name=data.name,
@@ -601,7 +591,7 @@ def create_figurine(data: FigurineCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(figurine)
 
-    # Załaduj relację track
+    # Load the track relationship.
     db.refresh(figurine, ["track"])
 
     return figurine
@@ -611,23 +601,23 @@ def create_figurine(data: FigurineCreate, db: Session = Depends(get_db)):
 def update_figurine(
     figurine_id: int, data: FigurineUpdate, db: Session = Depends(get_db)
 ):
-    """Aktualizuje figurkę (nazwę lub przypisany utwór)."""
+    """Update a figurine name or track assignment."""
     figurine = db.query(Figurine).filter(Figurine.id == figurine_id).first()
 
     if not figurine:
-        raise HTTPException(status_code=404, detail="Nie znaleziono figurki")
+        raise HTTPException(status_code=404, detail="Figurine not found")
 
-    # Sprawdź czy utwór istnieje (jeśli podano)
+    # Check whether the requested track exists.
     if data.track_id is not None and data.track_id != 0:
         track = db.query(Track).filter(Track.id == data.track_id).first()
         if not track:
-            raise HTTPException(status_code=404, detail="Nie znaleziono utworu")
+            raise HTTPException(status_code=404, detail="Track not found")
 
     if data.name is not None:
         figurine.name = data.name
 
     if data.track_id is not None:
-        # track_id = 0 oznacza usunięcie przypisania
+        # track_id = 0 removes the assignment.
         figurine.track_id = data.track_id if data.track_id != 0 else None
 
     db.commit()
@@ -638,25 +628,27 @@ def update_figurine(
 
 @router.delete("/figurines/{figurine_id}")
 def delete_figurine(figurine_id: int, db: Session = Depends(get_db)):
-    """Usuwa figurkę."""
+    """Delete a figurine."""
     figurine = db.query(Figurine).filter(Figurine.id == figurine_id).first()
 
     if not figurine:
-        raise HTTPException(status_code=404, detail="Nie znaleziono figurki")
+        raise HTTPException(status_code=404, detail="Figurine not found")
 
     db.delete(figurine)
     db.commit()
 
-    return {"message": "Figurka usunięta", "id": figurine_id}
+    return {"message": "Figurine deleted", "id": figurine_id}
 
 
-# === System Sounds (Dźwięki systemowe) ===
+# === System Sounds ===
 
 
 @router.get("/system_sounds", response_model=List[SystemSoundResponse])
 def list_system_sounds(db: Session = Depends(get_db)):
-    """Zwraca listę wszystkich slotów dźwięków systemowych."""
-    sounds = db.query(SystemSound).order_by(SystemSound.name).all()
+    """Return all system sound slots."""
+    order = {name: index for index, name in enumerate(ACTIVE_SYSTEM_SOUND_NAMES)}
+    sounds = db.query(SystemSound).all()
+    sounds.sort(key=lambda sound: order.get(sound.name, len(order)))
     return sounds
 
 
@@ -666,26 +658,26 @@ async def upload_system_sound(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
 ):
-    """Upload pliku MP3 dla dźwięku systemowego."""
+    """Upload an MP3 file for a system sound slot."""
     if name not in VALID_SYSTEM_SOUNDS:
         raise HTTPException(
             status_code=400,
-            detail=f"Nieprawidłowa nazwa. Dozwolone: {', '.join(sorted(VALID_SYSTEM_SOUNDS))}"
+            detail=f"Invalid name. Allowed values: {', '.join(sorted(VALID_SYSTEM_SOUNDS))}"
         )
 
     if not file.filename.lower().endswith(".mp3"):
-        raise HTTPException(status_code=400, detail="Dozwolone tylko pliki MP3")
+        raise HTTPException(status_code=400, detail="Only MP3 files are allowed")
 
     sound = db.query(SystemSound).filter(SystemSound.name == name).first()
     if not sound:
-        raise HTTPException(status_code=404, detail="Slot dźwięku nie istnieje")
+        raise HTTPException(status_code=404, detail="Sound slot does not exist")
 
     SYSTEM_SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
 
     filename = f"{name}.mp3"
     final_path = SYSTEM_SOUNDS_DIR / filename
 
-    # Zapisz plik tymczasowy i konwertuj do 64kbps
+    # Save a temporary upload and convert it to 64 kbps.
     content = await file.read()
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_input:
         temp_input.write(content)
@@ -710,7 +702,7 @@ async def upload_system_sound(
         if result.returncode != 0:
             raise HTTPException(
                 status_code=500,
-                detail=f"Błąd konwersji MP3: {result.stderr}"
+                detail=f"MP3 conversion failed: {result.stderr}"
             )
     finally:
         os.unlink(temp_input_path)
@@ -724,13 +716,13 @@ async def upload_system_sound(
 
 @router.delete("/system_sounds/{name}")
 def delete_system_sound(name: str, db: Session = Depends(get_db)):
-    """Usuwa plik dźwięku systemowego (slot pozostaje)."""
+    """Delete a system sound file while keeping the slot."""
     if name not in VALID_SYSTEM_SOUNDS:
-        raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa")
+        raise HTTPException(status_code=400, detail="Invalid name")
 
     sound = db.query(SystemSound).filter(SystemSound.name == name).first()
     if not sound:
-        raise HTTPException(status_code=404, detail="Slot dźwięku nie istnieje")
+        raise HTTPException(status_code=404, detail="Sound slot does not exist")
 
     if sound.filename:
         file_path = SYSTEM_SOUNDS_DIR / sound.filename
@@ -740,7 +732,7 @@ def delete_system_sound(name: str, db: Session = Depends(get_db)):
     sound.filename = None
     db.commit()
 
-    return {"message": "Dźwięk usunięty", "name": name}
+    return {"message": "System sound deleted", "name": name}
 
 
 def _get_device_or_404() -> dict:
@@ -762,7 +754,7 @@ def update_device_settings(payload: DeviceSettings):
 
 @router.get("/devices", response_model=List[DeviceStatus])
 def list_devices():
-    """Zwraca skonfigurowany zBox po stałym IP."""
+    """Return the configured device if it is reachable."""
     try:
         return [fetch_device_status(_get_device_or_404())]
     except RequestException:
@@ -771,11 +763,11 @@ def list_devices():
 
 @router.get("/devices/{device_id}/files", response_model=DeviceFilesResponse)
 def get_device_files(device_id: str):
-    """Zwraca listę plików dostępnych na SD urządzenia."""
+    """Return the list of files currently available on the device SD card."""
     try:
         return fetch_device_files(_get_device_or_404())
     except RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
 @router.get("/devices/{device_id}/logs", response_model=DeviceLogsResponse)
@@ -825,7 +817,7 @@ def get_device_log_download(device_id: str, name: str):
 
 @router.get("/devices/{device_id}/sync/check", response_model=DeviceSyncCheckResponse)
 def check_device_sync(device_id: str, db: Session = Depends(get_db)):
-    """Sprawdza, czy na urządzeniu są zmiany do synchronizacji."""
+    """Check whether the device needs sync."""
     try:
         _normalize_track_filenames(db)
         plan = build_sync_plan(_get_device_or_404(), db)
@@ -857,32 +849,32 @@ def check_device_sync(device_id: str, db: Session = Depends(get_db)):
             "system_sounds_manifest_needs_update": plan["system_sounds_manifest_needs_update"],
         }
     except RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
 @router.get("/devices/{device_id}/config")
 def get_device_config(device_id: str):
-    """Zwraca aktualną konfigurację animacji LED z urządzenia."""
+    """Return the current LED animation configuration from the device."""
     try:
         return fetch_led_config(_get_device_or_404())
     except RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
 @router.post("/devices/{device_id}/config")
 def save_device_config(device_id: str, payload: dict):
-    """Zapisuje konfigurację animacji LED na urządzeniu."""
+    """Write LED animation configuration to the device."""
     try:
         device = _get_device_or_404()
         push_led_config(device, payload)
         return {"saved": True, "device_id": device_id}
     except RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
 @router.post("/devices/{device_id}/sync", response_model=DeviceSyncStartResponse)
 def sync_device_now(device_id: str):
-    """Uruchamia synchronizację w tle i zwraca task_id do pollingu."""
+    """Start a background sync and return a pollable task ID."""
     try:
         current_task = _get_current_sync_task(device_id)
         if current_task:
@@ -898,14 +890,14 @@ def sync_device_now(device_id: str):
         thread.start()
         return {"task_id": task_id}
     except RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
 @router.get("/devices/{device_id}/sync/current", response_model=DeviceSyncTaskStatus)
 def get_current_device_sync(device_id: str):
     task = _get_current_sync_task(device_id)
     if not task:
-        raise HTTPException(status_code=404, detail="Brak aktywnej synchronizacji")
+        raise HTTPException(status_code=404, detail="No active sync task")
     return task
 
 
@@ -913,15 +905,15 @@ def get_current_device_sync(device_id: str):
 def get_device_sync_status(device_id: str, task_id: str):
     task = device_sync_tasks.get(task_id)
     if not task or task.get("device_id") != device_id:
-        raise HTTPException(status_code=404, detail="Nie znaleziono zadania synchronizacji")
+        raise HTTPException(status_code=404, detail="Sync task not found")
     return task
 
 
 @router.post("/devices/{device_id}/restart")
 def restart_device_now(device_id: str):
-    """Restartuje urządzenie po operacjach serwisowych."""
+    """Restart the device after service operations."""
     try:
         restart_device(_get_device_or_404())
         return {"restart": True, "device_id": device_id}
     except RequestException as exc:
-        raise HTTPException(status_code=502, detail=f"Błąd połączenia z urządzeniem: {exc}") from exc
+        raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc

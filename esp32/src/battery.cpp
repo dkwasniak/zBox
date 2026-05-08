@@ -1,5 +1,5 @@
 #include "battery.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "helpers.h"
 #include "logging.h"
 #include <Arduino.h>

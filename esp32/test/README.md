@@ -1,4 +1,4 @@
-# MusicBox — dokumentacja testów
+# zBox — dokumentacja testów
 
 ## Spis treści
 
@@ -149,7 +149,7 @@ pytest integration/test_boot_sequence.py integration/test_timing.py \
 Weryfikuje że wszystkie komunikaty boot pojawiają się we właściwej kolejności:
 
 ```
-=== MusicBox ===
+=== zBox ===
 [T+  0] Boot start
 [T+  N] GPIO ready
 [T+  N] SD OK|FAIL
@@ -381,7 +381,7 @@ Nic — testy kompilują się i uruchamiają natywnie na PC.
 
 ### Wymagane do etapów 2-3
 
-- DUT: Lolin D32 Pro z wgranym firmware MusicBox
+- DUT: Lolin D32 Pro z wgranym firmware zBox
 - Kabel USB → `/dev/cu.usbserial-10` (CH340)
 - Karta SD z `data/mappings.json`
 - JBL GO 2 włączony (testy czekają na boot, BT connect jest w tle)

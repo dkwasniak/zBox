@@ -1,4 +1,4 @@
-# MusicBox Test Progress
+# zBox Test Progress
 
 | Etap | Opis | Status | Commit |
 |------|------|--------|--------|

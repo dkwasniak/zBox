@@ -10,8 +10,10 @@ from sqlalchemy.orm import (
     sessionmaker,
 )
 
+from paths import DATA_DIR
 
-DATABASE_URL = "sqlite:///./data/musicbox.db"
+
+DATABASE_URL = f"sqlite:///{(DATA_DIR / 'zbox.db').as_posix()}"
 
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)

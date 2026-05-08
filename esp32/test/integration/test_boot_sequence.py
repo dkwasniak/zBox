@@ -2,7 +2,7 @@ import pytest
 
 # Oczekiwana kolejność logów przy normalnym boot (bez sync_pending)
 BOOT_SEQUENCE = [
-    r"=== MusicBox ===",
+    r"=== zBox ===",
     r"\[T\+\s*0\] Boot start",
     r"\[T\+\s*\d+\] GPIO ready",
     r"\[T\+\s*\d+\] SD (OK|FAIL)",

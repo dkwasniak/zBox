@@ -13,11 +13,12 @@ ENV PATH="/root/.deno/bin:${PATH}"
 RUN pip install --no-cache-dir "yt-dlp[default]"
 
 # Instalacja zależności
-COPY server/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+COPY server/requirements.txt /app/server/requirements.txt
+RUN pip install --no-cache-dir -r /app/server/requirements.txt
 
 # Kopiowanie kodu
-COPY server/ .
+COPY server/ /app/server/
+COPY web/ /app/web/
 
 # Tworzenie katalogów
 RUN mkdir -p /app/music /app/data /app/web
@@ -26,4 +27,4 @@ RUN mkdir -p /app/music /app/data /app/web
 EXPOSE 8000
 
 # Uruchomienie
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "main:app", "--app-dir", "/app/server", "--host", "0.0.0.0", "--port", "8000"]

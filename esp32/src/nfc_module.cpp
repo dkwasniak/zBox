@@ -1,6 +1,6 @@
 #include "nfc_module.h"
 #include <Adafruit_PN532.h>
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"

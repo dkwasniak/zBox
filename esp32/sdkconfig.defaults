@@ -1,5 +1,5 @@
-# MusicBox sdkconfig.defaults
-# Based on mirkosertic/ESP32MusicBox configuration
+# zBox sdkconfig.defaults
+# Based on mirkosertic/ESP32zBox configuration
 
 # --- Compiler ---
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y

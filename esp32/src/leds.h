@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <stdint.h>
-#include "musicbox_config.h"
+#include "zbox_config.h"
 
 #if ENABLE_LEDS
 

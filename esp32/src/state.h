@@ -1,7 +1,7 @@
 #pragma once
 #include <Arduino.h>
 #include <map>
-#include "musicbox_config.h"
+#include "zbox_config.h"
 
 enum class RuntimeSessionMode : uint8_t {
     NORMAL = 0,

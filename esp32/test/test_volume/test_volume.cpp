@@ -3,7 +3,7 @@
 #include <algorithm>
 #include "helpers.h"
 
-// Constants from musicbox_config.h (local copies for pure-logic tests)
+// Constants from zbox_config.h (local copies for pure-logic tests)
 #define BT_VOL_STEP 5
 #define BT_VOL_MIN  0
 #define BT_VOL_MAX  100

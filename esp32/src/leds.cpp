@@ -5,7 +5,7 @@
 #include <ArduinoJson.h>
 #include <FastLED.h>
 #include <SD.h>
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"  // isPlaying
 

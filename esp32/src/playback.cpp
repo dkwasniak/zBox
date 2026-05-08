@@ -1,5 +1,5 @@
 #include "playback.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "jbl.h"
@@ -14,7 +14,7 @@
 
 namespace {
 
-constexpr const char *PLAYBACK_PREF_NS = "musicbox";
+constexpr const char *PLAYBACK_PREF_NS = "zbox";
 constexpr const char *PLAYBACK_MODE_KEY = "playback_mode";
 
 Preferences playbackPrefs;

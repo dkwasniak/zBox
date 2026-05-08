@@ -1,5 +1,5 @@
 #include "sleep.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "audio.h"

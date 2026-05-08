@@ -3,7 +3,7 @@
 #include "AudioTools.h"
 #include "AudioTools/Communication/A2DPStream.h"
 #include "AudioTools/AudioCodecs/CodecMP3Helix.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"

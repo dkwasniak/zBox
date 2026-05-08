@@ -1,7 +1,6 @@
-"""API endpoints dla ESP32."""
+"""Public API endpoints used by the ESP32 device."""
 
 import time
-from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -10,28 +9,23 @@ from sqlalchemy.orm import Session, joinedload
 
 from database import get_db, Figurine, Track, SystemSound
 from models import PlayResponse, SyncResponse, SyncFigurine, SyncTrack, SyncSystemSound
+from paths import MUSIC_DIR, SYSTEM_SOUNDS_DIR
 
 
-router = APIRouter(prefix="/api", tags=["ESP32 API"])
-
-MUSIC_DIR = Path("./music")
-SYSTEM_SOUNDS_DIR = Path("./music/system")
+router = APIRouter(prefix="/api", tags=["Device API"])
 
 
 @router.get("/play/{nfc_uid}", response_model=PlayResponse)
 def play_by_nfc(nfc_uid: str, request: Request, db: Session = Depends(get_db)):
-    """
-    Zwraca URL do streamu muzyki dla danego kodu NFC.
-    Używane przez ESP32 do odtwarzania muzyki.
-    """
+    """Return a playback URL for the given NFC UID."""
     figurine = db.query(Figurine).filter(Figurine.nfc_uid == nfc_uid).first()
 
     if not figurine:
-        raise HTTPException(status_code=404, detail="Nie znaleziono figurki")
+        raise HTTPException(status_code=404, detail="Figurine not found")
 
     if not figurine.track:
         raise HTTPException(
-            status_code=404, detail="Figurka nie ma przypisanego utworu"
+            status_code=404, detail="Figurine has no assigned track"
         )
 
     base_url = str(request.base_url).rstrip("/")
@@ -46,18 +40,16 @@ def play_by_nfc(nfc_uid: str, request: Request, db: Session = Depends(get_db)):
 
 @router.get("/stream/{track_id}")
 def stream_track(track_id: int, db: Session = Depends(get_db)):
-    """
-    Streamuje plik MP3 dla danego utworu.
-    """
+    """Stream an MP3 file for the requested track."""
     track = db.query(Track).filter(Track.id == track_id).first()
 
     if not track:
-        raise HTTPException(status_code=404, detail="Nie znaleziono utworu")
+        raise HTTPException(status_code=404, detail="Track not found")
 
     file_path = MUSIC_DIR / track.filename
 
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Plik nie istnieje")
+        raise HTTPException(status_code=404, detail="File does not exist")
 
     return FileResponse(
         path=file_path,
@@ -68,20 +60,17 @@ def stream_track(track_id: int, db: Session = Depends(get_db)):
 
 @router.get("/stream/file/{filename}")
 def stream_file(filename: str):
-    """
-    Streamuje plik MP3 po nazwie pliku.
-    Używane przez ESP32 do synchronizacji.
-    """
-    # Blokuj path traversal, resztę przepuszczaj (polskie znaki, spacje)
+    """Stream an MP3 file by filename for device sync downloads."""
+    # Block path traversal, allow the rest.
     if ".." in filename or "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa pliku")
+        raise HTTPException(status_code=400, detail="Invalid filename")
 
-    # Szukaj w music/ i music/system/
+    # Search both music/ and music/system/.
     file_path = MUSIC_DIR / filename
     if not file_path.exists():
         file_path = SYSTEM_SOUNDS_DIR / filename
     if not file_path.exists():
-        raise HTTPException(status_code=404, detail="Plik nie istnieje")
+        raise HTTPException(status_code=404, detail="File does not exist")
 
     return FileResponse(
         path=file_path,
@@ -92,12 +81,8 @@ def stream_file(filename: str):
 
 @router.get("/sync", response_model=SyncResponse)
 def sync_manifest(db: Session = Depends(get_db), force: bool = False):
-    """
-    Zwraca manifest synchronizacji dla ESP32.
-    Zawiera listę figurek z przypisanymi utworami, listę utworów i dźwięki systemowe.
-    ?force=true — wymusza pobranie przez ESP32 (mtime przesunięty o +1)
-    """
-    # Figurki z przypisanymi utworami
+    """Return the sync manifest used by the ESP32."""
+    # Figurines with assigned tracks.
     figurines_db = (
         db.query(Figurine)
         .options(joinedload(Figurine.track))
@@ -114,7 +99,7 @@ def sync_manifest(db: Session = Depends(get_db), force: bool = False):
                 track_title=f.track.title,
             ))
 
-    # Wszystkie utwory
+    # All tracks.
     tracks_db = db.query(Track).all()
     tracks = []
     for t in tracks_db:
@@ -128,7 +113,7 @@ def sync_manifest(db: Session = Depends(get_db), force: bool = False):
             size = 0
         tracks.append(SyncTrack(filename=t.filename, title=t.title, mtime=mtime, size=size))
 
-    # Dźwięki systemowe z przypisanymi plikami
+    # Assigned system sounds.
     sounds_db = db.query(SystemSound).filter(SystemSound.filename.isnot(None)).all()
     system_sounds = [
         SyncSystemSound(name=s.name, filename=s.filename) for s in sounds_db
@@ -143,23 +128,21 @@ def sync_manifest(db: Session = Depends(get_db), force: bool = False):
 
 @router.get("/health")
 def health_check():
-    """Endpoint do sprawdzania czy serwer działa."""
-    return {"status": "ok", "service": "musicbox"}
+    """Health endpoint."""
+    return {"status": "ok", "service": "zbox"}
 
 
 @router.get("/system_sounds/{sound_name}")
 def stream_system_sound(sound_name: str, db: Session = Depends(get_db)):
-    """
-    Streamuje dźwięki systemowe z bazy SystemSound.
-    """
+    """Stream an assigned system sound."""
     if not sound_name.replace("_", "").isalnum():
-        raise HTTPException(status_code=400, detail="Nieprawidłowa nazwa dźwięku")
+        raise HTTPException(status_code=400, detail="Invalid sound name")
 
     sound = db.query(SystemSound).filter(SystemSound.name == sound_name).first()
     if not sound or not sound.filename:
         raise HTTPException(
             status_code=404,
-            detail=f"Dźwięk systemowy '{sound_name}' nie jest przypisany"
+            detail=f"System sound '{sound_name}' is not assigned"
         )
 
     file_path = SYSTEM_SOUNDS_DIR / sound.filename
@@ -167,7 +150,7 @@ def stream_system_sound(sound_name: str, db: Session = Depends(get_db)):
     if not file_path.exists():
         raise HTTPException(
             status_code=404,
-            detail=f"Plik dźwięku systemowego nie istnieje"
+            detail="System sound file does not exist"
         )
 
     return FileResponse(

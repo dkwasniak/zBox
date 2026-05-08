@@ -7,7 +7,7 @@
 
 #include "persistent_log.h"
 
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "shared_types.h"
 #include "state.h"
@@ -45,7 +45,7 @@ void setup()
     bootStart = millis();
     Serial.begin(115200);
     plogInit(false);
-    LOGI("\n\n=== MusicBox ===\n");
+    LOGI("\n\n=== zBox ===\n");
     LOGI("Boot start\n");
 
     WakeDecision wakeDecision = handleWakeFromDeepSleep();

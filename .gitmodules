@@ -1,0 +1,3 @@
+[submodule "esp32/lib/ESP32-A2DP"]
+	path = esp32/lib/ESP32-A2DP
+	url = https://github.com/pschatzmann/ESP32-A2DP.git

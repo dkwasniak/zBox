@@ -1,5 +1,5 @@
 #include "diagnostic_mode.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"
@@ -801,7 +801,7 @@ static void setupOta()
 
 void runDiagnosticMode()
 {
-    LOGLN("\n=== MusicBox DIAGNOSTIC MODE ===\n");
+    LOGLN("\n=== zBox DIAGNOSTIC MODE ===\n");
     ledFlashDiagnosticTransition(true);
     ledSetDiagnostic();
     disableBtForDiagnostic();

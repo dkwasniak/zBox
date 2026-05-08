@@ -8,13 +8,12 @@ from requests_toolbelt.multipart.encoder import MultipartEncoder, MultipartEncod
 from sqlalchemy.orm import Session, joinedload
 
 from database import Figurine, SystemSound, Track
+from paths import DATA_DIR, MUSIC_DIR, SYSTEM_SOUNDS_DIR
 
 
 HTTP_TIMEOUT = 20
 UPLOAD_TIMEOUT = 120
-MUSIC_DIR = Path("./music")
-SYSTEM_SOUNDS_DIR = Path("./music/system")
-DEVICE_SETTINGS_PATH = Path("./data/device_settings.json")
+DEVICE_SETTINGS_PATH = DATA_DIR / "device_settings.json"
 
 
 def _load_device_settings() -> dict:
@@ -498,9 +497,9 @@ def sync_device(
             progress=85,
             stage="writing_system_sounds",
             message=(
-                "Zapisywanie dzwiekow systemowych..."
+                "Writing system sound metadata..."
                 if sync_plan["system_sounds_needs_update"]
-                else "Dzwieki systemowe nie wymagaja zapisu."
+                else "System sound metadata is already up to date."
             ),
             mappings_written=mappings_written,
             mappings_count=mappings_count,
@@ -520,7 +519,7 @@ def sync_device(
                 progress_callback,
                 progress=92,
                 stage="writing_led_config",
-                message="Zapisywanie konfiguracji LED...",
+                message="Writing LED configuration...",
                 system_sounds_written=system_sounds_written,
                 system_sounds_count=system_sounds_count,
                 system_sounds_path="/data/system_sounds.json",
@@ -532,7 +531,7 @@ def sync_device(
         "device_id": resolved_device_id,
         "status": "completed",
         "progress": 100,
-        "message": "Synchronizacja zakonczona. Restart pozostaje osobna akcja.",
+        "message": "Sync completed. Restart is still a separate action.",
         "stage": "completed",
         "uploaded": uploaded,
         "deleted": deleted,

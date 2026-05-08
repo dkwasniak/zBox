@@ -1,6 +1,6 @@
 #include "volume.h"
 #include <Preferences.h>
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"
@@ -20,7 +20,7 @@ static constexpr unsigned long VOLUME_APPLY_THROTTLE_MS = 500;
 
 static void saveBtVolume()
 {
-    preferences.begin("musicbox", false);
+    preferences.begin("zbox", false);
     preferences.putInt("bt_volume", btVolume);
     preferences.end();
     LOGI("[VOL] Saved: %d%%\n", btVolume);
@@ -28,7 +28,7 @@ static void saveBtVolume()
 
 void loadBtVolume()
 {
-    preferences.begin("musicbox", true);
+    preferences.begin("zbox", true);
     btVolume = preferences.getInt("bt_volume", BT_VOL_DEFAULT);
     preferences.end();
     btVolume = constrain(btVolume, BT_VOL_MIN, BT_VOL_MAX);

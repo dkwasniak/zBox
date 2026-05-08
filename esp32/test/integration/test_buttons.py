@@ -65,9 +65,9 @@ def test_sync_mode_trigger(reset_esp, button_tester):
     # 1. Sync flag zapisana
     reset_esp.wait_for_line(r">>> Sync flag written", timeout_s=5)
     # 2. Restart (nowy boot)
-    reset_esp.wait_for_line(r"=== MusicBox ===", timeout_s=10)
+    reset_esp.wait_for_line(r"=== zBox ===", timeout_s=10)
     # 3. Tryb sync
-    reset_esp.wait_for_line(r"MusicBox SYNC MODE", timeout_s=10)
+    reset_esp.wait_for_line(r"zBox SYNC MODE", timeout_s=10)
 
 
 def test_long_press_b_switches_mode_without_click(reset_esp, button_tester):

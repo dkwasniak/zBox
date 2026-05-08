@@ -1,5 +1,5 @@
 #include "jbl.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include <Arduino.h>
 

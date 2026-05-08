@@ -4,7 +4,7 @@
 
 Zastąpiono stary panel Alpine.js + Tailwind nowym panelem React, zgodnym z designem z Claude Design.
 
-### Pliki w `server/web/`
+### Files in `web/`
 
 | Plik | Status | Uwagi |
 |------|--------|-------|
@@ -61,8 +61,5 @@ Zastąpiono stary panel Alpine.js + Tailwind nowym panelem React, zgodnym z desi
 ## Deployment
 
 ```bash
-rsync -avz --exclude '__pycache__' --exclude '*.pyc' --exclude '.git' \
-  <repo>/ rpi@<musicbox-server>:~/musicbox/
-
-ssh rpi@<musicbox-server> "cd ~/musicbox && docker compose up -d --build"
+docker compose up -d --build
 ```

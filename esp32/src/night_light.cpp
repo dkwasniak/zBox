@@ -5,13 +5,13 @@
 
 #include "leds.h"
 #include "logging.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "sleep.h"
 #include "state.h"
 
 namespace {
 
-constexpr const char *PREF_NS = "musicbox";
+constexpr const char *PREF_NS = "zbox";
 constexpr const char *BRIGHTNESS_KEY = "night_light";
 constexpr unsigned long NIGHT_LIGHT_SAVE_DELAY_MS = 1500;
 

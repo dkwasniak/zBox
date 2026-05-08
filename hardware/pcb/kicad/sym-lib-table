@@ -1,0 +1,5 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "lolin_hub")(type "KiCad")(uri "${KIPRJMOD}/lolin_hub.kicad_sym")(options "")(descr ""))
+  (lib (name "zbox")(type "KiCad")(uri "${KIPRJDIR}/zbox.pretty")(options "")(descr ""))
+)

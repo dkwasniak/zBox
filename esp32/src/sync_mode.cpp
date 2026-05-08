@@ -1,5 +1,5 @@
 #include "sync_mode.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"
@@ -27,7 +27,7 @@ static void syncTelnetBanner()
     if (!syncTelnetClient || !syncTelnetClient.connected())
         return;
     syncTelnetClient.println();
-    syncTelnetClient.println("=== MusicBox Sync Mode ===");
+    syncTelnetClient.println("=== zBox Sync Mode ===");
     syncTelnetClient.printf("IP: %s\r\n", WiFi.localIP().toString().c_str());
     syncTelnetClient.printf("Server: %s:%d\r\n", syncServerIP.c_str(), SERVER_PORT);
     syncTelnetClient.println("Streaming sync progress...");
@@ -554,7 +554,7 @@ static void clearSyncFlag()
 void runSyncMode()
 {
     syncLogf("");
-    syncLogf("=== MusicBox SYNC MODE ===");
+    syncLogf("=== zBox SYNC MODE ===");
     syncLogf("");
     ledSetSyncWifi();
 
@@ -568,7 +568,7 @@ void runSyncMode()
     wm.setConfigPortalTimeout(180);
     wm.setConnectTimeout(10);
 
-    if (!wm.autoConnect("MusicBox-Setup"))
+    if (!wm.autoConnect("zBox-Setup"))
     {
         syncLogf("[SYNC] WiFi not connected!");
         ledFlashResult(false);

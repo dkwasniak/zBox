@@ -1,5 +1,5 @@
 #include "buttons.h"
-#include "musicbox_config.h"
+#include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "buttons_isr.h"
