@@ -253,7 +253,7 @@ void playbackInit()
 {
     loadPlaybackMode();
     refreshMusicLibrary();
-    musicAutostartPending = (currentMode == PlaybackMode::MUSIC);
+    musicAutostartPending = !runtimeIsNightLight() && (currentMode == PlaybackMode::MUSIC);
 }
 
 PlaybackMode playbackGetMode()
@@ -273,6 +273,8 @@ bool playbackIsMusicMode()
 
 void playbackToggleMode()
 {
+    if (runtimeIsNightLight())
+        return;
     if (currentMode == PlaybackMode::NFC)
         enterMusicMode();
     else
@@ -281,6 +283,9 @@ void playbackToggleMode()
 
 void playbackHandleBtConnected()
 {
+    if (runtimeIsNightLight())
+        return;
+
     if (playbackIsMusicMode())
     {
         if (musicAutostartPending)
@@ -308,6 +313,9 @@ void playbackHandleBtConnected()
 
 void playbackHandleTrackEnded()
 {
+    if (runtimeIsNightLight())
+        return;
+
     if (playbackIsMusicMode())
     {
         if (musicLibrary.empty())
@@ -324,7 +332,7 @@ void playbackHandleTrackEnded()
 
 void playbackHandleNfcTagPresent(const char *uid)
 {
-    if (!uid || !*uid || playbackIsMusicMode())
+    if (!uid || !*uid || playbackIsMusicMode() || runtimeIsNightLight())
         return;
 
     if (strcmp(uid, (const char*)lastNfcUid) != 0)
@@ -333,7 +341,7 @@ void playbackHandleNfcTagPresent(const char *uid)
 
 void playbackHandleNfcTagRemoved()
 {
-    if (playbackIsMusicMode())
+    if (playbackIsMusicMode() || runtimeIsNightLight())
         return;
 
     clearNfcState();
@@ -343,7 +351,7 @@ void playbackHandleNfcTagRemoved()
 
 void playbackTogglePlayPause()
 {
-    if (!playbackIsMusicMode())
+    if (!playbackIsMusicMode() || runtimeIsNightLight())
         return;
 
     if (audioIsPaused())
@@ -370,20 +378,23 @@ void playbackTogglePlayPause()
 
 void playbackNextTrack()
 {
-    if (!playbackIsMusicMode())
+    if (!playbackIsMusicMode() || runtimeIsNightLight())
         return;
     startMusicTrackAt(currentTrackIndex + 1, "music next");
 }
 
 void playbackPrevTrack()
 {
-    if (!playbackIsMusicMode())
+    if (!playbackIsMusicMode() || runtimeIsNightLight())
         return;
     startMusicTrackAt(currentTrackIndex - 1, "music prev");
 }
 
 void startPlayback(const String &uid)
 {
+    if (runtimeIsNightLight())
+        return;
+
     LOGI("[PLAY] startPlayback uid=%s\n", uid.c_str());
     if (!sdReady)
     {
@@ -438,9 +449,7 @@ void playSystemSoundSync(const char *name, uint32_t timeoutMs)
     if (!SD.exists(it->second) || !g_btConnected || !audioIsReady()) return;
 
     audioStop();
-    delay(100);
-
-    audioStartFile(it->second.c_str());
+    audioStartFileWithGap(it->second.c_str(), 180);
     isPlaying = true;
     isPaused = false;
 

@@ -4,6 +4,7 @@
 void audioInit();
 void audioStartFile(const char *path);
 void audioStop();
+void audioStartFileWithGap(const char *path, uint16_t gapMs);
 void audioPause();
 void audioResume();
 bool audioIsRunning();

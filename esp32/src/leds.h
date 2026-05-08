@@ -25,6 +25,7 @@ struct LedConfig {
     LedColorConfig successColor;
     LedColorConfig errorColor;
     LedColorConfig warningColor;
+    LedColorConfig nightLightColor;
     bool animateWaitBt;
     bool animateIdle;
     bool animatePlaying;
@@ -48,6 +49,7 @@ void ledResumeTask();  // vTaskResume(ledTaskHandle)
 // Operacje FastLED bez FreeRTOS (dla handleWakeFromDeepSleep / enterDeepSleep)
 void ledClear();                  // FastLED.clear() + show()
 void ledSetWakeProgress(int lit); // pasek postępu (pomarańczowy) + show()
+void ledSetWakeNightLightBreathing(uint8_t phase);
 void ledPowerOff();               // clear + show + wyłącz zasilanie (LED_EN Hi-Z)
 
 // Diagnostyka
@@ -58,6 +60,7 @@ void ledSetBootProgress(int step);
 void ledSetWaitBt();
 void ledSetIdle();
 void ledSetPlaying();
+void ledSetNightLight(int brightnessPercent);
 void ledShowVolume(int volumePercent);
 void ledShowModeChange(bool musicMode);
 void ledSetSleepReady();
@@ -82,11 +85,13 @@ inline void ledSuspendTask() {}
 inline void ledResumeTask() {}
 inline void ledClear() {}
 inline void ledSetWakeProgress(int) {}
+inline void ledSetWakeNightLightBreathing(uint8_t) {}
 inline void ledPowerOff() {}
 inline void ledSetBootProgress(int) {}
 inline void ledSetWaitBt() {}
 inline void ledSetIdle() {}
 inline void ledSetPlaying() {}
+inline void ledSetNightLight(int) {}
 inline void ledShowVolume(int) {}
 inline void ledShowModeChange(bool) {}
 inline void ledSetSleepReady() {}

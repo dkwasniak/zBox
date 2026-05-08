@@ -7,6 +7,9 @@
 #define BT_VOL_STEP 5
 #define BT_VOL_MIN  0
 #define BT_VOL_MAX  100
+#define NIGHT_LIGHT_BRIGHTNESS_STEP 10
+#define NIGHT_LIGHT_BRIGHTNESS_MIN 10
+#define NIGHT_LIGHT_BRIGHTNESS_MAX 100
 
 // Pure volume logic (math only, no hardware side effects)
 static int volumeUp(int current)
@@ -17,6 +20,16 @@ static int volumeUp(int current)
 static int volumeDown(int current)
 {
     return std::max(current - BT_VOL_STEP, BT_VOL_MIN);
+}
+
+static int nightLightUp(int current)
+{
+    return std::min(current + NIGHT_LIGHT_BRIGHTNESS_STEP, NIGHT_LIGHT_BRIGHTNESS_MAX);
+}
+
+static int nightLightDown(int current)
+{
+    return std::max(current - NIGHT_LIGHT_BRIGHTNESS_STEP, NIGHT_LIGHT_BRIGHTNESS_MIN);
 }
 
 // Volume tests
@@ -49,6 +62,26 @@ void test_vol_down_clamps_at_0()
 void test_vol_near_min()
 {
     TEST_ASSERT_EQUAL_INT(0, volumeDown(2));
+}
+
+void test_night_light_up_normal()
+{
+    TEST_ASSERT_EQUAL_INT(60, nightLightUp(50));
+}
+
+void test_night_light_up_clamps()
+{
+    TEST_ASSERT_EQUAL_INT(100, nightLightUp(95));
+}
+
+void test_night_light_down_normal()
+{
+    TEST_ASSERT_EQUAL_INT(40, nightLightDown(50));
+}
+
+void test_night_light_down_clamps()
+{
+    TEST_ASSERT_EQUAL_INT(10, nightLightDown(15));
 }
 
 // Battery tests
@@ -125,6 +158,10 @@ int main()
     RUN_TEST(test_vol_down_normal);
     RUN_TEST(test_vol_down_clamps_at_0);
     RUN_TEST(test_vol_near_min);
+    RUN_TEST(test_night_light_up_normal);
+    RUN_TEST(test_night_light_up_clamps);
+    RUN_TEST(test_night_light_down_normal);
+    RUN_TEST(test_night_light_down_clamps);
     RUN_TEST(test_battery_5bars);
     RUN_TEST(test_battery_5bars_edge);
     RUN_TEST(test_battery_4bars);

@@ -268,6 +268,7 @@ static DiagSleepAction handleSleepButton()
         {
             btnC.longHandled = true;
             diagLogf("[DIAG] sleep armed - release BTN_C for deep sleep");
+            ledSetSleepReady();
         }
 
         return DIAG_SLEEP_NONE;

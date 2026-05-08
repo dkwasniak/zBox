@@ -18,6 +18,7 @@ struct AudioCmd {
     AudioCmdType type;
     char path[256];
     int volumePercent;
+    uint16_t gapMs;
 };
 
 // =============================================================================
@@ -32,6 +33,13 @@ class BeatTracker : public AudioOutput
 {
 public:
     void setSink(Print *s) { _sink = s; }
+    void reset()
+    {
+        memset(_hist, 0, sizeof(_hist));
+        _hIdx = 0;
+        _hCount = 0;
+        _lastBeat = 0;
+    }
 
     size_t write(const uint8_t *data, size_t len) override
     {
@@ -107,6 +115,49 @@ static QueueHandle_t audioQueue = NULL;
 static TaskHandle_t audioTaskHandle = NULL;
 static bool a2dpStarted = false;
 
+static void clearAudioTransport()
+{
+    a2dp.clear();
+    g_audioEnergy = 0;
+    g_beatDetected = false;
+    beatTracker.reset();
+}
+
+static void resetDecoderForNewTrack()
+{
+    // A new MP3 file must start with a fresh decoder state, otherwise
+    // leftover compressed frames/PCM from the previous file can leak in.
+    clearAudioTransport();
+    decoderStream.end();
+    decoderStream.begin();
+}
+
+static size_t bytesForSilenceMs(uint16_t durationMs)
+{
+    AudioInfo info = audioInfoLogger.audioInfo();
+    const uint32_t sampleRate = info.sample_rate > 0 ? (uint32_t)info.sample_rate : 44100U;
+    const uint32_t channels = info.channels > 0 ? (uint32_t)info.channels : 2U;
+    const uint32_t bitsPerSample = info.bits_per_sample > 0 ? (uint32_t)info.bits_per_sample : 16U;
+    const uint32_t bytesPerSampleFrame = channels * (bitsPerSample / 8U);
+    return (sampleRate * bytesPerSampleFrame * durationMs) / 1000U;
+}
+
+static void writeSilenceGap(uint16_t durationMs)
+{
+    clearAudioTransport();
+
+    static uint8_t zeroBuf[512] = {};
+    size_t remaining = bytesForSilenceMs(durationMs);
+    while (remaining > 0)
+    {
+        size_t chunk = remaining > sizeof(zeroBuf) ? sizeof(zeroBuf) : remaining;
+        size_t written = a2dp.write(zeroBuf, chunk);
+        if (written == 0)
+            break;
+        remaining -= written;
+    }
+}
+
 static void startA2dpTransport()
 {
     auto cfg = a2dp.defaultConfig(TX_MODE);
@@ -164,6 +215,9 @@ static void audioTaskFunc(void *param)
             if (cmd.type == AudioCmdType::PLAY)
             {
                 if (f) f.close();
+                resetDecoderForNewTrack();
+                if (cmd.gapMs > 0)
+                    writeSilenceGap(cmd.gapMs);
                 f = SD.open(cmd.path);
                 if (f)
                 {
@@ -185,7 +239,6 @@ static void audioTaskFunc(void *param)
                     isPlaying = false;
                     isPaused = false;
                     LOGE("[AUDIO] Open failed: %s\n", cmd.path);
-                    a2dp.clear();
                 }
             }
             else if (cmd.type == AudioCmdType::STOP)
@@ -196,7 +249,7 @@ static void audioTaskFunc(void *param)
                 ledSetIdle();
                 LOGI("[AUDIO] Stopped\n");
                 telWindows = 6; // wyłącz telemetrię po stopie
-                a2dp.clear();
+                clearAudioTransport();
             }
             else if (cmd.type == AudioCmdType::PAUSE)
             {
@@ -206,7 +259,7 @@ static void audioTaskFunc(void *param)
                     isPaused = true;
                     ledSetIdle();
                     LOGI("[AUDIO] Paused\n");
-                    a2dp.clear();
+                    clearAudioTransport();
                 }
             }
             else if (cmd.type == AudioCmdType::RESUME)
@@ -267,7 +320,7 @@ static void audioTaskFunc(void *param)
             trackEndedFlag = true;   // loop() wyczyści lastNfcUid i wywoła ledSetIdle()
             LOGI("[AUDIO] Track ended heap=%u largest=%u\n", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
             telWindows = 6;
-            a2dp.clear();
+            clearAudioTransport();
         }
         else
         {
@@ -294,29 +347,35 @@ void audioInit()
 
 void audioStartFile(const char *path)
 {
+    audioStartFileWithGap(path, 0);
+}
+
+void audioStartFileWithGap(const char *path, uint16_t gapMs)
+{
     if (!path) return;
     AudioCmd cmd;
     cmd.type = AudioCmdType::PLAY;
     cmd.volumePercent = 0;
+    cmd.gapMs = gapMs;
     strlcpy(cmd.path, path, sizeof(cmd.path));
     audioSendCmd(cmd, pdMS_TO_TICKS(50));
 }
 
 void audioStop()
 {
-    AudioCmd cmd = { AudioCmdType::STOP, {}, 0 };
+    AudioCmd cmd = { AudioCmdType::STOP, {}, 0, 0 };
     audioSendCmd(cmd, pdMS_TO_TICKS(100), true);
 }
 
 void audioPause()
 {
-    AudioCmd cmd = { AudioCmdType::PAUSE, {}, 0 };
+    AudioCmd cmd = { AudioCmdType::PAUSE, {}, 0, 0 };
     audioSendCmd(cmd, pdMS_TO_TICKS(50), true);
 }
 
 void audioResume()
 {
-    AudioCmd cmd = { AudioCmdType::RESUME, {}, 0 };
+    AudioCmd cmd = { AudioCmdType::RESUME, {}, 0, 0 };
     audioSendCmd(cmd, pdMS_TO_TICKS(50));
 }
 
@@ -352,7 +411,7 @@ void audioSetBtVolumePercent(int percent)
         return;
     }
 
-    AudioCmd cmd = { AudioCmdType::VOLUME, {}, percent };
+    AudioCmd cmd = { AudioCmdType::VOLUME, {}, percent, 0 };
     audioSendCmd(cmd, 0);
 }
 

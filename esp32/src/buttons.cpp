@@ -11,6 +11,7 @@
 #include "playback.h"
 #include "audio.h"
 #include "persistent_log.h"
+#include "night_light.h"
 #include <SD.h>
 #include <Arduino.h>
 
@@ -37,6 +38,23 @@ void resolveButtonAction(int idx, uint8_t clicks)
 {
     if (clicks == 0)
         return;
+
+    if (runtimeIsNightLight())
+    {
+        switch (idx)
+        {
+        case BTN_IDX_C:
+            nightLightDecrease();
+            break;
+        case BTN_IDX_D:
+            nightLightIncrease();
+            break;
+        default:
+            LOGI("[NIGHT] BTN_%c click ignored\n", 'A' + idx);
+            break;
+        }
+        return;
+    }
 
     switch (idx)
     {
@@ -97,6 +115,7 @@ void handleButtons()
 {
     static bool bothABHandled = false;
     static bool cSleepReadyShown = false;
+    static bool nightLightSleepHandled = false;
     unsigned long now = millis();
 
     // Odczyt aktualnego surowego stanu
@@ -115,12 +134,26 @@ void handleButtons()
             b.pressStart = now;
             b.longHandled = false;
             b.clickSuppressed = false;
-            lastActivityMs = millis(); // reset idle timer przy każdym naciśnięciu
+            if (!runtimeIsNightLight())
+                lastActivityMs = millis(); // reset idle timer przy każdym naciśnięciu
         }
     }
 
-    if (down[0] && down[1] && !bothABHandled &&
-        buttons[0].pressStart > 0 && buttons[1].pressStart > 0)
+    if (runtimeIsNightLight())
+    {
+        if (down[BTN_IDX_C] && buttons[BTN_IDX_C].pressStart > 0 &&
+            now - buttons[BTN_IDX_C].pressStart >= NIGHT_LIGHT_SLEEP_HOLD_MS &&
+            !nightLightSleepHandled)
+        {
+            nightLightSleepHandled = true;
+            buttons[BTN_IDX_C].longHandled = true;
+            suppressButton(buttons[BTN_IDX_C]);
+            LOGC("[NIGHT] BTN_C hold -> deep sleep\n");
+            enterDeepSleep();
+        }
+    }
+    else if (down[0] && down[1] && !bothABHandled &&
+             buttons[0].pressStart > 0 && buttons[1].pressStart > 0)
     {
         unsigned long earliest = max(buttons[0].pressStart, buttons[1].pressStart);
         if (now - earliest >= LONG_PRESS_MS)
@@ -137,9 +170,6 @@ void handleButtons()
             if (!written)
                 LOGE("[DIAG] Failed to write diagnostic flag\n");
             LOGC("[DIAG] Diagnostic flag written=%d\n", written);
-
-            ledFlashDiagnosticTransition(true);
-            delay(100);
             ESP.restart();
         }
     }
@@ -147,7 +177,7 @@ void handleButtons()
     // Bardzo długie BTN_C (bez BTN_D) -> awaryjny deep sleep.
     // Normalny deep sleep dla BTN_C odpalamy dopiero po puszczeniu, żeby
     // przytrzymanie mogło dojść do progu emergency.
-    if (down[2] && !down[3] && buttons[2].pressStart > 0 &&
+    if (!runtimeIsNightLight() && down[2] && !down[3] && buttons[2].pressStart > 0 &&
         now - buttons[2].pressStart >= EMERGENCY_SLEEP_MS && !buttons[2].longHandled)
     {
         buttons[2].longHandled = true;
@@ -156,7 +186,7 @@ void handleButtons()
         enterEmergencyDeepSleep();
     }
 
-    if (down[2] && !down[3] && buttons[2].pressStart > 0 &&
+    if (!runtimeIsNightLight() && down[2] && !down[3] && buttons[2].pressStart > 0 &&
         now - buttons[2].pressStart >= LONG_PRESS_MS && !cSleepReadyShown)
     {
         cSleepReadyShown = true;
@@ -166,7 +196,7 @@ void handleButtons()
     }
 
     // Długie BTN_A (sam) -> sprawdź baterię: animacja LED
-    if (down[0] && !down[1] && buttons[0].pressStart > 0 &&
+    if (!runtimeIsNightLight() && down[0] && !down[1] && buttons[0].pressStart > 0 &&
         now - buttons[0].pressStart >= LONG_PRESS_MS && !buttons[0].longHandled)
     {
         buttons[0].longHandled = true;
@@ -179,7 +209,7 @@ void handleButtons()
         lastNfcUid[0] = '\0';
     }
 
-    if (down[1] && !down[0] && buttons[1].pressStart > 0 &&
+    if (!runtimeIsNightLight() && down[1] && !down[0] && buttons[1].pressStart > 0 &&
         now - buttons[1].pressStart >= LONG_PRESS_MS && !buttons[1].longHandled)
     {
         buttons[1].longHandled = true;
@@ -196,7 +226,7 @@ void handleButtons()
         {
             unsigned long pressDuration = now - b.pressStart;
 
-            if (i == BTN_IDX_C && !down[BTN_IDX_D] &&
+            if (!runtimeIsNightLight() && i == BTN_IDX_C && !down[BTN_IDX_D] &&
                 pressDuration >= LONG_PRESS_MS && !b.longHandled)
             {
                 b.longHandled = true;
@@ -226,7 +256,10 @@ void handleButtons()
             b.longHandled = false;
             b.clickSuppressed = false;
             if (i == 2)
+            {
                 cSleepReadyShown = false;
+                nightLightSleepHandled = false;
+            }
         }
     }
 

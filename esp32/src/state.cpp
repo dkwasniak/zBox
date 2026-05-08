@@ -19,3 +19,19 @@ bool nfcReady = false;
 unsigned long bootStart = 0;
 bool bootTimingDone = false;
 unsigned long lastActivityMs = 0;
+static RuntimeSessionMode runtimeSessionMode = RuntimeSessionMode::NORMAL;
+
+RuntimeSessionMode runtimeGetSessionMode()
+{
+    return runtimeSessionMode;
+}
+
+void runtimeSetSessionMode(RuntimeSessionMode mode)
+{
+    runtimeSessionMode = mode;
+}
+
+bool runtimeIsNightLight()
+{
+    return runtimeSessionMode == RuntimeSessionMode::NIGHT_LIGHT;
+}

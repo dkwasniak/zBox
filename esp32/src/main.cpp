@@ -23,6 +23,7 @@
 #include "buttons.h"
 #include "diagnostics.h"
 #include "diagnostic_mode.h"
+#include "night_light.h"
 
 static void configureLoopWatchdog()
 {
@@ -47,7 +48,10 @@ void setup()
     LOGI("\n\n=== MusicBox ===\n");
     LOGI("Boot start\n");
 
-    handleWakeFromDeepSleep();
+    WakeDecision wakeDecision = handleWakeFromDeepSleep();
+    runtimeSetSessionMode(wakeDecision == WakeDecision::NIGHT_LIGHT
+                              ? RuntimeSessionMode::NIGHT_LIGHT
+                              : RuntimeSessionMode::NORMAL);
     bootStart = millis();
 
     ledInit();
@@ -68,7 +72,6 @@ void setup()
         ledLoadConfigFromSd();
     }
     LOGI("SD %s\n", sdReady ? "OK" : "FAIL");
-    ledSetBootProgress(0); // SD done
 
     plogInit(sdReady);
     plogMark("CRIT", "BOOT");
@@ -90,12 +93,37 @@ void setup()
         return;
     }
 
+    if (!runtimeIsNightLight())
+        ledSetBootProgress(0); // SD done
+
+    if (runtimeIsNightLight())
+    {
+        LOGI("\n--- Night light mode ---\n");
+        LOGI("[NIGHT] Booting night light session\n");
+        LOGI("[NIGHT] Skipping JBL wake pulse for night light session\n");
+
+        nightLightInit();
+        audioInit();
+        btWaitStart = millis();
+
+        configureLoopWatchdog();
+
+        LOGC("[BOOT] night_light=1 bt_init=started loop_core=%d setup_ms=%lu\n",
+             xPortGetCoreID(), millis() - bootStart);
+        LOGI("BT A2DP initiated\n");
+        LOGI("[BOOT] Loop task core: %d\n", xPortGetCoreID());
+        LOGI("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
+        LOGI("Ready! Night light active.\n");
+        return;
+    }
+
     LOGI("\n--- Normal mode (fast boot) ---\n");
 
-    bool jblNeedsPower = !isJblOn();
+    bool jblNeedsPower = false;
     unsigned long jblPulseStart = 0;
-    if (jblNeedsPower)
+    if (!isJblOn())
     {
+        jblNeedsPower = true;
         LOGI("JBL OFF - starting power pulse\n");
         digitalWrite(JBL_POWER, HIGH);
         jblPulseStart = millis();
@@ -202,7 +230,7 @@ void loop()
     if (btVolumeApplied && !g_btConnected)
     {
         btVolumeApplied = false;
-        if (!isPlaying)
+        if (!isPlaying && !runtimeIsNightLight())
             ledSetWaitBt();
     }
 
@@ -212,16 +240,19 @@ void loop()
         LOGI("BT connected!\n");
         btVolumeApplied = true;
         btDiscoveryFallbackDone = false;
-        applyBtVolume();
-        ledSetIdle();
-        playbackHandleBtConnected();
+        if (!runtimeIsNightLight())
+        {
+            applyBtVolume();
+            ledSetIdle();
+            playbackHandleBtConnected();
+        }
     }
 
     loopStep = 4;
-    if (g_btConnected) {
+    if (!runtimeIsNightLight() && g_btConnected) {
         jblRecoveryDone = true;
     }
-    else if (!jblRecoveryDone && btWaitStart > 0 &&
+    else if (!runtimeIsNightLight() && !jblRecoveryDone && btWaitStart > 0 &&
              millis() - btWaitStart > 5000)
     {
         jblRecoveryDone = true;
@@ -232,7 +263,7 @@ void loop()
         LOGC("[RECOVERY] JBL recovery power pulse after BT timeout\n");
         LOGI("JBL power pulse (recovery)\n");
     }
-    else if (!g_btConnected && !btDiscoveryFallbackDone && btWaitStart > 0 &&
+    else if (!runtimeIsNightLight() && !g_btConnected && !btDiscoveryFallbackDone && btWaitStart > 0 &&
              millis() - btWaitStart > 15000)
     {
         btDiscoveryFallbackDone = true;
@@ -247,11 +278,15 @@ void loop()
 
     loopStep = 5;
     handleButtons();
-    volumeTick();
+    if (runtimeIsNightLight())
+        nightLightTick();
+    else
+        volumeTick();
     loopStep = 6;
     vTaskDelay(pdMS_TO_TICKS(5));
 
     loopStep = 7;
+    if (!runtimeIsNightLight())
     {
         NfcEvent nfcEvt;
         while (nfcGetEvent(&nfcEvt, 0))
@@ -268,12 +303,15 @@ void loop()
     }
 
     loopStep = 8;
-    if (isPlaying)
-        lastActivityMs = millis();
-    else if (lastActivityMs > 0 && millis() - lastActivityMs > IDLE_TIMEOUT_MS)
+    if (!runtimeIsNightLight())
     {
-        LOGC("[SLEEP] Idle timeout - entering deep sleep\n");
-        enterDeepSleep();
+        if (isPlaying)
+            lastActivityMs = millis();
+        else if (lastActivityMs > 0 && millis() - lastActivityMs > IDLE_TIMEOUT_MS)
+        {
+            LOGC("[SLEEP] Idle timeout - entering deep sleep\n");
+            enterDeepSleep();
+        }
     }
 
     loopStep = 9;

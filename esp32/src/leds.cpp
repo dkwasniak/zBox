@@ -25,6 +25,7 @@ enum LedMode
     LED_WAIT_BT,
     LED_IDLE,
     LED_PLAYING,
+    LED_NIGHT_LIGHT,
     LED_VOLUME,
     LED_SLEEP_READY,
     LED_SYNC_WIFI,
@@ -43,6 +44,7 @@ static uint8_t beatRot    = 0;   // powolna rotacja tęczy
 static volatile int ledBootStep = -1;
 static volatile unsigned long ledVolumeShowTime = 0;
 static volatile int ledSyncLit = 0;
+static volatile int ledNightLightBrightnessPercent = NIGHT_LIGHT_BRIGHTNESS_DEFAULT;
 static LedConfig ledConfig = {
     .waitBtColor = {0, 0, 80},
     .idleColor = {0, 80, 0},
@@ -57,6 +59,7 @@ static LedConfig ledConfig = {
     .successColor = {0, 120, 0},
     .errorColor = {120, 0, 0},
     .warningColor = {120, 60, 0},
+    .nightLightColor = {255, 72, 4},
     .animateWaitBt = true,
     .animateIdle = true,
     .animatePlaying = true,
@@ -68,6 +71,25 @@ static LedConfig ledConfig = {
 static CRGB toCRGB(const LedColorConfig &cfg)
 {
     return CRGB(cfg.r, cfg.g, cfg.b);
+}
+
+static CRGB scaledNightLightColor(int brightnessPercent)
+{
+    uint8_t level = map(constrain(brightnessPercent, 0, 100), 0, 100, 0, 255);
+    const LedColorConfig &base = ledConfig.nightLightColor;
+
+    // WS2812 przy wyższych poziomach łatwo "wybielają" ciepły kolor,
+    // bo zielony i niebieski wizualnie rosną zbyt agresywnie.
+    // Dla lampki nocnej skalujemy R/G/B osobno, utrzymując cieplejszy odcień
+    // także przy wyższej jasności.
+    uint8_t redLevel = level;
+    uint8_t greenLevel = scale8(level, 176);
+    uint8_t blueLevel = scale8(level, 96);
+
+    return CRGB(
+        scale8(base.r, redLevel),
+        scale8(base.g, greenLevel),
+        scale8(base.b, blueLevel));
 }
 
 static bool parseColor(JsonObject obj, const char *key, LedColorConfig &out)
@@ -108,6 +130,7 @@ static bool applyLedConfigDocument(JsonDocument &doc)
     parseColor(root, "success_color", ledConfig.successColor);
     parseColor(root, "error_color", ledConfig.errorColor);
     parseColor(root, "warning_color", ledConfig.warningColor);
+    parseColor(root, "night_light_color", ledConfig.nightLightColor);
 
     ledConfig.animateWaitBt = root["animate_wait_bt"] | ledConfig.animateWaitBt;
     ledConfig.animateIdle = root["animate_idle"] | ledConfig.animateIdle;
@@ -143,16 +166,23 @@ void ledPreInitHardware()
 void ledInit()
 {
     ledPreInitHardware();
-    FastLED.clear();
-    FastLED.show();
-    ledMode = LED_OFF;
+    bool preserveNightLight = (ledMode == LED_NIGHT_LIGHT) && runtimeIsNightLight();
+    if (!preserveNightLight)
+    {
+        FastLED.clear();
+        FastLED.show();
+        ledMode = LED_OFF;
+    }
 
     // Osobny task FreeRTOS - animacje LED niezależne od loop()
     xTaskCreatePinnedToCore(ledTaskFunc, "led", 4096, NULL, 1, &ledTaskHandle, 1);
 
     // Pokaż że urządzenie żyje — dim niebieski do pierwszego ledSetBootProgress()
-    fill_solid(leds, LED_COUNT, CRGB(0, 0, 30));
-    FastLED.show();
+    if (!preserveNightLight)
+    {
+        fill_solid(leds, LED_COUNT, CRGB(0, 0, 30));
+        FastLED.show();
+    }
 }
 
 uint32_t ledGetTaskHWM()
@@ -218,6 +248,7 @@ String ledGetConfigJson()
     writeColor(root, "success_color", ledConfig.successColor);
     writeColor(root, "error_color", ledConfig.errorColor);
     writeColor(root, "warning_color", ledConfig.warningColor);
+    writeColor(root, "night_light_color", ledConfig.nightLightColor);
     root["animate_wait_bt"] = ledConfig.animateWaitBt;
     root["animate_idle"] = ledConfig.animateIdle;
     root["animate_playing"] = ledConfig.animatePlaying;
@@ -277,6 +308,15 @@ void ledSetWakeProgress(int lit)
     FastLED.show();
 }
 
+void ledSetWakeNightLightBreathing(uint8_t phase)
+{
+    CRGB color = toCRGB(ledConfig.nightLightColor);
+    uint8_t breath = map(cubicwave8(phase), 0, 255, 32, 180);
+    color.nscale8_video(breath);
+    fill_solid(leds, LED_COUNT, color);
+    FastLED.show();
+}
+
 void ledPowerOff()
 {
     FastLED.clear();
@@ -330,6 +370,16 @@ void ledSetPlaying()
     ledMode = LED_PLAYING;
     ledAnimStep = 0;
     ledLastUpdate = millis();
+}
+
+void ledSetNightLight(int brightnessPercent)
+{
+    ledMode = LED_NIGHT_LIGHT;
+    ledNightLightBrightnessPercent = constrain(brightnessPercent, 0, 100);
+    ledAnimStep = 0;
+    ledLastUpdate = millis();
+    fill_solid(leds, LED_COUNT, scaledNightLightColor(ledNightLightBrightnessPercent));
+    FastLED.show();
 }
 
 void ledShowVolume(int volumePercent)
@@ -406,6 +456,9 @@ void ledSetDiagnostic()
 
 void ledFlashDiagnosticTransition(bool entering)
 {
+    ledMode = LED_OFF;
+    delay(20); // zatrzymaj bieżącą animację taska przed blokującym przejściem
+
     CRGB outer = toCRGB(ledConfig.diagnosticTrailColor);
     CRGB inner = toCRGB(ledConfig.diagnosticHeadColor);
 
@@ -466,6 +519,9 @@ void ledFlashWarning()
 
 void ledShutdownAnim()
 {
+    ledMode = LED_OFF;
+    delay(20); // nie pozwól taskowi LED nadpisywać animacji wyłączania
+
     for (int i = LED_COUNT - 1; i >= 0; i--)
     {
         leds[i] = CRGB(60, 0, 80);
@@ -630,6 +686,12 @@ static void ledTaskFunc(void *param)
                 uint8_t hue = beatHue + beatRot + (uint8_t)(i * 255 / LED_COUNT);
                 leds[i] = CHSV(hue, 230, beatBright);
             }
+            FastLED.show();
+            break;
+        }
+        case LED_NIGHT_LIGHT:
+        {
+            fill_solid(leds, LED_COUNT, scaledNightLightColor(ledNightLightBrightnessPercent));
             FastLED.show();
             break;
         }

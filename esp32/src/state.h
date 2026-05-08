@@ -3,6 +3,11 @@
 #include <map>
 #include "musicbox_config.h"
 
+enum class RuntimeSessionMode : uint8_t {
+    NORMAL = 0,
+    NIGHT_LIGHT = 1,
+};
+
 // Wyłącznie prawdziwie shared globals (czytane/pisane przez wiele modułów)
 
 extern volatile bool g_btConnected;
@@ -24,3 +29,7 @@ extern bool nfcReady;
 extern unsigned long bootStart;
 extern bool bootTimingDone;
 extern unsigned long lastActivityMs;
+
+RuntimeSessionMode runtimeGetSessionMode();
+void runtimeSetSessionMode(RuntimeSessionMode mode);
+bool runtimeIsNightLight();

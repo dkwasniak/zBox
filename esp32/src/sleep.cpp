@@ -6,6 +6,7 @@
 #include "nfc_module.h"
 #include "jbl.h"
 #include "leds.h"
+#include "night_light.h"
 #include "playback.h"
 #include <esp_sleep.h>
 #include <esp_bt.h>
@@ -13,6 +14,7 @@
 void enterDeepSleep()
 {
     LOGC("[SLEEP] Preparing for deep sleep\n");
+    nightLightFlushPendingSave();
 
     // 0. Zagraj dźwięk "sleep" przez BT (jeśli przypisany).
     playSystemSoundSync("power_off");
@@ -91,12 +93,12 @@ void enterEmergencyDeepSleep()
 // do snu jeśli zostanie puszczony za wcześnie. Animacja LED (skalowana do
 // LED_COUNT) pokazuje postęp przytrzymania. Funkcja musi być wywołana na
 // samym początku setup(), PRZED ledInit() (które uruchamia FreeRTOS task).
-void handleWakeFromDeepSleep()
+WakeDecision handleWakeFromDeepSleep()
 {
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
-        return;
+        return WakeDecision::NONE;
 
-    LOGC("[WAKE] Hold BTN_D to confirm wake-up\n");
+    LOGC("[WAKE] BTN_D wake confirm: <1s abort, 1-2s boot, >=2s night light\n");
 
     pinMode(BTN_D, INPUT_PULLUP);
 
@@ -105,39 +107,50 @@ void handleWakeFromDeepSleep()
     ledPreInitHardware();
     ledClear();
 
-    // Debounce po wybudzeniu - kontaktron mechaniczny może bouncować do ~30ms.
-    // 50ms daje bezpieczny margines żeby pierwszy glitch nie ubił legalnego holdu.
-    delay(50);
+    // Krótki debounce po wybudzeniu. Zbyt długi sztucznie wydłuża wymagany hold.
+    delay(25);
 
     const unsigned long holdStart = millis();
     while (true)
     {
+        unsigned long elapsed = millis() - holdStart;
+        if (elapsed >= WAKE_NIGHT_LIGHT_MS)
+        {
+            LOGC("[WAKE] Night light hold confirmed\n");
+            ledSetNightLight(100);
+            return WakeDecision::NIGHT_LIGHT;
+        }
+
         bool pressed = (digitalRead(BTN_D) == LOW);
         if (!pressed)
         {
             // Potwierdź zwolnienie po krótkim opóźnieniu (debounce)
             delay(10);
             if (digitalRead(BTN_D) != LOW)
-                break; // naprawdę puszczony
+            {
+                if (elapsed < WAKE_ABORT_MS)
+                    break;
+
+                LOGC("[WAKE] Hold confirmed for normal boot\n");
+                return WakeDecision::NORMAL_BOOT;
+            }
         }
 
-        unsigned long elapsed = millis() - holdStart;
-        if (elapsed >= LONG_PRESS_MS)
+        if (elapsed < WAKE_ABORT_MS)
         {
-            // Przytrzymanie kompletne - kontynuuj normalny boot.
-            // LEDy zostaną nadpisane przez ledInit()/ledSetBootProgress().
-            LOGC("[WAKE] Hold confirmed - booting\n");
-            return;
+            int lit = (int)((elapsed * (unsigned long)LED_COUNT) / WAKE_ABORT_MS);
+            if (lit < 1)
+                lit = 1;
+            if (lit > LED_COUNT)
+                lit = LED_COUNT;
+            ledSetWakeProgress(lit);
         }
-
-        // Pasek postępu skalowany do dowolnej liczby diod.
-        // Lerp od 1 do LED_COUNT w zależności od czasu trzymania.
-        int lit = (int)((elapsed * (unsigned long)LED_COUNT) / LONG_PRESS_MS);
-        if (lit < 1)
-            lit = 1;
-        if (lit > LED_COUNT)
-            lit = LED_COUNT;
-        ledSetWakeProgress(lit); // ciepłe pomarańczowe
+        else
+        {
+            // Po przekroczeniu progu normalnego bootu nie pokazuj jeszcze koloru lampki.
+            // Pełny pomarańcz lampki zapala się dopiero po osiągnięciu progu NIGHT_LIGHT.
+            ledSetWakeProgress(LED_COUNT);
+        }
         delay(20);
     }
 
@@ -147,4 +160,5 @@ void handleWakeFromDeepSleep()
     ledPowerOff(); // clear + wyłącz zasilanie LEDów
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
+    return WakeDecision::NONE;
 }
