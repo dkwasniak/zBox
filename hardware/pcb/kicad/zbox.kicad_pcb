@@ -6320,7 +6320,7 @@
 		(layer "Edge.Cuts")
 		(uuid "9674b736-b88d-4503-976c-7049a7d5ca27")
 	)
-	(gr_text "ZBox · v2.0 · 13/04/2026"
+	(gr_text "ZBox · v2.1 · 10/05/2026"
 		(at 101.5 118.5 0)
 		(layer "F.SilkS")
 		(uuid "e3bd5c48-0cce-4b60-86f1-e581a8c0ac22")
@@ -6328,19 +6328,6 @@
 			(font
 				(size 1 1)
 				(thickness 0.1)
-			)
-			(justify left bottom)
-		)
-	)
-	(gr_text "Made with   by Tata"
-		(at 95 82.5 270)
-		(layer "F.SilkS")
-		(uuid "7a38d3f3-c45e-40a1-809e-a8ca9038ec40")
-		(effects
-			(font
-				(size 1 1)
-				(thickness 0.2)
-				(bold yes)
 			)
 			(justify left bottom)
 		)
