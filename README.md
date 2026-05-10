@@ -357,10 +357,10 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 - **Volume**. Temporary white bar showing the current volume level for about one second after `Vol +` or `Vol -`.
 - **Mode change**. Two short flashes. Music Mode uses the Music color, Card Mode uses the Card color.
 - **Sleep ready**. Red blinking animation after holding `C` for two seconds. Releasing `C` at that point enters normal deep sleep.
-- **Wi-Fi sync**. Yellow blinking while Wi-Fi is active for sync or maintenance.
-- **Sync progress**. Blue progress bar that fills as files are transferred.
-- **Warning**. Two orange flashes when a mapping or file is missing.
-- **Sync mode**. Purple animated service pattern used during sync and maintenance mode.
+- **Sync mode entry**. Purple animated dot pattern shown after `A+B` is held, while the device is preparing to reboot into sync mode.
+- **Wi-Fi sync**. Blue blinking after the reboot, while the device is connecting to Wi-Fi and reaching the server.
+- **Sync progress**. Blue progress bar that fills as files are downloaded to the SD card during sync.
+- **Warning**. Slow amber breathing pulse when a mapping or file is missing.
 - **Shutdown**. Purple sweep animation before the device powers down.
 - **Battery check**. A color-coded bar on the LEDs: blue for high charge, then green, yellow, orange, and red for critical battery.
 
