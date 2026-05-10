@@ -78,6 +78,7 @@ hardware/pcb/kicad/.history/
 # Local snapshots / temporary worktrees
 # =============================================================================
 .tmp-prev-fw/
+.pio-core/
 
 # =============================================================================
 # Local deploy helpers
