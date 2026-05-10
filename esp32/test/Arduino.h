@@ -19,3 +19,10 @@ struct String : public std::string {
 
 inline unsigned long millis() { return 0; }
 #define HEX 16
+
+// GPIO stubs (used by button_adapter native tests)
+#define INPUT_PULLUP 2
+#define CHANGE       3
+inline void pinMode(int, int) {}
+inline void attachInterruptArg(int, void(*)(void*), void*, int) {}
+inline int  digitalPinToInterrupt(int pin) { return pin; }

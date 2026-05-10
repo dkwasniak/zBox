@@ -43,7 +43,7 @@
 #define WAKE_ABORT_MS 800
 #define WAKE_NIGHT_LIGHT_MS 1600
 #define NIGHT_LIGHT_SLEEP_HOLD_MS 1000
-#define DEBOUNCE_MS 50
+#define DEBOUNCE_MS 20
 #define NFC_READ_INTERVAL 1000
 #define NFC_ERROR_THRESHOLD 10
 #define NO_TAG_THRESHOLD 2
@@ -77,9 +77,6 @@
 #define HTTP_TIMEOUT 15000
 #define DOWNLOAD_BUF_SIZE 16384
 
-// Diagnostic mode
-#define DIAG_PENDING_PATH "/data/diag_pending"
-#define DIAG_AP_NAME "zBox-Diag"
-#define DIAG_HTTP_PORT 80
-#define DIAG_OTA_PORT 3232
-#define DIAG_LOG_INTERVAL_MS 5000
+// Sync mode
+#define SYNC_PENDING_PATH "/data/sync_pending"
+#define SYNC_TELNET_PORT 23

@@ -9,7 +9,6 @@
 
 #include "zbox_config.h"
 #include "logging.h"
-#include "shared_types.h"
 #include "state.h"
 #include "leds.h"
 #include "jbl.h"
@@ -17,13 +16,17 @@
 #include "sd_storage.h"
 #include "audio.h"
 #include "nfc_module.h"
-#include "buttons_isr.h"
 #include "playback.h"
 #include "sleep.h"
-#include "buttons.h"
 #include "diagnostics.h"
-#include "diagnostic_mode.h"
+#include "sync_mode.h"
 #include "night_light.h"
+#include "dispatcher.h"
+#include "event_queue.h"
+#include "events.h"
+#include "bt_adapter.h"
+#include "nfc_adapter.h"
+#include "button_adapter.h"
 
 static void configureLoopWatchdog()
 {
@@ -55,7 +58,7 @@ void setup()
     bootStart = millis();
 
     ledInit();
-    buttonsInit();
+    buttonAdapterInit();
 
     pinMode(JBL_POWER, OUTPUT);
     digitalWrite(JBL_POWER, LOW);
@@ -82,16 +85,18 @@ void setup()
              sdReady ? "OK" : "FAIL", ESP.getFreeHeap(), ESP.getMinFreeHeap());
     }
 
-    bool diagPending = SD.exists(DIAG_PENDING_PATH);
-    LOGI("[BOOT] diag_pending flag: %d\n", diagPending);
-    if (diagPending)
-        LOGC("[BOOT] diagnostic mode requested via %s\n", DIAG_PENDING_PATH);
+    bool syncPending = SD.exists(SYNC_PENDING_PATH);
+    LOGI("[BOOT] sync_pending flag: %d\n", syncPending);
+    if (syncPending)
+        LOGC("[BOOT] sync mode requested via %s\n", SYNC_PENDING_PATH);
 
-    if (diagPending)
+    if (syncPending)
     {
-        runDiagnosticMode();
+        runSyncMode();
         return;
     }
+
+    dispatcherInit();  // creates event queue; must precede any adapter that posts events
 
     if (!runtimeIsNightLight())
         ledSetBootProgress(0); // SD done
@@ -104,8 +109,14 @@ void setup()
 
         nightLightInit();
         audioInit();
+        btAdapterInit();
+        buttonAdapterStartTask();
         btWaitStart = millis();
 
+        postEventFromTask(makeEvent(EventType::WakeCauseResolvedNightLight));
+        postEventFromTask(makeBrightnessLoadedEvent(nightLightGetBrightnessPercent()));
+        postEventFromTask(makeEvent(EventType::BootInitCompleted));
+        dispatcherStartTask();
         configureLoopWatchdog();
 
         LOGC("[BOOT] night_light=1 bt_init=started loop_core=%d setup_ms=%lu\n",
@@ -146,6 +157,7 @@ void setup()
         loadSystemSounds();
     }
     playbackInit();
+    dispatcherSetInitialPlaybackMode(playbackGetMode());
     LOGC("[BOOT] mappings=%d system_sounds=%d\n", (int)figurineMap.size(), (int)systemSoundMap.size());
     LOGI("Mappings loaded (%d)\n", figurineMap.size());
     ledSetBootProgress(2); // Mappings done
@@ -155,24 +167,13 @@ void setup()
         char preUidBuf[30] = {};
         if (nfcPrescan(preUidBuf, sizeof(preUidBuf)))
         {
-            String preUid = preUidBuf;
-            LOGI("NFC pre-scan: %s\n", preUid.c_str());
-
-            auto it = figurineMap.find(preUid);
-            if (it != figurineMap.end())
-            {
-                String path = "/music/" + it->second;
-                if (SD.exists(path))
-                {
-                    pendingPlaybackPath = path;
-                    pendingPlaybackUid = preUid;
-                    LOGI("Queued: %s\n", path.c_str());
-                }
-            }
+            LOGI("NFC pre-scan: %s\n", preUidBuf);
+            postEventFromTask(makeNfcPrescanEvent(true, preUidBuf));
         }
         else
         {
             LOGI("NFC pre-scan: no tag\n");
+            postEventFromTask(makeNfcPrescanEvent(false, nullptr));
         }
     }
 
@@ -190,16 +191,21 @@ void setup()
     ledSetBootProgress(3); // JBL done
 
     loadBtVolume();
+    dispatcherSetInitialVolume(getBtVolume());
 
     ledSetBootProgress(4); // BT step
     LOGI("BT A2DP starting -> %s\n", BT_SPEAKER_NAME);
     ledSetWaitBt(); // PRZED audioInit() - bo a2dp.begin() może blokować
     audioInit();
+    btAdapterInit();
 
     btWaitStart = millis();
     if (jblNeedsPower) jblRecoveryDone = true;
 
     nfcStartTask();
+    buttonAdapterStartTask();
+    postEventFromTask(makeEvent(EventType::BootInitCompleted));
+    dispatcherStartTask();
 
     configureLoopWatchdog();  // NULL = current task (loop task)
 
@@ -208,7 +214,6 @@ void setup()
     LOGI("[BOOT] Loop task core: %d\n", xPortGetCoreID());
     LOGI("\n[BOOT] Setup complete in %lu ms\n", millis() - bootStart);
 
-    lastActivityMs = millis();
     LOGI("Ready! Waiting for BT connection...\n");
 }
 
@@ -218,107 +223,53 @@ void loop()
     static volatile uint8_t loopStep = 0;
     static bool btDiscoveryFallbackDone = false;
 
-    audioPollBtConnection();
-
-    loopStep = 1;
-    if (trackEndedFlag) {
-        trackEndedFlag = false;
-        playbackHandleTrackEnded();
-    }
-
-    loopStep = 2;
-    if (btVolumeApplied && !g_btConnected)
-    {
-        btVolumeApplied = false;
-        if (!isPlaying && !runtimeIsNightLight())
-            ledSetWaitBt();
-    }
-
-    loopStep = 3;
-    if (!btVolumeApplied && g_btConnected)
-    {
-        LOGI("BT connected!\n");
-        btVolumeApplied = true;
-        btDiscoveryFallbackDone = false;
-        if (!runtimeIsNightLight())
-        {
-            applyBtVolume();
-            ledSetIdle();
-            playbackHandleBtConnected();
-        }
-    }
+    btAdapterPoll();
 
     loopStep = 4;
-    if (!runtimeIsNightLight() && g_btConnected) {
-        jblRecoveryDone = true;
-    }
-    else if (!runtimeIsNightLight() && !jblRecoveryDone && btWaitStart > 0 &&
-             millis() - btWaitStart > 5000)
     {
-        jblRecoveryDone = true;
-        LOGW("[JBL] BT timeout - ADC false positive, pressing power\n");
-        digitalWrite(JBL_POWER, HIGH);
-        delay(JBL_POWER_PRESS_MS);   // 500ms, jednorazowe; ISR-y działają
-        digitalWrite(JBL_POWER, LOW);
-        LOGC("[RECOVERY] JBL recovery power pulse after BT timeout\n");
-        LOGI("JBL power pulse (recovery)\n");
-    }
-    else if (!runtimeIsNightLight() && !g_btConnected && !btDiscoveryFallbackDone && btWaitStart > 0 &&
-             millis() - btWaitStart > 15000)
-    {
-        btDiscoveryFallbackDone = true;
-        LOGW("[BT] Initial reconnect timed out - restarting with discovery\n");
-        if (audioRestartDiscovery())
+        bool btConnected = getDiagnosticSnapshot().bt_state == BtState::Connected;
+        if (!runtimeIsNightLight() && btConnected) {
+            jblRecoveryDone = true;
+            btDiscoveryFallbackDone = false;
+        }
+        else if (!runtimeIsNightLight() && !jblRecoveryDone && btWaitStart > 0 &&
+                 millis() - btWaitStart > 5000)
         {
-            btWaitStart = millis();
-            ledSetWaitBt();
-            LOGC("[RECOVERY] BT restart with discovery requested\n");
+            jblRecoveryDone = true;
+            LOGW("[JBL] BT timeout - ADC false positive, pressing power\n");
+            digitalWrite(JBL_POWER, HIGH);
+            delay(JBL_POWER_PRESS_MS);   // 500ms, jednorazowe; ISR-y działają
+            digitalWrite(JBL_POWER, LOW);
+            LOGC("[RECOVERY] JBL recovery power pulse after BT timeout\n");
+            LOGI("JBL power pulse (recovery)\n");
+        }
+        else if (!runtimeIsNightLight() && !btConnected && !btDiscoveryFallbackDone && btWaitStart > 0 &&
+                 millis() - btWaitStart > 15000)
+        {
+            btDiscoveryFallbackDone = true;
+            LOGW("[BT] Initial reconnect timed out - restarting with discovery\n");
+            if (audioRestartDiscovery())
+            {
+                btWaitStart = millis();
+                LOGC("[RECOVERY] BT restart with discovery requested\n");
+            }
         }
     }
 
     loopStep = 5;
-    handleButtons();
-    if (runtimeIsNightLight())
-        nightLightTick();
-    else
-        volumeTick();
-    loopStep = 6;
     vTaskDelay(pdMS_TO_TICKS(5));
 
+    loopStep = 6;
+    if (!runtimeIsNightLight())
+        nfcAdapterDrain();
+
     loopStep = 7;
-    if (!runtimeIsNightLight())
-    {
-        NfcEvent nfcEvt;
-        while (nfcGetEvent(&nfcEvt, 0))
-        {
-            if (nfcEvt.tagPresent)
-            {
-                playbackHandleNfcTagPresent(nfcEvt.uid);
-            }
-            else
-            {
-                playbackHandleNfcTagRemoved();
-            }
-        }
-    }
-
-    loopStep = 8;
-    if (!runtimeIsNightLight())
-    {
-        if (isPlaying)
-            lastActivityMs = millis();
-        else if (lastActivityMs > 0 && millis() - lastActivityMs > IDLE_TIMEOUT_MS)
-        {
-            LOGC("[SLEEP] Idle timeout - entering deep sleep\n");
-            enterDeepSleep();
-        }
-    }
-
-    loopStep = 9;
     static unsigned long lastHeartbeat = 0;
     if (millis() - lastHeartbeat > 5000) {
         lastHeartbeat = millis();
-        LOGI("[LOOP] alive step=%u isPlaying=%d btConn=%d\n", loopStep, (int)isPlaying, (int)g_btConnected);
+        AppState snap = getDiagnosticSnapshot();
+        LOGI("[LOOP] alive step=%u audio=%d bt=%d\n", loopStep,
+             (int)snap.audio_state, (int)snap.bt_state);
         plogFlushToSd();
     }
 

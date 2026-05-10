@@ -1158,6 +1158,20 @@ input, textarea, select { font-family: inherit; color: inherit; }
 [data-theme="dark"] .tag-thumb { color: var(--amber); }
 [data-theme="dark"] .tag-thumb.figurine { color: var(--coral); }
 
+/* Now-bar stays dark-on-dark regardless of theme */
+[data-theme="dark"] .now-bar {
+  background: #0F1B2D;
+  color: #F6F8FB;
+}
+[data-theme="dark"] .now-bar .np-meta .s { color: rgba(246, 248, 251, 0.55); }
+[data-theme="dark"] .now-bar .np-progress { color: rgba(246, 248, 251, 0.7); }
+[data-theme="dark"] .now-bar .np-progress .track { background: rgba(246, 248, 251, 0.18); }
+[data-theme="dark"] .now-bar .np-controls button {
+  background: rgba(246, 248, 251, 0.08);
+  color: #F6F8FB;
+}
+[data-theme="dark"] .now-bar .np-controls button:hover { background: rgba(246, 248, 251, 0.18); }
+
 /* ============== Mobile-only elements ============== */
 
 .mobile-only { display: none; }

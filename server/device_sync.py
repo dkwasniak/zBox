@@ -123,11 +123,10 @@ def download_device_log(
 
 def push_led_config(device: dict | None, config: dict, session: requests.Session | None = None) -> None:
     device = device or get_configured_device()
-    response = _http_client(session).post(
-        f"{_base_url(device)}/diag/config",
-        json=config,
-        timeout=HTTP_TIMEOUT,
-    )
+    if session is not None:
+        response = _post_json(session, f"{_base_url(device)}/diag/config", config)
+    else:
+        response = requests.post(f"{_base_url(device)}/diag/config", json=config, timeout=HTTP_TIMEOUT)
     response.raise_for_status()
 
 
@@ -292,6 +291,20 @@ def build_sync_plan(device: dict | None, db: Session, session: requests.Session 
         "remote_files": remote_files,
         "expected_files": expected_files,
     }
+
+
+def _post_json(session: requests.Session, url: str, payload: dict, timeout: int = HTTP_TIMEOUT) -> requests.Response:
+    """POST JSON with one retry on ConnectionError.
+
+    Arduino WebServer closes the TCP connection after every multipart upload
+    (no keep-alive). The session may try to reuse the dead socket for the
+    next request, which raises RemoteDisconnected. One retry on a fresh
+    connection is enough to recover.
+    """
+    try:
+        return session.post(url, json=payload, timeout=timeout)
+    except requests.exceptions.ConnectionError:
+        return session.post(url, json=payload, timeout=timeout)
 
 
 def _emit_progress(callback: Callable[[dict], None] | None, **payload) -> None:
@@ -484,11 +497,7 @@ def sync_device(
                 uploaded=list(uploaded),
                 deleted=list(deleted),
             )
-            response = session.post(
-                f"{_base_url(device)}/diag/write-mappings",
-                json=mappings_payload,
-                timeout=HTTP_TIMEOUT,
-            )
+            response = _post_json(session, f"{_base_url(device)}/diag/write-mappings", mappings_payload)
             response.raise_for_status()
             mappings_written = True
 
@@ -506,11 +515,7 @@ def sync_device(
             mappings_path="/data/mappings.json",
         )
         if sync_plan["system_sounds_needs_update"]:
-            response = session.post(
-                f"{_base_url(device)}/diag/write-system-sounds",
-                json=system_sounds_payload,
-                timeout=HTTP_TIMEOUT,
-            )
+            response = _post_json(session, f"{_base_url(device)}/diag/write-system-sounds", system_sounds_payload)
             response.raise_for_status()
             system_sounds_written = True
 

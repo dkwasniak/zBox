@@ -15,6 +15,11 @@ This file is for agent-oriented repository notes. Public project documentation s
 - `web/` contains the static admin portal.
 - `hardware/pcb/kicad/` contains the KiCad hardware sources.
 
+## Local Skills
+
+- For firmware work in `esp32/src/` or `esp32/test/`, load the repo-local firmware skill at `.claude/skills/firmware-dev/SKILL.md`.
+- Treat `.claude/skills/firmware-dev/` as the source of truth; do not copy or move that skill when updating it.
+
 ## Operational Notes
 
 - The ESP32 is offline-first. Music and mappings live on the SD card.

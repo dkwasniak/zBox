@@ -7,7 +7,7 @@ The zBox firmware targets the ESP32 Lolin D32 Pro and is built with PlatformIO u
 - reads NFC tags through a PN532 module
 - plays MP3 files stored on the SD card
 - sends audio to a paired Bluetooth speaker through A2DP
-- exposes sync and diagnostic modes over Wi-Fi
+- exposes sync mode over Wi-Fi
 - drives LED feedback and button input
 
 ## Key constraints
@@ -19,10 +19,26 @@ The zBox firmware targets the ESP32 Lolin D32 Pro and is built with PlatformIO u
 
 ## Important files
 
-- [`esp32/src/main.cpp`](../esp32/src/main.cpp)
-- [`esp32/src/zbox_config.h`](../esp32/src/zbox_config.h)
+- [`esp32/src/main.cpp`](../esp32/src/main.cpp) — entry point
+- [`esp32/src/zbox_config.h`](../esp32/src/zbox_config.h) — compile-time hardware config
 - [`esp32/platformio.ini`](../esp32/platformio.ini)
 - [`esp32/sdkconfig.defaults`](../esp32/sdkconfig.defaults)
+
+## Source layout
+
+`esp32/src/` is organized into subdirectories. All headers are included by basename — `platformio.ini` adds each directory to the include path.
+
+| Directory | Contents |
+|-----------|----------|
+| `core/` | events, effects, app_state, event_queue, dispatcher, reducer |
+| `audio/` | audio driver, A2DP adapter, playback, volume, JBL helpers |
+| `leds/` | LED driver, scene model, night-light mode |
+| `input/` | buttons, button ISRs, button adapter |
+| `nfc/` | PN532 driver, NFC adapter |
+| `storage/` | SD card, persistence adapter |
+| `power/` | sleep/wake, battery |
+| `modes/` | state, sync mode |
+| `util/` | logging, helpers, shared types, diagnostics, assert |
 
 ## Main dependencies
 

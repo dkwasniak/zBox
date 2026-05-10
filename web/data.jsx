@@ -554,7 +554,8 @@ async function apiDelete(path) {
 
 function fmtDate(iso, locale = DEFAULT_LOCALE) {
   if (!iso) return "—";
-  const d = new Date(iso);
+  const utc = /[Zz]|[+-]\d{2}:\d{2}$/.test(iso) ? iso : iso + "Z";
+  const d = new Date(utc);
   const now = new Date();
   const diffSeconds = Math.round((d.getTime() - now.getTime()) / 1000);
   const abs = Math.abs(diffSeconds);
