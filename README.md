@@ -318,21 +318,23 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 
 ## Button shortcuts
 
-Order: `A B C D`
-
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> - hold `0.8-2 sec` while waking from deep sleep - **Power on** - works from deep sleep only.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - `2 sec`, then release - **Power off** - works in normal playback sessions.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> - hold `>= 2 sec` while waking from deep sleep - **Turn night light on** - works from deep sleep only.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - `1 sec` - **Turn night light off** - works in Night Light mode only.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - `2 sec` - **Change mode: Music Mode / Card Mode** - works in normal playback sessions.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> - short press - **Light +** - works in Night Light mode only.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - short press - **Light -** - works in Night Light mode only.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> - short press - **Vol +** - works in normal playback sessions.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - short press - **Vol -** - works in normal playback sessions.
-- <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - double press - **Next song** - works in Music Mode only.
-- <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - double press - **Previous song** - works in Music Mode only.
-- <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - short press - **Pause / Resume** - works in Music Mode only.
-- <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:3.4em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> <span style="font-size:1.35em; line-height:1; vertical-align:middle;">•</span> - `2 sec` - **Sync mode** - service and maintenance mode.
+| Button(s) | Action | Hold / Press | Context |
+|-----------|--------|-------------|---------|
+| `D` | **Power on** | hold `0.8–1.6 sec` while waking from deep sleep | deep sleep only |
+| `D` | **Turn night light on** | hold `>= 1.6 sec` while waking from deep sleep | deep sleep only |
+| `C` | **Power off** | hold `2 sec`, then release | normal playback |
+| `C` | **Emergency deep sleep** | hold `10 sec` | normal playback |
+| `C` | **Turn night light off** | hold `1 sec` | Night Light mode only |
+| `B` | **Change mode: Music / Card** | hold `2 sec` | normal playback |
+| `A + B` | **Sync mode** | hold `2 sec` | normal playback |
+| `A` | **Battery level** | hold `2 sec` | normal playback |
+| `A` | **Pause / Resume** | short press | Music Mode only |
+| `A` | **Previous song** | double press | Music Mode only |
+| `B` | **Next song** | double press | Music Mode only |
+| `C` | **Vol −** | short press | normal playback |
+| `D` | **Vol +** | short press | normal playback |
+| `C` | **Light −** | short press | Night Light mode only |
+| `D` | **Light +** | short press | Night Light mode only |
 
 ## LED animations
 
