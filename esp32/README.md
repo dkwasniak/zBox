@@ -12,7 +12,7 @@ pio device monitor
 
 ## Before flashing
 
-- review `TEST_AUDIO_MODE`
+- review `ENABLE_LEDS`
 - set `SERVER_HOST` for your own deployment
 - verify the board and partition settings match your hardware
 

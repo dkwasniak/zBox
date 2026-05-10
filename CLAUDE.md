@@ -25,3 +25,4 @@ This file is for agent-oriented repository notes. Public project documentation s
 - The ESP32 is offline-first. Music and mappings live on the SD card.
 - Wi-Fi is used for sync and diagnostics, not normal playback.
 - The firmware still requires a compile-time server host in `esp32/src/zbox_config.h`.
+- Embedded state machine patterns and rationale: [`docs/state_machine_best_practices.md`](docs/state_machine_best_practices.md).

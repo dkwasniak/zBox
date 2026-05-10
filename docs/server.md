@@ -20,6 +20,7 @@ server/
 ├── database.py
 ├── device_sync.py
 ├── models.py
+├── system_sounds.py
 ├── requirements.txt
 ├── routers/
 │   ├── admin.py
@@ -38,7 +39,7 @@ web/
 ## Data model
 
 - `Track`: library entry with title, stored filename, and creation timestamp.
-- `Figurine`: NFC UID mapped to an optional track.
+- `Figurine`: NFC UID mapped to an optional track. Referred to as "NFC Tag" in the admin UI and user-facing documentation.
 - `SystemSound`: named event slot such as `power_on` or `ready`, optionally assigned to an MP3 file.
 
 ## Public API used by the ESP32
