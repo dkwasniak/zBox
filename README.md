@@ -320,21 +320,21 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 
 | Button(s) | Action | Hold / Press | Context |
 |-----------|--------|-------------|---------|
-| `D` | **Power on** | hold `0.8–1.6 sec` while waking from deep sleep | deep sleep only |
-| `D` | **Turn night light on** | hold `>= 1.6 sec` while waking from deep sleep | deep sleep only |
-| `C` | **Power off** | hold `2 sec`, then release | normal playback |
-| `C` | **Emergency deep sleep** | hold `10 sec` | normal playback |
-| `C` | **Turn night light off** | hold `1 sec` | Night Light mode only |
-| `B` | **Change mode: Music / Card** | hold `2 sec` | normal playback |
-| `A + B` | **Sync mode** | hold `2 sec` | normal playback |
-| `A` | **Battery level** | hold `2 sec` | normal playback |
-| `A` | **Pause / Resume** | short press | Music Mode only |
-| `A` | **Previous song** | double press | Music Mode only |
-| `B` | **Next song** | double press | Music Mode only |
-| `C` | **Vol −** | short press | normal playback |
-| `D` | **Vol +** | short press | normal playback |
-| `C` | **Light −** | short press | Night Light mode only |
-| `D` | **Light +** | short press | Night Light mode only |
+| `D` | **Power on** | hold `0.8–1.6 sec` while waking from deep sleep | from deep sleep |
+| `D` | **Turn night light on** | hold `>= 1.6 sec` while waking from deep sleep | from deep sleep |
+| `C` | **Power off** | hold `2 sec`, then release | Card Mode / Music Mode |
+| `C` | **Emergency deep sleep** | hold `10 sec` | Card Mode / Music Mode |
+| `C` | **Turn night light off** | hold `1 sec` | Light Mode |
+| `B` | **Change mode: Music / Card** | hold `2 sec` | Card Mode / Music Mode |
+| `A + B` | **Sync mode** | hold `2 sec` | Card Mode / Music Mode |
+| `A` | **Battery level** | hold `2 sec` | Card Mode / Music Mode |
+| `A` | **Pause / Resume** | short press | Music Mode |
+| `A` | **Previous song** | double press | Music Mode |
+| `B` | **Next song** | double press | Music Mode |
+| `C` | **Vol −** | short press | Card Mode / Music Mode |
+| `D` | **Vol +** | short press | Card Mode / Music Mode |
+| `C` | **Light −** | short press | Light Mode |
+| `D` | **Light +** | short press | Light Mode |
 
 ## LED animations
 
