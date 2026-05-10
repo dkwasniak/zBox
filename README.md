@@ -251,6 +251,25 @@ The Tracks section is the music library. You can add tracks by dragging and drop
 
 The NFC Tags section lists every registered tag with its name, UID, and assigned track. The quick assign panel on the right lets you pick a tag and a track and save the mapping in one click. You can also add a tag manually by typing its name and UID hex string — useful when you want to register a tag without having the physical device connected.
 
+**Reading a tag UID with an Android phone**
+
+The admin portal has a built-in NFC scanner that uses the Web NFC API — no separate app needed. It works only in **Chrome on Android**; on iPhone you need to enter the UID manually.
+
+To use it directly from the portal:
+
+1. Open the admin portal in Chrome on Android and go to the **Tags** section.
+2. The scan card appears automatically if your browser supports Web NFC.
+3. Tap **Scan** and hold the tag against the back of the phone.
+4. The UID is read and pre-filled into the tag form.
+
+Web NFC requires a secure context (HTTPS or localhost). If the portal is served over plain HTTP on your local network, Chrome will block it. To work around this, enable the following Chrome flag and add your server address to the allowlist:
+
+```
+chrome://flags/#unsafely-treat-insecure-origin-as-secure
+```
+
+Alternatively, install a standalone NFC reader app (e.g. **NFC Tools** by wakdev), read the UID from there, and paste it into the manual entry field in the portal.
+
 ### System Sounds
 
 ![System Sounds](assets/photos/admin-system-sounds.png)
