@@ -122,7 +122,7 @@ I originally tried a direct wired path using a `PCM5102A` audio module and a jac
 
 The long-term plan is to reuse the speaker drivers from the JBL and connect them directly to the ESP32 through an `I2S Audio Amplifier Module NS4168`. The reason for that direction is simple: it should remove the extra Bluetooth speaker from the mechanical stack, give tighter integration with the enclosure, and keep a proper digital audio path from the ESP32 to the amplifier.
 
-The enclosure is designed so the current speaker is slid into dedicated internal holders. Those holders are easy to change, so they can later be replaced with inserts for a simpler ESP32-connected speaker setup or for another self-contained speaker body in a `JBL`-style form factor.
+The speaker sits in a dedicated holder that slides onto internal rails built into the enclosure shell. The holder locks into position on those rails, so swapping it out for a different design requires no changes to the shell itself — print a new holder and slide it in. This makes it straightforward to adapt the enclosure for a different speaker body or a directly-wired driver setup without redesigning the main enclosure.
 
 ## PCB and schematic
 
