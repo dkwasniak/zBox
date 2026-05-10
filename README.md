@@ -10,13 +10,15 @@ The box itself is built around a 3D-printed shell and custom electronics. This r
 
 ## Project gallery
 
-| Hero | Light Mode |
-| --- | --- |
-| ![zBox front view](assets/photos/zbox-hero.jpg) | ![zBox in Light Mode](assets/photos/zbox-light-mode.jpg) |
-
-| Front open | Internals | PCB |
-| --- | --- | --- |
-| ![zBox front opened](assets/photos/zbox-front-open.jpg) | ![zBox internal layout](assets/photos/zbox-internals.jpg) | ![zBox PCB](assets/photos/zbox-pcb.jpg) |
+<p>
+  <img src="assets/photos/zbox-hero.jpg" width="48%" alt="zBox front view">
+  <img src="assets/photos/zbox-light-mode.jpg" width="48%" alt="zBox in Light Mode">
+</p>
+<p>
+  <img src="assets/photos/zbox-front-open.jpg" width="32%" alt="zBox front opened">
+  <img src="assets/photos/zbox-internals.jpg" width="32%" alt="zBox internal layout">
+  <img src="assets/photos/zbox-pcb.jpg" width="32%" alt="zBox PCB">
+</p>
 
 ## Repository layout
 
@@ -86,13 +88,13 @@ NFC card / figurine
    ├── WS2812B LED panel
    ├── buttons A / B / C / D
    ├── speaker power control
-   └── Wi-Fi for sync / diagnostics
+   └── Wi-Fi for sync and maintenance
         │
         ▼
  Bluetooth speaker
 ```
 
-The device is offline-first during normal use. Audio and mappings live on the SD card, while Wi-Fi is only used for maintenance, diagnostics, and sync.
+The device is offline-first during normal use. Audio and mappings live on the SD card, while Wi-Fi is only used for sync and maintenance.
 
 ## Audio design notes
 
