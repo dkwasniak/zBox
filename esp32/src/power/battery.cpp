@@ -37,7 +37,7 @@ static void ensureBatteryAdcConfigured()
     analogReadResolution(12);
     analogSetPinAttenuation(BAT_ADC_PIN, ADC_11db);
 
-    // Pierwszy odczyt po konfiguracji bywa niestabilny, więc go odrzucamy.
+    // The first reading after configuration can be unstable, so we discard it.
     analogReadMilliVolts(BAT_ADC_PIN);
     configured = true;
 }
@@ -60,7 +60,7 @@ BatteryReading readBatteryReading()
         sum += samples[i];
 
     constexpr int keptSamples = BAT_SAMPLE_COUNT - (2 * BAT_TRIM_COUNT);
-    float vPinInstant = (sum / (float)keptSamples) / 1000.0f; // mV -> V na GPIO35 (VBAT/2)
+    float vPinInstant = (sum / (float)keptSamples) / 1000.0f; // mV -> V on GPIO35 (VBAT/2)
 
     static bool hasFiltered = false;
     static float vPinFiltered = 0.0f;

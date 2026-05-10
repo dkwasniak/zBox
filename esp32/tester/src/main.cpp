@@ -1,24 +1,24 @@
-// Tester ESP32-S3 — symuluje przyciski DUT przez GPIO open-drain / Hi-Z
+// Tester ESP32-S3 — simulates DUT buttons via GPIO open-drain / Hi-Z
 //
-// Połączenia:
+// Connections:
 //   OUT_A (GPIO4)  → BTN_A (GPIO32 DUT)
 //   OUT_B (GPIO5)  → BTN_B (GPIO33 DUT)
 //   OUT_C (GPIO6)  → BTN_C (GPIO25 DUT)
 //   OUT_D (GPIO7)  → BTN_D (GPIO26 DUT)
-//   GND            → GND DUT (wspólna masa!)
+//   GND            → GND DUT (common ground!)
 //
 // DUT: INPUT_PULLUP, active LOW.
 // Press  = pinMode(pin, OUTPUT) + digitalWrite(pin, LOW)
-// Release= pinMode(pin, INPUT)  — Hi-Z, pullup DUT ciągnie do HIGH
+// Release= pinMode(pin, INPUT)  — Hi-Z, DUT pullup pulls to HIGH
 //
-// Protokół serial (115200):
-//   PRESS A 2000\n       → wciśnij A na 2000ms, potem release
-//   PRESS_COMBO CD 2500\n → wciśnij C+D jednocześnie na 2500ms
-//   RELEASE ALL\n        → zwolnij wszystkie piny (Hi-Z)
-//   PING\n               → odpowiada PONG\n
+// Serial protocol (115200):
+//   PRESS A 2000\n        → press A for 2000ms, then release
+//   PRESS_COMBO CD 2500\n → press C+D simultaneously for 2500ms
+//   RELEASE ALL\n         → release all pins (Hi-Z)
+//   PING\n                → responds PONG\n
 //
-// Odpowiedzi: OK\n lub ERR reason\n
-// Safety: 10s bez komendy → RELEASE ALL automatycznie
+// Responses: OK\n or ERR reason\n
+// Safety: 10s without command → RELEASE ALL automatically
 
 #include <Arduino.h>
 
@@ -56,7 +56,7 @@ static void pressPin(int pin)
 
 static void handlePress(const char* args)
 {
-    // Format: "A 2000" lub "B 500"
+    // Format: "A 2000" or "B 500"
     char name = args[0];
     int pin = pinForName(name);
     if (pin < 0) {
@@ -77,7 +77,7 @@ static void handlePress(const char* args)
 
 static void handlePressCombo(const char* args)
 {
-    // Format: "CD 2500" lub "AB 1000"
+    // Format: "CD 2500" or "AB 1000"
     if (strlen(args) < 4) {
         Serial.println("ERR bad format");
         return;
@@ -133,7 +133,7 @@ void setup()
 
 void loop()
 {
-    // Safety timeout: 10s bez komendy → zwolnij wszystko
+    // Safety timeout: 10s without command → release everything
     if (millis() - lastCmdMs > SAFETY_TIMEOUT_MS) {
         releaseAll();
         lastCmdMs = millis();

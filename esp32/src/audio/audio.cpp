@@ -35,10 +35,10 @@ struct AudioCmd {
 // Beat detection passthrough
 // =============================================================================
 
-// Wkłada się między dekoder MP3 a A2DPStream.
-// write() dostaje zdekodowane PCM (int16_t), mierzy energię okna,
-// porównuje z lokalną średnią i ustawia g_beatDetected.
-// Overhead: ~90K operacji/s — pomijalny na 240 MHz.
+// Inserted between the MP3 decoder and A2DPStream.
+// write() receives decoded PCM (int16_t), measures window energy,
+// compares it against the local average, and sets g_beatDetected.
+// Overhead: ~90K ops/s — negligible at 240 MHz.
 class BeatTracker : public AudioOutput
 {
 public:
@@ -60,7 +60,7 @@ public:
 private:
     Print *_sink = nullptr;
 
-    static const int HIST = 43;  // ~1 s historii przy typowym rozmiarze ramki
+    static const int HIST = 43;  // ~1 s of history at a typical frame size
     uint32_t _hist[HIST] = {};
     int _hIdx   = 0;
     int _hCount = 0;
@@ -71,29 +71,29 @@ private:
         const int16_t *s = (const int16_t *)data;
         int n = (int)(len / 2);
 
-        // Energia okna: mean(sample^2)
+        // Window energy: mean(sample^2)
         uint64_t sum = 0;
         for (int i = 0; i < n; i++) { int32_t v = s[i]; sum += (uint32_t)(v * v); }
         uint32_t e = (uint32_t)(sum / (uint32_t)n);
 
-        // Aktualizuj historię
+        // Update history
         _hist[_hIdx] = e;
         _hIdx = (_hIdx + 1) % HIST;
         if (_hCount < HIST) _hCount++;
 
-        // Lokalna średnia
+        // Local average
         uint64_t avg = 0;
         for (int i = 0; i < _hCount; i++) avg += _hist[i];
         avg /= _hCount;
 
-        // Energia → jasność 40-200 (ciągła, oddycha z muzyką)
+        // Energy → brightness 40-200 (continuous, breathes with the music)
         if (avg > 0)
         {
-            uint32_t ratio = (uint32_t)((uint64_t)e * 120 / avg); // 100 = średnia
+            uint32_t ratio = (uint32_t)((uint64_t)e * 120 / avg); // 100 = average
             g_audioEnergy = (uint8_t)(ratio < 40 ? 40 : ratio > 200 ? 200 : ratio);
         }
 
-        // Beat: energia > 1.2× średnia + cooldown 150 ms
+        // Beat: energy > 1.2× average + 150 ms cooldown
         unsigned long now = millis();
         if (avg > 0 && (uint64_t)e > avg + avg / 5 && (now - _lastBeat) > 150)
         {
@@ -174,10 +174,10 @@ static void startA2dpTransport()
     cfg.name = BT_SPEAKER_NAME;
     cfg.auto_reconnect = true;
     cfg.wait_for_connection = false;
-    a2dp.source().set_avrc_rn_events({});  // ESP jest master volume — ignoruj AVRCP notify od JBL
+    a2dp.source().set_avrc_rn_events({});  // ESP is master volume — ignore AVRCP notify from JBL
     a2dp.begin(cfg);
     a2dpStarted = true;
-    // Bootstrap: na wypadek race condition gdy callback ominął pierwsze połączenie
+    // Bootstrap: guard against a race condition where the callback missed the first connection
     delay(100);
     g_btConnected = a2dp.source().is_connected();
     LOGI("[BT] initial state captured: connected=%d\n", (int)g_btConnected);
@@ -499,7 +499,7 @@ bool audioRestartDiscovery()
 
     LOGC("[RECOVERY] Restarting A2DP in discovery mode\n");
     a2dp.clear();
-    a2dp.source().end(false);  // czyści connected_bda/last_connection i pozwala ruszyć discovery po nazwie
+    a2dp.source().end(false);  // clears connected_bda/last_connection and allows discovery by name to start
     a2dpStarted = false;
     g_btConnected = false;
     delay(200);

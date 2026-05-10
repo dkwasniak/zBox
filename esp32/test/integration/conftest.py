@@ -10,21 +10,21 @@ def pytest_addoption(parser):
     parser.addoption("--no-reset", action="store_true",
                      help="Skip DTR reset at fixture setup")
     parser.addoption("--run-manual", action="store_true",
-                     help="Uruchom testy @manual (wymagają interakcji)")
+                     help="Run @manual tests (require interaction)")
     parser.addoption("--run-hardware", action="store_true",
                      help="Uruchom testy @requires_hardware (JBL + figurka)")
 
 
 def pytest_configure(config):
-    config.addinivalue_line("markers", "manual: wymaga fizycznej interakcji")
-    config.addinivalue_line("markers", "requires_tester: wymaga --tester-port")
-    config.addinivalue_line("markers", "requires_hardware: wymaga JBL + figurki")
-    config.addinivalue_line("markers", "soak: długi test >60s")
+    config.addinivalue_line("markers", "manual: requires physical interaction")
+    config.addinivalue_line("markers", "requires_tester: requires --tester-port")
+    config.addinivalue_line("markers", "requires_hardware: requires JBL + figurine")
+    config.addinivalue_line("markers", "soak: long test >60s")
 
 
 def pytest_collection_modifyitems(config, items):
-    skip_manual = pytest.mark.skip(reason="--run-manual nie podano")
-    skip_hw = pytest.mark.skip(reason="--run-hardware nie podano")
+    skip_manual = pytest.mark.skip(reason="--run-manual not provided")
+    skip_hw = pytest.mark.skip(reason="--run-hardware not provided")
     run_manual = config.getoption("--run-manual", default=False)
     run_hw = config.getoption("--run-hardware", default=False)
     for item in items:
@@ -38,8 +38,8 @@ def pytest_collection_modifyitems(config, items):
 def serial_harness(request):
     port = request.config.getoption("--port")
     harness = SerialHarness(port)
-    # Nie resetujemy tu — każdy test robi flush+reset sam.
-    # Podwójny reset (fixture + test w 0.2s) przerywa trwający boot.
+    # Not resetting here — each test does its own flush+reset.
+    # A double reset (fixture + test within 0.2s) interrupts an ongoing boot.
     yield harness
     harness.close()
 

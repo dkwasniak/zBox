@@ -34,28 +34,28 @@ struct LedConfig {
     bool animateSyncEntry;
 };
 
-// Hardware-only init — bez FreeRTOS.
-// Wywołać PRZED initLeds() gdy boot pochodzi z deep sleep (handleWakeFromDeepSleep).
-// initLeds() wykryje fastLedInitialized=true i pominie ponowne addLeds.
+// Hardware-only init — no FreeRTOS.
+// Call BEFORE ledInit() when booting from deep sleep (handleWakeFromDeepSleep).
+// ledInit() will detect fastLedInitialized=true and skip re-adding LEDs.
 void ledPreInitHardware();
 
-// Pełna inicjalizacja: ledPreInitHardware (jeśli nie zrobione) + FreeRTOS task.
+// Full initialization: ledPreInitHardware (if not already done) + FreeRTOS task.
 void ledInit();
 
-// Sterowanie taskiem (safe do wywołania z dowolnego kontekstu RTOS)
-void ledSuspendTask(); // vTaskSuspend(ledTaskHandle), bez zmiany aktualnego trybu
+// Task control (safe to call from any RTOS context)
+void ledSuspendTask(); // vTaskSuspend(ledTaskHandle), without changing the current mode
 void ledResumeTask();  // vTaskResume(ledTaskHandle)
 
-// Operacje FastLED bez FreeRTOS (dla handleWakeFromDeepSleep / enterDeepSleep)
+// FastLED operations without FreeRTOS (for handleWakeFromDeepSleep / enterDeepSleep)
 void ledClear();                  // FastLED.clear() + show()
-void ledSetWakeProgress(int lit); // pasek postępu (pomarańczowy) + show()
+void ledSetWakeProgress(int lit); // progress bar (orange) + show()
 void ledSetWakeNightLightBreathing(uint8_t phase);
-void ledPowerOff();               // clear + show + wyłącz zasilanie (LED_EN Hi-Z)
+void ledPowerOff();               // clear + show + disable power supply (LED_EN Hi-Z)
 
-// Diagnostyka
-uint32_t ledGetTaskHWM(); // uxTaskGetStackHighWaterMark dla LED taska
+// Diagnostics
+uint32_t ledGetTaskHWM(); // uxTaskGetStackHighWaterMark for the LED task
 
-// Publiczne API animacji / trybów
+// Public animation / mode API
 void ledSetBootProgress(int step);
 void ledSetWaitBt();
 void ledSetIdle();
@@ -77,7 +77,7 @@ bool ledLoadConfigFromSd();
 bool ledSaveConfigJson(const String &json);
 String ledGetConfigJson();
 
-#else // !ENABLE_LEDS — stubs
+#else // !ENABLE_LEDS — stub implementations
 
 inline void ledPreInitHardware() {}
 inline void ledInit() {}

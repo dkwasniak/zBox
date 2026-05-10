@@ -7,7 +7,7 @@ struct BatteryReading {
     const char *color;
 };
 
-// Odczyt napięcia baterii przez ADC (hardware only).
-// batteryBars() jest inline w helpers.h — używany też przez buttons.cpp.
+// Read battery voltage via ADC (hardware only).
+// batteryBars() is inline in helpers.h — also used by buttons.cpp.
 BatteryReading readBatteryReading();
 float readBatteryVoltage();

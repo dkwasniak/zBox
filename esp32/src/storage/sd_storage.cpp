@@ -9,7 +9,7 @@ bool initSD()
 {
     LOGI("Initializing SD card...\n");
     SPI.begin(18, 19, 23, SD_CS);
-    // Usunięto delay(100) - SPI.begin() i SD.begin() obsługują timing wewnętrznie
+    // Removed delay(100) - SPI.begin() and SD.begin() handle timing internally
 
     if (!SD.begin(SD_CS))
     {

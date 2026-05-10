@@ -269,7 +269,7 @@ static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const St
                 f.write(buf, bufPos);
                 timeWriting += millis() - tw;
                 bufPos = 0;
-                vTaskDelay(pdMS_TO_TICKS(1)); // yield po zapisie — IDLE task reset WDT
+                vTaskDelay(pdMS_TO_TICKS(1)); // yield after write — IDLE task resets WDT
             }
 
             if (contentLength > 0 && totalWritten >= contentLength)
@@ -392,7 +392,7 @@ static bool performSync()
     for (JsonObject t : tracks)
         expectedMusic.insert(t["filename"].as<String>());
 
-    // Policz oczekiwane bajty tylko dla plików do pobrania (do LED progress)
+    // Count expected bytes only for files that need downloading (for LED progress)
     uint32_t totalExpectedBytes = 0;
     for (JsonObject t : tracks)
     {
@@ -463,11 +463,11 @@ static bool performSync()
         ledSetSyncProgress(totalExpectedBytes, totalExpectedBytes);
     syncLogf("[SYNC] Music: %d new, %d existing, %d failed", downloaded, skipped, failed);
 
-    // Usuń nieaktualne pliki
+    // Remove outdated files
     syncLogf("[SYNC] Cleaning obsolete files...");
     syncCleanDir("/music", expectedMusic);
 
-    // Usuń z localMtime pliki których nie ma już w expectedMusic
+    // Remove from localMtime any files that are no longer in expectedMusic
     for (auto it = localMtime.begin(); it != localMtime.end(); )
     {
         if (expectedMusic.find(it->first) == expectedMusic.end())
@@ -477,7 +477,7 @@ static bool performSync()
     }
     saveSyncMeta(localMtime);
 
-    // Dźwięki systemowe
+    // System sounds
     syncLogf("[SYNC] Checking system sounds...");
     JsonArray systemSounds = doc["system_sounds"].as<JsonArray>();
     if (!SD.exists("/data/system"))
@@ -514,7 +514,7 @@ static bool performSync()
 
     syncCleanDir("/data/system", expectedSounds);
 
-    // Wygeneruj mappings.json
+    // Generate mappings.json
     syncLogf("[SYNC] Generating mappings.json...");
 
     JsonDocument mappingsDoc;
@@ -558,7 +558,7 @@ void runSyncMode()
     syncLogf("");
     ledSetSyncWifi();
 
-    // Wyłącz BT kontroler żeby zwolnić radio dla WiFi (koegzystencja BT/WiFi)
+    // Disable BT controller to free the radio for WiFi (BT/WiFi coexistence)
     esp_bt_controller_disable();
     esp_bt_controller_deinit();
     esp_bt_mem_release(ESP_BT_MODE_BTDM);

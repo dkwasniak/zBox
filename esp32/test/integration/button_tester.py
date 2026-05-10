@@ -3,12 +3,12 @@ import time
 
 
 class ButtonTester:
-    """Komunikacja z tester ESP32-S3 przez serial."""
+    """Communication with the tester ESP32-S3 over serial."""
 
     def __init__(self, port: str, baudrate: int = 115200):
         self._ser = serial.Serial(port, baudrate, timeout=5)
-        time.sleep(0.5)  # czekaj na reset po otwarciu portu
-        # Opróżnij bufor wejściowy
+        time.sleep(0.5)  # wait for reset after opening port
+        # Flush input buffer
         self._ser.reset_input_buffer()
 
     def _send(self, cmd: str) -> str:
@@ -23,27 +23,27 @@ class ButtonTester:
         return resp == "PONG"
 
     def press(self, btn: str, duration_ms: int):
-        """Wciśnij jeden przycisk (A/B/C/D) na duration_ms milisekund."""
+        """Press one button (A/B/C/D) for duration_ms milliseconds."""
         timeout = (duration_ms / 1000) + 3
         self._ser.timeout = timeout
         self._send(f"PRESS {btn.upper()} {duration_ms}")
         self._ser.timeout = 5
 
     def press_combo(self, btns: str, duration_ms: int):
-        """Wciśnij dwa przyciski jednocześnie (np. 'CD') na duration_ms ms."""
+        """Press two buttons simultaneously (e.g. 'CD') for duration_ms ms."""
         timeout = (duration_ms / 1000) + 3
         self._ser.timeout = timeout
         self._send(f"PRESS_COMBO {btns.upper()} {duration_ms}")
         self._ser.timeout = 5
 
     def double_press(self, btn: str, duration_ms: int = 100, gap_ms: int = 120):
-        """Dwa krótkie kliknięcia tego samego przycisku."""
+        """Two short clicks of the same button."""
         self.press(btn, duration_ms)
         time.sleep(gap_ms / 1000)
         self.press(btn, duration_ms)
 
     def release_all(self):
-        """Zwolnij wszystkie przyciski (Hi-Z)."""
+        """Release all buttons (Hi-Z)."""
         self._send("RELEASE ALL")
 
     def close(self):

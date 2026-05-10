@@ -24,11 +24,11 @@ bool isJblOn()
     return maxVal > JBL_STATUS_THRESHOLD;
 }
 
-// UWAGA: włączanie JBL przy boot jest robione inline w setup() (nieblokująco,
-// puls interleaved z NFC init). Runtime recovery (auto-power-off JBL po
-// bezczynności) obsługuje ensureJblReady() w playback.cpp.
+// NOTE: JBL power-on at boot is done inline in setup() (non-blocking,
+// pulse interleaved with NFC init). Runtime recovery (auto-power-off JBL after
+// inactivity) is handled by ensureJblReady() in playback.cpp.
 
-// Blokujące wyłączanie - używane tylko przed deep sleep
+// Blocking power-off — used only before deep sleep
 void jblPowerOff()
 {
     if (!isJblOn())

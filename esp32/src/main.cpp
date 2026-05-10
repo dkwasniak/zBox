@@ -195,7 +195,7 @@ void setup()
 
     ledSetBootProgress(4); // BT step
     LOGI("BT A2DP starting -> %s\n", BT_SPEAKER_NAME);
-    ledSetWaitBt(); // PRZED audioInit() - bo a2dp.begin() może blokować
+    ledSetWaitBt(); // BEFORE audioInit() - because a2dp.begin() may block
     audioInit();
     btAdapterInit();
 
@@ -238,7 +238,7 @@ void loop()
             jblRecoveryDone = true;
             LOGW("[JBL] BT timeout - ADC false positive, pressing power\n");
             digitalWrite(JBL_POWER, HIGH);
-            delay(JBL_POWER_PRESS_MS);   // 500ms, jednorazowe; ISR-y działają
+            delay(JBL_POWER_PRESS_MS);   // 500ms, one-time; ISRs remain active
             digitalWrite(JBL_POWER, LOW);
             LOGC("[RECOVERY] JBL recovery power pulse after BT timeout\n");
             LOGI("JBL power pulse (recovery)\n");

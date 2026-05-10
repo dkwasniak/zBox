@@ -10,7 +10,7 @@
 #include "state.h"
 
 // =============================================================================
-// Zmienne prywatne modułu LED
+// Private module variables for LED
 // =============================================================================
 
 static CRGB leds[LED_COUNT];
@@ -38,10 +38,10 @@ static volatile LedMode ledMode = LED_OFF;
 static volatile unsigned long ledLastUpdate = 0;
 static volatile int ledAnimStep = 0;
 
-// Stan animacji beat (LED_PLAYING)
-static uint8_t beatHue    = 0;   // aktualny odcień tęczy, przesuwa się z każdym beatem
-static uint8_t beatBright = 60;  // jasność: 255 na beat, opada do 60
-static uint8_t beatRot    = 0;   // powolna rotacja tęczy
+// Beat animation state (LED_PLAYING)
+static uint8_t beatHue    = 0;   // current rainbow hue, advances with each beat
+static uint8_t beatBright = 60;  // brightness: 255 on beat, decays to 60
+static uint8_t beatRot    = 0;   // slow rainbow rotation
 static volatile int ledBootStep = -1;
 static volatile unsigned long ledVolumeShowTime = 0;
 static LedMode ledPreVolumeMode = LED_IDLE;
@@ -80,10 +80,10 @@ static CRGB scaledNightLightColor(int brightnessPercent)
     uint8_t level = map(constrain(brightnessPercent, 0, 100), 0, 100, 0, 255);
     const LedColorConfig &base = ledConfig.nightLightColor;
 
-    // WS2812 przy wyższych poziomach łatwo "wybielają" ciepły kolor,
-    // bo zielony i niebieski wizualnie rosną zbyt agresywnie.
-    // Dla lampki nocnej skalujemy R/G/B osobno, utrzymując cieplejszy odcień
-    // także przy wyższej jasności.
+    // WS2812 at higher brightness levels tends to "wash out" warm colours
+    // because green and blue grow too aggressively in perceived brightness.
+    // For the night light we scale R/G/B independently to keep a warmer tint
+    // even at higher brightness levels.
     uint8_t redLevel = level;
     uint8_t greenLevel = scale8(level, 176);
     uint8_t blueLevel = scale8(level, 96);
@@ -144,13 +144,13 @@ static bool applyLedConfigDocument(JsonDocument &doc)
 }
 
 // =============================================================================
-// Forward declaration
+// Forward declarations
 // =============================================================================
 
 static void ledTaskFunc(void *param);
 
 // =============================================================================
-// Implementacja
+// Implementation
 // =============================================================================
 
 void ledPreInitHardware()
@@ -158,7 +158,7 @@ void ledPreInitHardware()
     if (!fastLedInitialized)
     {
         pinMode(LED_EN, OUTPUT);
-        digitalWrite(LED_EN, LOW); // włącz zasilanie LEDów (P-MOSFET)
+        digitalWrite(LED_EN, LOW); // enable LED power supply (P-MOSFET)
         FastLED.addLeds<WS2812B, LED_PIN, GRB>(leds, LED_COUNT);
         FastLED.setBrightness(LED_BRIGHTNESS);
         fastLedInitialized = true;
@@ -176,10 +176,10 @@ void ledInit()
         ledMode = LED_OFF;
     }
 
-    // Osobny task FreeRTOS - animacje LED niezależne od loop()
+    // Separate FreeRTOS task - LED animations independent of loop()
     xTaskCreatePinnedToCore(ledTaskFunc, "led", 4096, NULL, 1, &ledTaskHandle, 1);
 
-    // Pokaż że urządzenie żyje — dim niebieski do pierwszego ledSetBootProgress()
+    // Show that the device is alive — dim blue until the first ledSetBootProgress()
     if (!preserveNightLight)
     {
         fill_solid(leds, LED_COUNT, CRGB(0, 0, 30));
@@ -281,7 +281,7 @@ void ledClear()
     FastLED.show();
 }
 
-// Gradient: ciemny teal (0,15,35) → szmaragd (0,130,50) → jasna limonka (50,210,10)
+// Gradient: dark teal (0,15,35) → emerald (0,130,50) → bright lime (50,210,10)
 static CRGB wakeColor(int i, int total)
 {
     if (total <= 1) return CRGB(50, 210, 10);
@@ -323,19 +323,19 @@ void ledPowerOff()
 {
     FastLED.clear();
     FastLED.show();
-    pinMode(LED_EN, INPUT); // Hi-Z → R8 podciąga Gate do BAT → Vgs=0 → MOSFET OFF
+    pinMode(LED_EN, INPUT); // Hi-Z → R8 pulls Gate to BAT → Vgs=0 → MOSFET OFF
 }
 
 void ledSetBootProgress(int step)
 {
     ledMode = LED_BOOT;
     ledBootStep = step;
-    // Zakończone kroki świecą na stałe
+    // Completed steps stay lit permanently
     for (int i = 0; i < LED_COUNT; i++)
     {
         leds[i] = (i < step) ? toCRGB(ledConfig.waitBtColor) : CRGB::Black;
     }
-    // Aktualny krok - 3 szybkie mignięcia
+    // Current step - 3 quick flashes
     for (int flash = 0; flash < 3; flash++)
     {
         leds[step] = toCRGB(ledConfig.waitBtColor);
@@ -345,7 +345,7 @@ void ledSetBootProgress(int step)
         FastLED.show();
         delay(80);
     }
-    // Zostaw zapalony po mignięciach
+    // Leave lit after the flashes
     leds[step] = toCRGB(ledConfig.waitBtColor);
     FastLED.show();
 }
@@ -467,7 +467,7 @@ void ledSetSyncEntry()
 void ledFlashSyncTransition(bool entering)
 {
     ledMode = LED_OFF;
-    delay(20); // zatrzymaj bieżącą animację taska przed blokującym przejściem
+    delay(20); // stop the current task animation before the blocking transition
 
     CRGB outer = toCRGB(ledConfig.syncEntryTrailColor);
     CRGB inner = toCRGB(ledConfig.syncEntryHeadColor);
@@ -530,7 +530,7 @@ void ledFlashWarning()
 void ledShutdownAnim()
 {
     ledMode = LED_OFF;
-    delay(20); // nie pozwól taskowi LED nadpisywać animacji wyłączania
+    delay(20); // prevent the LED task from overwriting the shutdown animation
 
     for (int i = LED_COUNT - 1; i >= 0; i--)
     {
@@ -548,24 +548,24 @@ void ledShutdownAnim()
 
 void ledShowBattery(int bars)
 {
-    // bars: 1 (krytyczny) ... 5 (pełny)
-    // Zatrzymaj LED task na czas animacji (LED_OFF → default:break w tasku)
+    // bars: 1 (critical) ... 5 (full)
+    // Pause the LED task for the duration of the animation (LED_OFF → default:break in task)
     LedMode prevMode = ledMode;
     ledMode = LED_OFF;
-    delay(20); // daj taskowi czas na wyjście z FastLED.show()
+    delay(20); // give the task time to exit FastLED.show()
 
-    // Kolor zależny od poziomu — 5 odrębnych hue'ów
+    // Colour depends on level — 5 distinct hues
     CRGB color;
-    if      (bars >= 5) color = CRGB(0,    50, 140);  // niebieski  (pełny)
-    else if (bars == 4) color = CRGB(0,   130,   0);  // zielony
-    else if (bars == 3) color = CRGB(130, 120,   0);  // żółty
-    else if (bars == 2) color = CRGB(140,  50,   0);  // pomarańczowy
-    else                color = CRGB(140,   0,   0);  // czerwony   (krytyczny)
+    if      (bars >= 5) color = CRGB(0,    50, 140);  // blue   (full)
+    else if (bars == 4) color = CRGB(0,   130,   0);  // green
+    else if (bars == 3) color = CRGB(130, 120,   0);  // yellow
+    else if (bars == 2) color = CRGB(140,  50,   0);  // orange
+    else                color = CRGB(140,   0,   0);  // red    (critical)
 
-    // Liczba zapalonych diod: bars=1 → 2, bars=2 → 4, bars=3 → 7, bars=4 → 9, bars=5 → 12
+    // Number of lit LEDs: bars=1 → 2, bars=2 → 4, bars=3 → 7, bars=4 → 9, bars=5 → 12
     int lit = map(bars, 1, 5, 2, LED_COUNT);
 
-    // Faza 1: sweep in — zapala po jednej diodzie od lewej
+    // Phase 1: sweep in — light one LED at a time from the left
     FastLED.clear();
     FastLED.show();
     for (int i = 0; i < lit; i++) {
@@ -574,10 +574,10 @@ void ledShowBattery(int bars)
         delay(40);
     }
 
-    // Faza 2: hold 1.5s
+    // Phase 2: hold 1.5s
     delay(1500);
 
-    // Faza 3: krytyczny poziom — mrugnij 3x na czerwono
+    // Phase 3: critical level — blink 3x in red
     if (bars == 1) {
         for (int b = 0; b < 3; b++) {
             FastLED.clear();
@@ -590,7 +590,7 @@ void ledShowBattery(int bars)
         delay(300);
     }
 
-    // Faza 4: sweep out — gaśnij od prawej do lewej
+    // Phase 4: sweep out — fade from right to left
     for (int i = lit - 1; i >= 0; i--) {
         leds[i] = CRGB::Black;
         FastLED.show();
@@ -611,13 +611,13 @@ static void ledTaskFunc(void *param)
     {
         unsigned long now = millis();
 
-        // Heartbeat co 5s — PRZED FastLED.show(), żeby log był widoczny nawet gdy show() wisi
+        // Heartbeat every 5s — BEFORE FastLED.show(), so the log is visible even if show() hangs
         if (now - lastLedHeartbeat > 5000) {
             lastLedHeartbeat = now;
             LOGI("[LED] alive mode=%d hwm=%u\n", (int)ledMode, uxTaskGetStackHighWaterMark(NULL));
         }
 
-        // Volume overlay - powrót do poprzedniego trybu po 1s
+        // Volume overlay - return to previous mode after 1s
         if (ledMode == LED_VOLUME && now - ledVolumeShowTime >= 1000)
         {
             if (ledPreVolumeMode == LED_PLAYING)
@@ -672,22 +672,22 @@ static void ledTaskFunc(void *param)
                 FastLED.show();
                 break;
             }
-            // Na beat: błysk do 255 + przeskok koloru
+            // On beat: flash to 255 + colour jump
             if (g_beatDetected)
             {
                 g_beatDetected = false;
                 beatBright = 255;
-                beatHue += 21;  // ~12 beatów = pełny spektrum
+                beatHue += 21;  // ~12 beats = full spectrum
             }
 
-            // Między beatami: flash po beacie łagodnie opada do bieżącej energii audio.
+            // Between beats: post-beat flash gently decays to current audio energy.
             uint8_t target = g_audioEnergy;
             if (beatBright > target)
                 beatBright = (uint8_t)max((int)target, (int)beatBright - 30);
             else
                 beatBright = target;
 
-            // Tęczowy pierścień — szybsza rotacja
+            // Rainbow ring — faster rotation
             beatRot += 2;
 
             for (int i = 0; i < LED_COUNT; i++)
@@ -777,7 +777,7 @@ static void ledTaskFunc(void *param)
             break;
         }
 
-        // Delay zależny od trybu
+        // Delay depends on current mode
         int delayMs = 15;
         if (ledMode == LED_PLAYING)
             delayMs = 80;

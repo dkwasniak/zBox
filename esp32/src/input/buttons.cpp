@@ -123,14 +123,14 @@ void handleButtons()
     static bool nightLightSleepHandled = false;
     unsigned long now = millis();
 
-    // Odczyt aktualnego surowego stanu
+    // Read current raw state
     bool down[BTN_COUNT];
     for (int i = 0; i < BTN_COUNT; i++)
     {
         down[i] = (digitalRead(buttons[i].pin) == LOW);
     }
 
-    // Obsłuż nowe wciśnięcia
+    // Handle new presses
     for (int i = 0; i < BTN_COUNT; i++)
     {
         Button &b = buttons[i];
@@ -140,7 +140,7 @@ void handleButtons()
             b.longHandled = false;
             b.clickSuppressed = false;
             if (!runtimeIsNightLight())
-                lastActivityMs = millis(); // reset idle timer przy każdym naciśnięciu
+                lastActivityMs = millis(); // reset idle timer on every press
         }
     }
 
@@ -183,9 +183,9 @@ void handleButtons()
         }
     }
 
-    // Bardzo długie BTN_C (bez BTN_D) -> awaryjny deep sleep.
-    // Normalny deep sleep dla BTN_C odpalamy dopiero po puszczeniu, żeby
-    // przytrzymanie mogło dojść do progu emergency.
+    // Very long BTN_C hold (without BTN_D) -> emergency deep sleep.
+    // Normal deep sleep for BTN_C is triggered only on release, so that
+    // a continued hold can reach the emergency threshold.
     if (!runtimeIsNightLight() && down[2] && !down[3] && buttons[2].pressStart > 0 &&
         now - buttons[2].pressStart >= EMERGENCY_SLEEP_MS && !buttons[2].longHandled)
     {
@@ -208,7 +208,7 @@ void handleButtons()
         ledSetSleepReady();
     }
 
-    // Długie BTN_A (sam) -> sprawdź baterię: animacja LED
+    // Long BTN_A hold (alone) -> check battery: LED animation
     if (!runtimeIsNightLight() && down[0] && !down[1] && buttons[0].pressStart > 0 &&
         now - buttons[0].pressStart >= LONG_PRESS_MS && !buttons[0].longHandled)
     {
@@ -218,7 +218,7 @@ void handleButtons()
         int bars = batteryBars(v);
         LOGI("[BAT] Voltage: %.2fV -> %d bar(s)\n", v, bars);
         ledShowBattery(bars);
-        // Wyczyść lastNfcUid - jeśli figurka nadal stoi, NFC wznowi muzykę
+        // Clear lastNfcUid - if the figurine is still present, NFC will resume music
         lastNfcUid[0] = '\0';
     }
 
@@ -231,7 +231,7 @@ void handleButtons()
         playbackToggleMode();
     }
 
-    // Zwolnienie przycisków
+    // Button releases
     for (int i = 0; i < BTN_COUNT; i++)
     {
         Button &b = buttons[i];
@@ -283,7 +283,7 @@ void handleButtons()
     finalizePendingClicks(buttons[BTN_IDX_A], BTN_IDX_A, now);
     finalizePendingClicks(buttons[BTN_IDX_B], BTN_IDX_B, now);
 
-    // Flaga combo resetuje się gdy którykolwiek z C/D zostanie puszczony
+    // Combo flag resets when either A or B is released
     if (!down[0] || !down[1])
         bothABHandled = false;
 }

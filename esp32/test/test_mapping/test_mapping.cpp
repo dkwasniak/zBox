@@ -3,8 +3,8 @@
 #include <ArduinoJson.h>
 #include <map>
 
-// Replika logiki loadMappings() z main.cpp:739
-// Działa na std::string zamiast SD — cross-platform.
+// Replica of loadMappings() logic from main.cpp:739
+// Operates on std::string instead of SD — cross-platform.
 
 static std::map<String, String> figurineMap;
 
@@ -18,7 +18,7 @@ static bool loadMappingsFromJson(const char* json)
         return false;
 
     // Firmware: doc["figurines"].as<JsonObject>() → if (figurines) { populate }
-    // Brak klucza "figurines" → pusta mapa, return true (tak jak firmware)
+    // Missing "figurines" key → empty map, return true (same as firmware)
     JsonObject figurines = doc["figurines"].as<JsonObject>();
     if (figurines)
     {
@@ -66,7 +66,7 @@ void test_invalid_json()
 
 void test_missing_figurines_key()
 {
-    // Firmware nie sprawdza obecności klucza — zwraca true z pustą mapą
+    // Firmware does not check for key presence — returns true with empty map
     const char* json = R"({"other":{}})";
     TEST_ASSERT_TRUE(loadMappingsFromJson(json));
     TEST_ASSERT_EQUAL_INT(0, figurineMap.size());

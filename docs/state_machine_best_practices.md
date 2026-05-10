@@ -1,32 +1,32 @@
-# Maszyna stanów w embedded C/C++ — niezawodność i testowalność
+# State machines in embedded C/C++ — reliability and testability
 
-> Dotyczy: bare-metal, FreeRTOS, Arduino framework, ESP-IDF, STM32 HAL.  
-> Założenia: brak wyjątków (`-fno-exceptions`), brak RTTI, statyczna alokacja pamięci, deterministyczny czas wykonania.
+> Applies to: bare-metal, FreeRTOS, Arduino framework, ESP-IDF, STM32 HAL.  
+> Assumptions: no exceptions (`-fno-exceptions`), no RTTI, static memory allocation, deterministic execution time.
 
 ---
 
-## 1. Zamknięty zbiór stanów — `enum` zamiast `int`
+## 1. Closed set of states — `enum` instead of `int`
 
-Pierwsza i najważniejsza zasada: stan musi być typem, nie magiczną liczbą.
+The first and most important rule: the state must be a type, not a magic number.
 
 ```c
-/* ❌ ŹLE — nic nie chroni przed stanem 99 */
+/* ❌ BAD — nothing prevents state 99 */
 int state = 0;
 
-/* ✅ DOBRZE — kompilator zna każdy możliwy stan */
+/* ✅ GOOD — the compiler knows every possible state */
 typedef enum {
     STATE_IDLE,
     STATE_CONNECTING,
     STATE_CONNECTED,
     STATE_ERROR,
-    STATE_COUNT  /* sentinel — pozwala na walidację tablicową */
+    STATE_COUNT  /* sentinel — enables array-based validation */
 } State;
 ```
 
-W C++ można użyć `enum class` dla silniejszego typowania:
+In C++ you can use `enum class` for stronger typing:
 
 ```cpp
-enum class State : uint8_t {  /* uint8_t = oszczędność RAM na małych MCU */
+enum class State : uint8_t {  /* uint8_t = RAM savings on small MCUs */
     Idle,
     Connecting,
     Connected,
@@ -34,15 +34,15 @@ enum class State : uint8_t {  /* uint8_t = oszczędność RAM na małych MCU */
 };
 ```
 
-**Dlaczego to ważne w embedded:** Niezdefiniowane wartości enuma wchodzą do switcha jako `default`, który w dobrze napisanym kodzie albo loguje błąd, albo zatrzymuje system — zamiast cicho korumpować stan.
+**Why this matters in embedded:** Undefined enum values fall into the `default` case of a switch, which in well-written code either logs an error or halts the system — instead of silently corrupting state.
 
 ---
 
-## 2. Jawne przejścia — tabela lub switch, nigdy `if/else if` na ślepo
+## 2. Explicit transitions — table or switch, never blind `if/else if`
 
-### Wariant A — tabela przejść (deterministyczny czas, łatwa weryfikacja)
+### Variant A — transition table (deterministic timing, easy to verify)
 
-Tabela przejść jest czytelna jak specyfikacja i trywialna do przejrzenia code review.
+A transition table reads like a specification and is trivial to review in code review.
 
 ```c
 typedef enum {
@@ -53,7 +53,7 @@ typedef enum {
     EVENT_COUNT
 } Event;
 
-/* STATE_INVALID = przejście niedozwolone */
+/* STATE_INVALID = transition not allowed */
 #define STATE_INVALID 0xFF
 
 static const uint8_t TRANSITION_TABLE[STATE_COUNT][EVENT_COUNT] = {
@@ -66,19 +66,19 @@ static const uint8_t TRANSITION_TABLE[STATE_COUNT][EVENT_COUNT] = {
 
 State sm_process(State current, Event event) {
     if (current >= STATE_COUNT || event >= EVENT_COUNT) {
-        /* Obrona przed out-of-bounds — krytyczne w embedded */
+        /* Defence against out-of-bounds — critical in embedded */
         return current;
     }
     uint8_t next = TRANSITION_TABLE[current][event];
     if (next == STATE_INVALID) {
-        /* Niedozwolone przejście — zignoruj lub zaloguj */
+        /* Disallowed transition — ignore or log */
         return current;
     }
     return (State)next;
 }
 ```
 
-### Wariant B — switch/case (czytelny przy złożonych przejściach)
+### Variant B — switch/case (readable for complex transitions)
 
 ```c
 State sm_process(State current, Event event) {
@@ -103,32 +103,32 @@ State sm_process(State current, Event event) {
             break;
 
         default:
-            /* Nieznany stan — błąd systemu */
+            /* Unknown state — system error */
             break;
     }
-    /* Niedozwolone przejście — brak zmiany stanu */
+    /* Disallowed transition — no state change */
     return current;
 }
 ```
 
-**Zasada:** Funkcja przejścia nigdy nie wywołuje HAL, UART, GPIO. Przyjmuje stan + zdarzenie, zwraca nowy stan. To wszystko.
+**Rule:** The transition function never calls HAL, UART, GPIO. It takes a state + event and returns a new state. That is all.
 
 ---
 
-## 3. Czysta funkcja przejścia — separacja logiki od efektów
+## 3. Pure transition function — separation of logic from effects
 
-W embedded "efekty uboczne" to: zapis do rejestru peryferyjnego, wysłanie danych po UART, zapalenie diody, wywołanie `HAL_GPIO_WritePin`. Nigdy nie powinny znajdować się w logice przejścia — utrudniają testowanie i tworzą ukryte zależności.
+In embedded, "side effects" are: writing to a peripheral register, sending data over UART, turning on an LED, calling `HAL_GPIO_WritePin`. They should never be inside the transition logic — they make testing harder and create hidden dependencies.
 
 ```c
-/* Logika przejścia — czysta, bez efektów */
+/* Transition logic — pure, no effects */
 State sm_reduce(State current, Event event);
 
-/* Efekty — wywoływane przez warstwę zewnętrzną po zmianie stanu */
+/* Effects — called by the outer layer after a state change */
 void sm_on_entry(State state);
 void sm_on_exit(State state);
 ```
 
-Pętla główna lub task FreeRTOS łączy te elementy:
+The main loop or a FreeRTOS task ties these elements together:
 
 ```c
 void sm_dispatch(SmContext *ctx, Event event) {
@@ -136,15 +136,15 @@ void sm_dispatch(SmContext *ctx, Event event) {
     State next  = sm_reduce(prev, event);
 
     if (next != prev) {
-        sm_on_exit(prev);       /* Sprzątanie po wyjściu */
+        sm_on_exit(prev);       /* Cleanup on exit */
         ctx->state = next;
-        sm_on_entry(next);      /* Inicjalizacja nowego stanu */
-        sm_log_transition(prev, event, next);  /* Obserwowalność */
+        sm_on_entry(next);      /* Initialisation of the new state */
+        sm_log_transition(prev, event, next);  /* Observability */
     }
 }
 ```
 
-### Akcje wejścia/wyjścia
+### Entry/exit actions
 
 ```c
 void sm_on_entry(State state) {
@@ -178,19 +178,19 @@ void sm_on_exit(State state) {
 
 ---
 
-## 4. Niemożliwe stany nie istnieją w typie
+## 4. Impossible states do not exist in the type
 
-Zamiast przechowywać wiele flag, które mogą wchodzić w sprzeczność, koduj każdy możliwy kontekst jako oddzielny stan.
+Instead of storing multiple flags that can contradict each other, encode every possible context as a separate state.
 
 ```c
-/* ❌ ŹLE — bool-hell, 2^3 = 8 kombinacji, większość bezsensowna */
+/* ❌ BAD — bool-hell, 2^3 = 8 combinations, most of them nonsensical */
 typedef struct {
     bool is_loading;
     bool has_data;
     bool has_error;
 } UiState;
 
-/* ✅ DOBRZE — 4 stany, każdy semantycznie kompletny */
+/* ✅ GOOD — 4 states, each semantically complete */
 typedef enum {
     UI_IDLE,
     UI_LOADING,
@@ -199,7 +199,7 @@ typedef enum {
 } UiState;
 ```
 
-Dla stanów niosących dane użyj unii:
+For states that carry data, use a union:
 
 ```c
 typedef struct {
@@ -212,25 +212,25 @@ typedef struct {
 } SmContext;
 ```
 
-**Zasada:** Jeśli danej nie ma sensu przechowywać w tym stanie, nie powinna być dostępna. Unia bez tagu w C wymaga dyscypliny; w C++ można użyć `std::variant` jeśli środowisko na to pozwala.
+**Rule:** If it makes no sense to store a piece of data in a given state, it should not be accessible. An untagged union in C requires discipline; in C++ you can use `std::variant` if the environment allows it.
 
 ---
 
-## 5. ISR-safety — maszyna stanów a przerwania
+## 5. ISR-safety — state machine and interrupts
 
-Maszynę stanów prawie zawsze należy wykonywać z jednego kontekstu. Zdarzenia z ISR muszą przechodzić przez kolejkę lub flagę.
+The state machine should almost always be executed from a single context. Events from an ISR must go through a queue or a flag.
 
 ```c
-/* W ISR — TYLKO ustawienie flagi lub push do kolejki */
+/* In ISR — ONLY set a flag or push to a queue */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
-    /* ❌ NIE wywołuj sm_dispatch() z ISR */
-    /* ✅ Zamiast tego: */
+    /* ❌ DO NOT call sm_dispatch() from ISR */
+    /* ✅ Instead: */
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
     xQueueSendFromISR(event_queue, &event_rx_complete, &xHigherPriorityTaskWoken);
     portYIELD_FROM_ISR(xHigherPriorityTaskWoken);
 }
 
-/* W tasku FreeRTOS — przetwarzanie zdarzeń */
+/* In FreeRTOS task — event processing */
 void sm_task(void *arg) {
     SmContext ctx = { .state = STATE_IDLE };
     Event event;
@@ -243,26 +243,26 @@ void sm_task(void *arg) {
 }
 ```
 
-Na bare-metal bez RTOS, użyj `volatile` flagi i przetwarzaj w pętli głównej:
+On bare-metal without an RTOS, use a `volatile` flag and process it in the main loop:
 
 ```c
-volatile Event pending_event = EVENT_NONE;  /* ustawiana w ISR */
+volatile Event pending_event = EVENT_NONE;  /* set in ISR */
 
-/* W main loop */
+/* In main loop */
 if (pending_event != EVENT_NONE) {
     Event e = pending_event;
-    pending_event = EVENT_NONE;  /* Atomiczne na 8/32-bit MCU dla uint */
+    pending_event = EVENT_NONE;  /* Atomic on 8/32-bit MCU for uint */
     sm_dispatch(&ctx, e);
 }
 ```
 
-> **Uwaga:** Na MCU z zapisem nieatomicznym (np. 8-bit AVR z 16-bit zmienną) użyj `ATOMIC_BLOCK` lub sekcji krytycznej.
+> **Note:** On MCUs with non-atomic writes (e.g. 8-bit AVR with a 16-bit variable) use `ATOMIC_BLOCK` or a critical section.
 
 ---
 
-## 6. Obserwowalność — logowanie przejść
+## 6. Observability — logging transitions
 
-Każde przejście powinno być logowalne bez zmiany logiki. W embedded logowanie trafia najczęściej do UART, RTT (Segger), lub bufora cyklicznego w RAM.
+Every transition should be loggable without changing the logic. In embedded, logging typically goes to UART, RTT (Segger), or a circular buffer in RAM.
 
 ```c
 static const char *STATE_NAMES[] = {
@@ -282,7 +282,7 @@ void sm_log_transition(State from, Event event, State to) {
 }
 ```
 
-Dla produkcji z rygorystycznym budżetem RAM: bufor cykliczny ostatnich N przejść.
+For production with a strict RAM budget: a circular buffer of the last N transitions.
 
 ```c
 #define SM_HISTORY_SIZE 8
@@ -302,28 +302,28 @@ void sm_record(State from, Event event, State to) {
 }
 ```
 
-Po crashu lub watchdog resecie ten bufor (w RAM nieulotnym lub sekcji `.noinit`) pozwala zrekonstruować sekwencję zdarzeń.
+After a crash or watchdog reset, this buffer (in non-volatile RAM or a `.noinit` section) allows you to reconstruct the sequence of events.
 
 ---
 
-## 7. Testowalność — unit testy bez hardware
+## 7. Testability — unit tests without hardware
 
-Czysta funkcja przejścia (`sm_reduce`) nie wymaga żadnego MCU, żadnego HAL, żadnego mocka peryferyjnego. Testy można pisać i uruchamiać na PC (CMake + Unity / Catch2).
+The pure transition function (`sm_reduce`) requires no MCU, no HAL, no peripheral mock. Tests can be written and run on a PC (CMake + Unity / Catch2).
 
-### Struktura katalogów
+### Directory structure
 
 ```
 project/
 ├── src/
-│   ├── sm.c          ← logika przejść (czysta, bez HAL)
+│   ├── sm.c          ← transition logic (pure, no HAL)
 │   ├── sm.h
-│   └── sm_effects.c  ← on_entry / on_exit (z HAL, nie testowane jednostkowo)
+│   └── sm_effects.c  ← on_entry / on_exit (with HAL, not unit-tested)
 └── test/
-    ├── test_sm.c     ← testy na PC
+    ├── test_sm.c     ← tests on PC
     └── CMakeLists.txt
 ```
 
-### Przykładowe testy (Unity)
+### Example tests (Unity)
 
 ```c
 #include "unity.h"
@@ -340,7 +340,7 @@ void test_connecting_timeout_transitions_to_error(void) {
 }
 
 void test_invalid_transition_returns_current_state(void) {
-    /* IDLE nie może przejść przez CONNECTED_OK */
+    /* IDLE cannot transition via CONNECTED_OK */
     State result = sm_reduce(STATE_IDLE, EVENT_CONNECTED_OK);
     TEST_ASSERT_EQUAL(STATE_IDLE, result);
 }
@@ -356,24 +356,24 @@ void test_full_happy_path(void) {
 }
 
 void test_all_invalid_transitions_from_connected(void) {
-    /* Z STATE_CONNECTED nie można wejść przez CONNECT ani TIMEOUT */
+    /* From STATE_CONNECTED you cannot enter via CONNECT or TIMEOUT */
     TEST_ASSERT_EQUAL(STATE_CONNECTED, sm_reduce(STATE_CONNECTED, EVENT_CONNECT));
     TEST_ASSERT_EQUAL(STATE_CONNECTED, sm_reduce(STATE_CONNECTED, EVENT_TIMEOUT));
     TEST_ASSERT_EQUAL(STATE_CONNECTED, sm_reduce(STATE_CONNECTED, EVENT_CONNECTED_OK));
 }
 ```
 
-**Wzorzec testowy:** Given `(current_state, event)` → assert `next_state`. Bez inicjalizacji sprzętu, bez `HAL_Init()`, bez `FreeRTOS_Init()`.
+**Test pattern:** Given `(current_state, event)` → assert `next_state`. No hardware initialisation, no `HAL_Init()`, no `FreeRTOS_Init()`.
 
 ---
 
 ## 8. Watchdog integration
 
-Maszyna stanów naturalnie integruje się z watchdogiem: każde przejście do stanu "zdrowego" resetuje licznik WDT; utknięcie w jednym stanie przez zbyt długo powoduje reset systemu.
+The state machine integrates naturally with the watchdog: every transition to a "healthy" state resets the WDT counter; getting stuck in one state for too long causes a system reset.
 
 ```c
 void sm_on_entry(State state) {
-    /* Reset watchdoga tylko przy przejściach — dowód aktywności */
+    /* Reset watchdog on every transition — proof of activity */
     HAL_IWDG_Refresh(&hiwdg);
 
     switch (state) {
@@ -382,22 +382,22 @@ void sm_on_entry(State state) {
 }
 ```
 
-Dla stanów długotrwałych (np. `STATE_CONNECTED` przez godziny) watchdog musi być odświeżany w pętli zadania, nie tylko przy przejściu.
+For long-lived states (e.g. `STATE_CONNECTED` for hours) the watchdog must be refreshed inside the task loop, not only on transition.
 
 ---
 
-## Podsumowanie — checklista
+## Summary — checklist
 
-| Właściwość | Technika w C/C++ embedded |
+| Property | Technique in C/C++ embedded |
 |---|---|
-| Zamknięty zbiór stanów | `enum` / `enum class` + `STATE_COUNT` sentinel |
-| Jawne przejścia | Tabela przejść lub `switch/case` — każde niedozwolone = brak zmiany |
-| Czysta funkcja przejścia | `State sm_reduce(State, Event)` bez HAL, bez efektów |
-| Oddzielone efekty | `on_entry()` / `on_exit()` wywoływane przez dispatcher |
-| Niemożliwe stany | Unia z tagiem zamiast wielu flag bool |
-| ISR-safety | Zdarzenia przez kolejkę (`xQueueSendFromISR`) lub volatile flagę |
-| Obserwowalność | `sm_log_transition()` + bufor historii w `.noinit` |
-| Testowalność | `sm_reduce()` w oddzielnym `.c`, testy Unity/Catch2 na PC bez MCU |
-| Watchdog | Reset WDT w `on_entry()` / w pętli długotrwałych stanów |
+| Closed set of states | `enum` / `enum class` + `STATE_COUNT` sentinel |
+| Explicit transitions | Transition table or `switch/case` — every disallowed transition = no change |
+| Pure transition function | `State sm_reduce(State, Event)` without HAL, without effects |
+| Separated effects | `on_entry()` / `on_exit()` called by the dispatcher |
+| Impossible states | Tagged union instead of multiple bool flags |
+| ISR-safety | Events via queue (`xQueueSendFromISR`) or volatile flag |
+| Observability | `sm_log_transition()` + history buffer in `.noinit` |
+| Testability | `sm_reduce()` in a separate `.c`, Unity/Catch2 tests on PC without MCU |
+| Watchdog | WDT reset in `on_entry()` / in the loop of long-lived states |
 
-> **Złota zasada embedded:** Jeśli przejście między dwoma stanami nie jest w tabeli lub switchu — jest niemożliwe. Nie "nie powinno się zdarzać" — **niemożliwe w runtime**.
+> **Golden rule of embedded:** If a transition between two states is not in the table or switch — it is impossible. Not "should not happen" — **impossible at runtime**.

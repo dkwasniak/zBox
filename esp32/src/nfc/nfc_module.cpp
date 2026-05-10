@@ -47,7 +47,7 @@ static bool nfcCriticalBegin(TickType_t waitTicks)
 {
     if (!nfcBusTake(waitTicks))
         return false;
-    ledSuspendTask(); // zawiesza LED task — Software SPI nie zostanie przerwany
+    ledSuspendTask(); // suspends the LED task — Software SPI will not be interrupted
     return true;
 }
 
@@ -167,11 +167,11 @@ static bool nfcRawSpiWakeWithFirmwareCommand()
 // Private: init sequence
 // =============================================================================
 
-// Inicjalizuje PN532: opcjonalny raw SPI wake + begin + getFirmwareVersion z retry.
-// Bezpieczny dla wszystkich ścieżek: cold boot, deep sleep wake, software reset,
-// reinit podczas pracy. Jeśli RTC mówi że ostatnio wysłano PowerDown,
-// najpierw budzimy PN532 surową ramką SPI z NSS trzymanym low.
-// Zakłada że wywołujący trzyma nfcMutex i zawiesił LED task.
+// Initialises the PN532: optional raw SPI wake + begin + getFirmwareVersion with retry.
+// Safe for all paths: cold boot, deep sleep wake, software reset,
+// reinit during operation. If RTC indicates a PowerDown was last sent,
+// the PN532 is woken first with a raw SPI frame while NSS is held low.
+// Assumes the caller holds nfcMutex and has suspended the LED task.
 static bool nfcInitSequence()
 {
     bool rawWakeAttempted = false;
@@ -192,7 +192,7 @@ static bool nfcInitSequence()
             rawWakeAttempted = true;
             nfcRawSpiWakeWithFirmwareCommand();
         }
-        delay(50 * (attempt + 1)); // 100ms, 150ms
+        delay(50 * (attempt + 1)); // 100 ms, 150 ms
         ver = nfc.getFirmwareVersion();
     }
 
@@ -396,8 +396,8 @@ void nfcPowerDown()
         rtcNfcPowerDownSent = false;
         return;
     }
-    // PN532 PowerDown — pobiera ~1mA zamiast ~100mA podczas deep sleep.
-    // ESP32 po wybudzeniu robi pełny boot i wywołuje nfc.begin() od nowa.
+    // PN532 PowerDown — draws ~1 mA instead of ~100 mA during deep sleep.
+    // ESP32 performs a full boot on wake-up and calls nfc.begin() again.
     uint8_t cmd[] = {PN532_COMMAND_POWERDOWN, PN532_WAKEUP_SPI};
     bool ack = nfc.sendCommandCheckAck(cmd, sizeof(cmd), 100);
     rtcNfcPowerDownSent = ack;
@@ -405,7 +405,7 @@ void nfcPowerDown()
     nfcCriticalEnd();
     LOGC("[SLEEP] NFC PowerDown wake=SPI(0x%02X) ack=%d\n", PN532_WAKEUP_SPI, (int)ack);
     if (ack)
-        delay(2); // PN532 potrzebuje ok. 1ms żeby faktycznie wejść w PowerDown.
+        delay(2); // PN532 needs ~1 ms to actually enter PowerDown.
 }
 
 uint32_t nfcGetTaskHWM()

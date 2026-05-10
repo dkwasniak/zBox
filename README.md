@@ -126,6 +126,9 @@ The enclosure is designed so the current speaker is slid into dedicated internal
 
 ## PCB and schematic
 
+> [!CAUTION]
+> The PCB photo in this repository shows an earlier revision. The current schematic already includes corrections that came up after assembling the enclosure. If you are manufacturing a board, use the schematic and Gerbers from this repository — not the photo.
+
 If you want to inspect or modify the hardware design, start here:
 
 - Schematic: [zbox.kicad_sch](hardware/pcb/kicad/zbox.kicad_sch)
@@ -145,7 +148,15 @@ The STEP model is ready to print. Each part must be printed separately. Print or
 | Front cover | No strong preference |
 | Rear cover | Lying flat on its inner surface |
 
-A few practical notes from the actual build:
+### Screws and heat-set inserts
+
+| Location | Insert | Screw |
+|----------|--------|-------|
+| Rear cover | M3 heat-set inserts | M3 |
+| Side wall mounting | — | M4 |
+| ESP32 board mounting | — | M4 |
+
+### Build notes
 
 - The buttons are soldered onto a protoboard — there is no custom PCB for them. The build uses **12 × 12 × 7.3 mm momentary tactile switches (TACT, 4-pin)** with colored caps, from the MSALAMON kit. Any equivalent 12 × 12 × 7.3 mm TACT switch will fit.
 - The cutout for the button board in the enclosure is not symmetric. This can be corrected in Fusion 360, or you can just account for it when positioning the buttons during soldering. It turned out that way, reason unknown.

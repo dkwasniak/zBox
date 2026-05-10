@@ -111,12 +111,12 @@ void sleepExecuteDeepSleep(RequestedSleepKind kind)
     }
 }
 
-// Wybudzanie z deep sleep wymaga przytrzymania BTN_D przez LONG_PRESS_MS.
-// ESP32 ext0 wybudza się natychmiast po wykryciu LOW, więc "hold-to-wake"
-// musi być zaimplementowane w software: tu odpytujemy przycisk i wracamy
-// do snu jeśli zostanie puszczony za wcześnie. Animacja LED (skalowana do
-// LED_COUNT) pokazuje postęp przytrzymania. Funkcja musi być wywołana na
-// samym początku setup(), PRZED ledInit() (które uruchamia FreeRTOS task).
+// Waking from deep sleep requires holding BTN_D for LONG_PRESS_MS.
+// The ESP32 ext0 wakes immediately on detecting LOW, so "hold-to-wake"
+// must be implemented in software: here we poll the button and go back
+// to sleep if it is released too early. The LED animation (scaled to
+// LED_COUNT) shows hold progress. This function must be called at the very
+// beginning of setup(), BEFORE ledInit() (which starts the FreeRTOS task).
 WakeDecision handleWakeFromDeepSleep()
 {
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
@@ -126,12 +126,12 @@ WakeDecision handleWakeFromDeepSleep()
 
     pinMode(BTN_D, INPUT_PULLUP);
 
-    // Minimalny init FastLED bez taska animacji — ZERO FreeRTOS.
-    // ledInit() później wykryje fastLedInitialized=true i pominie ponowne addLeds.
+    // Minimal FastLED init without an animation task — ZERO FreeRTOS.
+    // ledInit() will later detect fastLedInitialized=true and skip re-adding LEDs.
     ledPreInitHardware();
     ledClear();
 
-    // Krótki debounce po wybudzeniu. Zbyt długi sztucznie wydłuża wymagany hold.
+    // Short debounce after wake-up. Too long artificially extends the required hold time.
     delay(25);
 
     const unsigned long holdStart = millis();
@@ -148,7 +148,7 @@ WakeDecision handleWakeFromDeepSleep()
         bool pressed = (digitalRead(BTN_D) == LOW);
         if (!pressed)
         {
-            // Potwierdź zwolnienie po krótkim opóźnieniu (debounce)
+            // Confirm release after a short delay (debounce)
             delay(10);
             if (digitalRead(BTN_D) != LOW)
             {
@@ -171,17 +171,17 @@ WakeDecision handleWakeFromDeepSleep()
         }
         else
         {
-            // Po przekroczeniu progu normalnego bootu nie pokazuj jeszcze koloru lampki.
-            // Pełny pomarańcz lampki zapala się dopiero po osiągnięciu progu NIGHT_LIGHT.
+            // After passing the normal boot threshold, do not yet show the night light colour.
+            // The full night light colour appears only once the NIGHT_LIGHT threshold is reached.
             ledSetWakeProgress(LED_COUNT);
         }
         delay(20);
     }
 
-    // Puszczony za wcześnie - cicho z powrotem do deep sleep.
+    // Released too early - silently go back to deep sleep.
     LOGC("[WAKE] Released too early - back to deep sleep\n");
     Serial.flush();
-    ledPowerOff(); // clear + wyłącz zasilanie LEDów
+    ledPowerOff(); // clear + disable LED power supply
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
     return WakeDecision::NONE;

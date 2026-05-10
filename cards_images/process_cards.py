@@ -2,10 +2,10 @@
 # Usage:
 #   pip install Pillow reportlab
 #
-#   Osobne PDFy (jeden plik = jedna karta):
+#   Separate PDFs (one file = one card):
 #     python process_cards.py <input_folder> <output_folder>
 #
-#   Jeden PDF ze wszystkimi kartami (każda na osobnej stronie A4):
+#   One PDF with all cards (each on a separate A4 page):
 #     python process_cards.py <input_folder> <output.pdf> --merge
 
 import argparse
@@ -21,21 +21,21 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.utils import ImageReader
 
 
-# Fizyczne wymiary karty CR80 (standard ISO/IEC 7810 ID-1)
+# Physical dimensions of CR80 card (ISO/IEC 7810 ID-1 standard)
 CARD_W_MM = 54.15
 CARD_H_MM = 85.70
 CARD_RATIO = CARD_W_MM / CARD_H_MM  # ~0.6309
 CORNER_RADIUS_MM = 3.0
 DPI = 300
 
-# PDF zawiera dokładne wymiary fizyczne — drukarnia drukuje 1:1.
-# Domowy wydruk testowy: ustaw "Rzeczywisty rozmiar" / "Actual Size" / 100% w oknie druku.
+# PDF contains exact physical dimensions — print shop prints 1:1.
+# Home test print: set "Actual Size" / 100% in the print dialog.
 CARD_W_PDF_MM = CARD_W_MM
 CARD_H_PDF_MM = CARD_H_MM
 
 
 def clean_background(img: Image.Image, tolerance: int = 25) -> Image.Image:
-    """BFS flood-fill od narożników — zastępuje tło czystą bielą."""
+    """BFS flood-fill from corners — replaces background with pure white."""
     img = img.convert("RGB")
     pixels = img.load()
     w, h = img.size
@@ -182,7 +182,7 @@ def draw_outline_page(c: canvas.Canvas) -> None:
     c.setFillColorRGB(0.4, 0.4, 0.4)
     c.drawCentredString(a4_w_pt / 2, y_pt - 10, f"{CARD_W_MM:.2f} mm")
     c.drawString(x_pt + card_w_pt + 6, y_pt + card_h_pt / 2, f"{CARD_H_MM:.2f} mm")
-    c.drawCentredString(a4_w_pt / 2, y_pt - 20, "CR80 portrait — wydrukuj w 100% / Actual Size (nie 'dopasuj do strony')")
+    c.drawCentredString(a4_w_pt / 2, y_pt - 20, "CR80 portrait — print at 100% / Actual Size (not 'fit to page')")
 
 
 def process_merged(png_files: list[Path], output_pdf: Path, card_h_px: int, corner_radius_px: int) -> None:
@@ -190,7 +190,7 @@ def process_merged(png_files: list[Path], output_pdf: Path, card_h_px: int, corn
     c = canvas.Canvas(str(output_pdf), pagesize=A4)
 
     # Page 1: outline template for physical size check
-    print("Generating outline test page (strona 1)...")
+    print("Generating outline test page (page 1)...")
     draw_outline_page(c)
     c.showPage()
 
@@ -201,7 +201,7 @@ def process_merged(png_files: list[Path], output_pdf: Path, card_h_px: int, corn
         c.showPage()
 
     c.save()
-    print(f"\nGotowe. 1 strona testowa + {total} kart = {total + 1} stron w: {output_pdf}")
+    print(f"\nDone. 1 test page + {total} cards = {total + 1} pages in: {output_pdf}")
 
 
 def process_individual(png_files: list[Path], output_dir: Path, card_h_px: int, corner_radius_px: int) -> None:
@@ -216,24 +216,24 @@ def process_individual(png_files: list[Path], output_dir: Path, card_h_px: int, 
         draw_card_on_canvas(c, img)
         c.save()
 
-    print(f"\nGotowe. {total} PDF(ów) w: {output_dir}")
+    print(f"\nDone. {total} PDF(s) in: {output_dir}")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Convert card PNGs to A4 PDFs (CR80 portrait, 300 DPI)")
-    parser.add_argument("input", type=Path, help="Folder z plikami PNG")
-    parser.add_argument("output", type=Path, help="Folder wyjściowy (lub plik .pdf przy --merge)")
-    parser.add_argument("--merge", action="store_true", help="Wszystkie karty w jednym PDF (każda na osobnej stronie)")
+    parser.add_argument("input", type=Path, help="Folder containing PNG files")
+    parser.add_argument("output", type=Path, help="Output folder (or .pdf file when using --merge)")
+    parser.add_argument("--merge", action="store_true", help="All cards in one PDF (each on a separate page)")
     args = parser.parse_args()
 
     if not args.input.is_dir():
-        print(f"Błąd: folder nie istnieje: {args.input}")
+        print(f"Error: folder does not exist: {args.input}")
         sys.exit(1)
 
     png_files = sorted(args.input.glob("*.png"))
     # exclude process_cards.py (not a png, just safety)
     if not png_files:
-        print("Brak plików PNG w folderze.")
+        print("No PNG files found in folder.")
         sys.exit(1)
 
     card_h_px = int(CARD_H_MM / 25.4 * DPI)       # 86 mm @ 300 DPI ≈ 1016 px

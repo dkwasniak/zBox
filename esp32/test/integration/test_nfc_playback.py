@@ -7,38 +7,38 @@ pytestmark = pytest.mark.manual
 
 @pytest.mark.manual
 def test_nfc_place_triggers_playback(serial_harness):
-    """Postaw figurkę na padzie NFC → startPlayback + PLAYBACK START."""
-    input("\n[MANUAL] Postaw figurkę na padzie NFC, a następnie naciśnij Enter...")
+    """Place figurine on NFC pad → startPlayback + PLAYBACK START."""
+    input("\n[MANUAL] Place the figurine on the NFC pad, then press Enter...")
     serial_harness.wait_for_line(r"\[PLAY\] startPlayback uid=", timeout_s=5)
     serial_harness.wait_for_line(r">>> PLAYBACK START", timeout_s=5)
 
 
 @pytest.mark.manual
 def test_uid_format_valid(serial_harness):
-    """UID zalogowany przez firmware jest w formacie XX:XX:XX:XX (hex, uppercase)."""
-    input("\n[MANUAL] Postaw figurkę na padzie NFC, a następnie naciśnij Enter...")
+    """UID logged by firmware is in XX:XX:XX:XX format (hex, uppercase)."""
+    input("\n[MANUAL] Place the figurine on the NFC pad, then press Enter...")
     m = serial_harness.wait_for_line(
         r"\[PLAY\] startPlayback uid=([0-9A-F]{2}(?::[0-9A-F]{2}){3,6})",
         timeout_s=5,
     )
     uid = m.group(1)
     assert re.fullmatch(r"[0-9A-F]{2}(:[0-9A-F]{2}){3,6}", uid), \
-        f"Nieprawidłowy format UID: {uid!r}"
+        f"Invalid UID format: {uid!r}"
 
 
 @pytest.mark.manual
 def test_nfc_remove_stops_playback(serial_harness):
-    """Zabierz figurkę z padu NFC → stopPlayback w logu w ciągu 5s."""
-    input("\n[MANUAL] Upewnij się że figurka stoi na padzie i gra muzyka."
-          " Następnie naciśnij Enter, po czym NATYCHMIAST zabierz figurkę.")
+    """Remove figurine from NFC pad → stopPlayback in log within 5s."""
+    input("\n[MANUAL] Make sure the figurine is on the pad and music is playing."
+          " Then press Enter and IMMEDIATELY remove the figurine.")
     serial_harness.wait_for_line(r"\[STOP\] stopPlayback", timeout_s=5)
 
 
 @pytest.mark.manual
 def test_audio_telemetry(serial_harness):
-    """Podczas playback pojawia się telemetria [AUDIO_TEL] SD=N B/s."""
-    input("\n[MANUAL] Postaw figurkę na padzie NFC i poczekaj aż muzyka gra."
-          " Następnie naciśnij Enter...")
+    """During playback the [AUDIO_TEL] SD=N B/s telemetry line appears."""
+    input("\n[MANUAL] Place the figurine on the NFC pad and wait until music is playing."
+          " Then press Enter...")
     serial_harness.wait_for_line(
         r"\[AUDIO_TEL\] SD=\d+ B/s",
         timeout_s=10,

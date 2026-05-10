@@ -40,8 +40,8 @@ inline String uidToString(uint8_t *uid, uint8_t uidLength)
     return r;
 }
 
-// Progi z rzeczywistej krzywej rozładowania Li-Po 1S:
-// 4.20V=100%, 3.90V=~60%, 3.80V=~40%, 3.70V=~20%, <3.50V=krytyczny
+// Thresholds from the real Li-Po 1S discharge curve:
+// 4.20V=100%, 3.90V=~60%, 3.80V=~40%, 3.70V=~20%, <3.50V=critical
 // 5=80-100%, 4=60-80%, 3=40-60%, 2=20-40%, 1=<20%
 inline int batteryBars(float v)
 {
