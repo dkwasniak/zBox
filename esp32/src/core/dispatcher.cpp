@@ -158,10 +158,6 @@ static void applyLedScene(const LedSceneParams& scene) {
             ledShowVolume(scene.params.volume.percent); break;
         case LedSceneType::BatteryPreview:
             ledShowBattery(scene.params.battery.bars); break;
-        case LedSceneType::SyncWifi:     ledSetSyncWifi(); break;
-        case LedSceneType::SyncProgress:
-            ledSetSyncProgress(scene.params.sync_progress.current,
-                               scene.params.sync_progress.total); break;
         case LedSceneType::SyncEntry:     ledSetSyncEntry(); break;
         default: break; // BootProgress and WakeProgress handled by old boot code
     }

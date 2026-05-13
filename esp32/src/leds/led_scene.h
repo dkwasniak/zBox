@@ -18,8 +18,6 @@ enum class LedSceneType : uint8_t {
     BatteryPreview,
     ModeChange,
     WarningFlash,
-    SyncWifi,
-    SyncProgress,
     SyncEntry
 };
 
@@ -33,7 +31,6 @@ struct LedSceneParams {
         struct { uint8_t percent; }             night_light;
         struct { uint8_t percent; }             volume;
         struct { uint8_t bars; }                battery;
-        struct { uint16_t current; uint16_t total; } sync_progress;
     } params;
 };
 

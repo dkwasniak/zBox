@@ -21,18 +21,6 @@ LedSceneParams deriveLedScene(const AppState& s) {
         return p;
     }
 
-    // Priority 3: sync active
-    if (s.sync_active) {
-        if (s.sync_progress_total > 0) {
-            p.type = LedSceneType::SyncProgress;
-            p.params.sync_progress.current = s.sync_progress_current;
-            p.params.sync_progress.total   = s.sync_progress_total;
-        } else {
-            p.type = LedSceneType::SyncWifi;
-        }
-        return p;
-    }
-
     // Priority 4: night-light session
     if (s.session_mode == SessionMode::NightLight) {
         p.type = LedSceneType::NightLight;

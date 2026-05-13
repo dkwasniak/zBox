@@ -101,15 +101,12 @@ struct AppState {
     uint8_t                night_light_brightness_percent; // 1 byte
     uint8_t                music_volume_percent;    // 1 byte
     bool                   bt_volume_applied;       // 1 byte
-    bool                   sync_active;             // 1 byte
     bool                   sync_mode;               // 1 byte
     uint8_t                battery_bars;            // 1 byte
     uint8_t                volume_overlay_level_percent; // 1 byte
     bool                   battery_preview_active;  // 1 byte
     bool                   sleep_warn_active;        // 1 byte
     uint16_t               total_track_count;       // 2 bytes
-    uint16_t               sync_progress_current;   // 2 bytes
-    uint16_t               sync_progress_total;     // 2 bytes
 
     // Deadlines (absolute millis() timestamps; 0 = no active deadline)
     uint32_t               idle_deadline_ms;             // 4 bytes
