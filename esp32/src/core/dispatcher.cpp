@@ -193,7 +193,7 @@ static void executeEffect(const Effect& eff) {
             audioStop();
             File f = SD.open(SYNC_PENDING_PATH, FILE_WRITE);
             if (f) f.close();
-            LOGC("[SYNC] Restart requested via dispatcher — rebooting\n");
+            LOGC("[SYNC] Service mode restart requested via dispatcher — rebooting\n");
             ESP.restart();
             break;
         }

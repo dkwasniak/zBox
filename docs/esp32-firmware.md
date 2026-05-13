@@ -23,7 +23,6 @@ All device-specific constants live in [`esp32/src/zbox_config.h`](../esp32/src/z
 
 | Constant | Default | Purpose |
 |----------|---------|---------|
-| `SERVER_HOST` | `"zbox.local"` | Hostname or IP of the server used for Wi-Fi sync |
 | `BT_SPEAKER_NAME` | `"JBL GO 2"` | Bluetooth device name to connect to |
 | `ENABLE_LEDS` | `true` | Enable or disable the WS2812B LED panel |
 
@@ -37,7 +36,7 @@ The firmware uses a **reducer + dispatcher** architecture. All application logic
 reduce(AppState, Event) → (next AppState, Effects[])
 ```
 
-The dispatcher executes effects (start audio, power BT, sleep, sync) and feeds feedback events back into the queue. No module owns hidden state — all state is in `AppState`.
+The dispatcher executes effects (start audio, power BT, sleep, sync-mode restart) and feeds feedback events back into the queue. No module owns hidden state — all state is in `AppState`.
 
 ### Modules
 
@@ -49,10 +48,9 @@ The dispatcher executes effects (start audio, power BT, sleep, sync) and feeds f
 | `audio` | SD card audio playback adapter |
 | `nfc_module` | PN532 NFC reader, tag detection loop |
 | `playback` | Track list management and position tracking |
-| `buttons` | Button press detection, debounce, long-press |
-| `buttons_isr` | ISR-level button sampling |
+| `button_adapter` | Button press detection, debounce, combo and long-press decoding |
 | `sleep` | Deep sleep entry, wake protocol, night-light mode |
-| `sync_mode` | Wi-Fi sync with the server over HTTP |
+| `sync_mode` | Wi-Fi service mode used by the admin portal for push sync, logs, and maintenance |
 | `leds` | WS2812B LED scenes derived from `AppState` |
 | `jbl` | JBL power control and status detection |
 | `volume` | BT AVRCP volume commands |

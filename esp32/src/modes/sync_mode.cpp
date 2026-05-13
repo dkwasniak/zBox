@@ -1,623 +1,879 @@
 #include "sync_mode.h"
+
 #include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
 #include "leds.h"
-#include "sd_storage.h"
-#include "helpers.h"
+#include "battery.h"
+#include "diagnostics.h"
+#include "audio.h"
+#include "nfc_module.h"
+#include "sleep.h"
+
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <ArduinoOTA.h>
 #include <SD.h>
-#include <map>
-#include <set>
 #include <WiFi.h>
-#include <WiFiClient.h>
-#include <WiFiServer.h>
 #include <WiFiManager.h>
-#include <esp_wifi.h>
+#include <WebServer.h>
 #include <esp_bt.h>
+#include <esp_idf_version.h>
+#include <esp_task_wdt.h>
 #include <stdarg.h>
+#include <string.h>
 
-static String syncServerIP;
-static WiFiServer syncTelnetServer(SYNC_TELNET_PORT);
-static WiFiClient syncTelnetClient;
+static WebServer httpServer(SYNC_HTTP_PORT);
+static File uploadFile;
+static String uploadTempPath;
+static String uploadFinalPath;
+static String uploadError;
+static uint32_t uploadSourceMtime = 0;
+static String syncHostname;
+static String syncDeviceId;
 
-static void syncTelnetBanner()
-{
-    if (!syncTelnetClient || !syncTelnetClient.connected())
-        return;
-    syncTelnetClient.println();
-    syncTelnetClient.println("=== zBox Sync Mode ===");
-    syncTelnetClient.printf("IP: %s\r\n", WiFi.localIP().toString().c_str());
-    syncTelnetClient.printf("Server: %s:%d\r\n", syncServerIP.c_str(), SERVER_PORT);
-    syncTelnetClient.println("Streaming sync progress...");
-    syncTelnetClient.println();
-}
-
-static void syncTelnetPoll()
-{
-    if (!syncTelnetClient || !syncTelnetClient.connected())
-    {
-        WiFiClient incoming = syncTelnetServer.accept();
-        if (incoming)
-        {
-            syncTelnetClient.stop();
-            syncTelnetClient = incoming;
-            syncTelnetClient.setNoDelay(true);
-            syncTelnetBanner();
-        }
-    }
-}
+static const char *SYNC_META_PATH = "/data/sync_meta.json";
+static const char *SYNC_LOG_NAMES[] = {"debug.log", "debug.log.old"};
+static const size_t SYNC_LOG_COUNT = sizeof(SYNC_LOG_NAMES) / sizeof(SYNC_LOG_NAMES[0]);
 
 static void syncLogf(const char *fmt, ...)
 {
-    char uptime[16];
-    char msg[192];
     char line[224];
     va_list args;
     va_start(args, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, args);
+    vsnprintf(line, sizeof(line), fmt, args);
     va_end(args);
 
-    formatUptime(uptime, sizeof(uptime), millis());
-    snprintf(line, sizeof(line), "[%s] %s", uptime, msg);
     Serial.println(line);
-    if (syncTelnetClient && syncTelnetClient.connected())
-        syncTelnetClient.println(line);
 }
 
-static void loadSyncMeta(std::map<String, uint32_t> &meta)
+static String buildDeviceId()
 {
-    meta.clear();
-    JsonDocument doc;
-    if (!readJsonFromSd("/data/sync_meta.json", doc)) return;
-    for (JsonPair kv : doc.as<JsonObject>())
-        meta[kv.key().c_str()] = kv.value().as<uint32_t>();
-}
-
-static void saveSyncMeta(const std::map<String, uint32_t> &meta)
-{
-    if (SD.exists("/data/sync_meta.json")) SD.remove("/data/sync_meta.json");
-    File f = SD.open("/data/sync_meta.json", FILE_WRITE);
-    if (!f) return;
-    JsonDocument doc;
-    JsonObject obj = doc.to<JsonObject>();
-    for (auto &kv : meta) obj[kv.first] = kv.second;
-    serializeJson(doc, f);
-    f.close();
-}
-
-static bool ensureHttpConnected(WiFiClient& client, const String& ip)
-{
-    syncTelnetPoll();
-    if (client.connected()) return true;
-    if (!client.connect(ip.c_str(), SERVER_PORT)) return false;
-    client.setNoDelay(true);
-    client.setTimeout(HTTP_TIMEOUT);
-    return true;
-}
-
-static bool readHttpHeaders(WiFiClient &client, int &outContentLength)
-{
-    String statusLine = client.readStringUntil('\n');
-    if (statusLine.indexOf("200") < 0) return false;
-    outContentLength = -1;
-    while (client.connected())
-    {
-        String line = client.readStringUntil('\n');
-        if (line.startsWith("Content-Length:") || line.startsWith("content-length:"))
-            outContentLength = line.substring(line.indexOf(':') + 1).toInt();
-        if (line == "\r" || line.length() == 0) break;
-    }
-    return true;
-}
-
-static String httpGet(WiFiClient &client, const String &path)
-{
-    if (!ensureHttpConnected(client, syncServerIP))
-    {
-        syncLogf("[SYNC] Reconnect failed for GET %s", path.c_str());
-        return "";
-    }
-
-    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n",
-                  path.c_str(), syncServerIP.c_str());
-
-    unsigned long start = millis();
-    while (client.connected() && !client.available())
-    {
-        syncTelnetPoll();
-        if (millis() - start > HTTP_TIMEOUT)
-        {
-            syncLogf("[SYNC] Timeout waiting for response");
-            client.stop();
-            return "";
-        }
-        delay(10);
-    }
-
-    int contentLength = -1;
-    if (!readHttpHeaders(client, contentLength))
-    {
-        syncLogf("[SYNC] HTTP error on GET %s", path.c_str());
-        client.stop();
-        return "";
-    }
-
-    String body;
-    if (contentLength > 0)
-    {
-        body.reserve(contentLength);
-        int bytesRead = 0;
-        uint8_t buf[512];
-        unsigned long lastData = millis();
-        while (bytesRead < contentLength)
-        {
-            int avail = client.available();
-            if (avail > 0)
-            {
-                lastData = millis();
-                int toRead = min(avail, min((int)sizeof(buf), contentLength - bytesRead));
-                int got = client.readBytes(buf, toRead);
-                body.concat((char *)buf, got);
-                bytesRead += got;
-            }
-            else
-            {
-                if (millis() - lastData > HTTP_TIMEOUT) break;
-                syncTelnetPoll();
-                delay(1);
-            }
-        }
-    }
-    else
-    {
-        body = client.readString();
-    }
-
-    return body;
-}
-
-static bool syncDownloadFile(WiFiClient &client, const String &urlPath, const String &sdPath,
-                      uint32_t totalExpectedBytes, uint32_t &syncBytesDownloaded, uint32_t &lastLedUpdate)
-{
-    syncLogf("[SYNC] Download: %s", sdPath.c_str());
-
-    if (!ensureHttpConnected(client, syncServerIP))
-    {
-        syncLogf("[SYNC] Reconnect failed");
-        return false;
-    }
-
-    unsigned long dlStart = millis();
-    client.printf("GET %s HTTP/1.1\r\nHost: %s\r\nConnection: keep-alive\r\n\r\n",
-                  urlPath.c_str(), syncServerIP.c_str());
-    while (client.connected() && !client.available())
-    {
-        syncTelnetPoll();
-        if (millis() - dlStart > HTTP_TIMEOUT)
-        {
-            syncLogf("[SYNC] Timeout waiting for response");
-            client.stop();
-            return false;
-        }
-        delay(10);
-    }
-
-    int contentLength = -1;
-    if (!readHttpHeaders(client, contentLength))
-    {
-        syncLogf("[SYNC] HTTP error downloading %s", sdPath.c_str());
-        client.stop();
-        return false;
-    }
-
-    syncLogf("[SYNC] Size: %d bytes", contentLength);
-
-    if (SD.exists(sdPath)) SD.remove(sdPath);
-    File f = SD.open(sdPath, FILE_WRITE);
-    if (!f) { syncLogf("[SYNC] Cannot create %s", sdPath.c_str()); client.stop(); return false; }
-
-    static uint8_t buf[DOWNLOAD_BUF_SIZE];
-    int bufPos = 0;
-    int totalWritten = 0;
-    int lastLoggedKB = 0;
-    unsigned long lastDataMs = millis();
-    unsigned long timeReading = 0;
-    unsigned long timeWriting = 0;
-    unsigned long timeWaiting = 0;
-
-    uint32_t zeroAvailCount = 0;
-    uint32_t nonZeroAvailCount = 0;
-    uint32_t minAvail = UINT32_MAX;
-    uint32_t maxAvail = 0;
-    unsigned long lastDataReceivedMs = 0;
-    unsigned long maxGapMs = 0;
-
-    while (client.connected() || client.available())
-    {
-        syncTelnetPoll();
-        int available = client.available();
-        if (available > 0)
-        {
-            lastDataMs = millis();
-            nonZeroAvailCount++;
-            if ((uint32_t)available < minAvail) minAvail = (uint32_t)available;
-            if ((uint32_t)available > maxAvail) maxAvail = (uint32_t)available;
-            unsigned long _now = millis();
-            if (lastDataReceivedMs > 0 && _now - lastDataReceivedMs > maxGapMs)
-                maxGapMs = _now - lastDataReceivedMs;
-            lastDataReceivedMs = _now;
-            int toRead = min(available, DOWNLOAD_BUF_SIZE - bufPos);
-            unsigned long t0 = millis();
-            int got = client.readBytes((char *)(buf + bufPos), toRead);
-            timeReading += millis() - t0;
-            bufPos += got;
-            totalWritten += got;
-
-            // Byte-based LED progress
-            syncBytesDownloaded += got;
-            if (totalExpectedBytes > 0 && syncBytesDownloaded / 32768 > lastLedUpdate / 32768)
-            {
-                lastLedUpdate = syncBytesDownloaded;
-                ledSetSyncProgress(syncBytesDownloaded, totalExpectedBytes);
-            }
-
-            if (bufPos >= DOWNLOAD_BUF_SIZE)
-            {
-                unsigned long tw = millis();
-                f.write(buf, bufPos);
-                timeWriting += millis() - tw;
-                bufPos = 0;
-                vTaskDelay(pdMS_TO_TICKS(1)); // yield after write — IDLE task resets WDT
-            }
-
-            if (contentLength > 0 && totalWritten >= contentLength)
-                break;
-
-            int currentKB = totalWritten / 1024;
-            if (currentKB / 500 > lastLoggedKB / 500)
-            {
-                lastLoggedKB = currentKB;
-                if (contentLength > 0)
-                    syncLogf("[SYNC] %d / %d KB", currentKB, contentLength / 1024);
-                else
-                    syncLogf("[SYNC] %d KB", currentKB);
-            }
-        }
-        else
-        {
-            if (millis() - lastDataMs > HTTP_TIMEOUT)
-            {
-                syncLogf("[SYNC] Data timeout after %d bytes", totalWritten);
-                break;
-            }
-            zeroAvailCount++;
-            unsigned long tw = millis();
-            taskYIELD();
-            timeWaiting += millis() - tw;
-        }
-    }
-
-    if (bufPos > 0) f.write(buf, bufPos);
-    f.close();
-
-    if (contentLength > 0 && totalWritten != contentLength)
-    {
-        syncLogf("[SYNC] Size mismatch: got %d, expected %d", totalWritten, contentLength);
-        SD.remove(sdPath);
-        client.stop();
-        return false;
-    }
-
-    unsigned long dlMs = millis() - dlStart;
-    uint32_t kbs = dlMs > 0 ? (uint32_t)((uint64_t)totalWritten * 1000 / dlMs / 1024) : 0;
-    syncLogf("[SYNC] avail stats: zero=%lu nonzero=%lu min=%lu max=%lu maxGap=%lu ms",
-        zeroAvailCount, nonZeroAvailCount, minAvail == UINT32_MAX ? 0 : minAvail, maxAvail, maxGapMs);
-    syncLogf("[SYNC] Timing: read=%lums write=%lums wait=%lums total=%lums",
-        timeReading, timeWriting, timeWaiting, dlMs);
-    syncLogf("[SYNC] OK: %d bytes in %lu ms (%lu KB/s)", totalWritten, dlMs, kbs);
-    return totalWritten > 0;
-}
-
-static void syncCleanDir(const String &dirPath, std::set<String> &expected)
-{
-    File dir = SD.open(dirPath);
-    if (!dir)
-        return;
-
-    File entry = dir.openNextFile();
-    while (entry)
-    {
-        if (!entry.isDirectory())
-        {
-            String name = entry.name();
-            int lastSlash = name.lastIndexOf('/');
-            if (lastSlash >= 0)
-                name = name.substring(lastSlash + 1);
-
-            if (expected.find(name) == expected.end())
-            {
-                String fullPath = dirPath + "/" + name;
-                syncLogf("[SYNC] Removing: %s", fullPath.c_str());
-                SD.remove(fullPath);
-            }
-        }
-        entry = dir.openNextFile();
-    }
-    dir.close();
-}
-
-static bool performSync()
-{
-    syncLogf("");
-    syncLogf("[SYNC] Fetching manifest...");
-
-    WiFiClient client;
-    if (!client.connect(syncServerIP.c_str(), SERVER_PORT))
-    {
-        syncLogf("[SYNC] Connection failed: %s:%d", syncServerIP.c_str(), SERVER_PORT);
-        return false;
-    }
-    client.setNoDelay(true);
-    client.setTimeout(HTTP_TIMEOUT);
-
-    String payload = httpGet(client, "/api/sync");
-    if (payload.isEmpty())
-    {
-        syncLogf("[SYNC] Failed to fetch manifest");
-        client.stop();
-        return false;
-    }
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(doc, payload);
-    if (err)
-    {
-        syncLogf("[SYNC] JSON error: %s", err.c_str());
-        client.stop();
-        return false;
-    }
-
-    JsonArray figurines = doc["figurines"].as<JsonArray>();
-    JsonArray tracks = doc["tracks"].as<JsonArray>();
-
-    syncLogf("[SYNC] Manifest: %d figurines, %d tracks",
-                  figurines.size(), tracks.size());
-
-    std::map<String, uint32_t> localMtime;
-    loadSyncMeta(localMtime);
-
-    std::set<String> expectedMusic;
-    for (JsonObject t : tracks)
-        expectedMusic.insert(t["filename"].as<String>());
-
-    // Count expected bytes only for files that need downloading (for LED progress)
-    uint32_t totalExpectedBytes = 0;
-    for (JsonObject t : tracks)
-    {
-        String filename = t["filename"].as<String>();
-        uint32_t remoteMtime = t["mtime"].as<uint32_t>();
-        String sdPath = "/music/" + filename;
-        bool needsDownload = true;
-        if (SD.exists(sdPath))
-        {
-            auto it = localMtime.find(filename);
-            if (it != localMtime.end() && it->second == remoteMtime)
-                needsDownload = false;
-        }
-        if (needsDownload)
-            totalExpectedBytes += t["size"].as<uint32_t>();
-    }
-
-    syncLogf("[SYNC] Checking music files...");
-    int downloaded = 0, skipped = 0, failed = 0;
-    uint32_t syncBytesDownloaded = 0;
-    uint32_t lastLedUpdate = 0;
-
-    for (JsonObject t : tracks)
-    {
-        String filename = t["filename"].as<String>();
-        uint32_t remoteMtime = t["mtime"].as<uint32_t>();
-        String sdPath = "/music/" + filename;
-        String urlPath = "/api/stream/file/" + urlEncode(filename);
-
-        bool needsDownload = true;
-        if (SD.exists(sdPath))
-        {
-            auto it = localMtime.find(filename);
-            if (it != localMtime.end() && it->second == remoteMtime)
-                needsDownload = false;
-        }
-        if (!needsDownload)
-        {
-            skipped++;
-            continue;
-        }
-
-        bool ok = false;
-        for (int attempt = 0; attempt < 3 && !ok; attempt++)
-        {
-            if (attempt > 0)
-            {
-                syncLogf("[SYNC] Retry %d/3 for %s", attempt + 1, filename.c_str());
-                delay(1000);
-                if (!client.connected())
-                    client.connect(syncServerIP.c_str(), SERVER_PORT);
-            }
-            ok = syncDownloadFile(client, urlPath, sdPath, totalExpectedBytes, syncBytesDownloaded, lastLedUpdate);
-        }
-
-        if (ok)
-        {
-            downloaded++;
-            localMtime[filename] = remoteMtime;
-        }
-        else
-        {
-            failed++;
-        }
-    }
-
-    if (totalExpectedBytes > 0)
-        ledSetSyncProgress(totalExpectedBytes, totalExpectedBytes);
-    syncLogf("[SYNC] Music: %d new, %d existing, %d failed", downloaded, skipped, failed);
-
-    // Remove outdated files
-    syncLogf("[SYNC] Cleaning obsolete files...");
-    syncCleanDir("/music", expectedMusic);
-
-    // Remove from localMtime any files that are no longer in expectedMusic
-    for (auto it = localMtime.begin(); it != localMtime.end(); )
-    {
-        if (expectedMusic.find(it->first) == expectedMusic.end())
-            it = localMtime.erase(it);
-        else
-            ++it;
-    }
-    saveSyncMeta(localMtime);
-
-    // System sounds
-    syncLogf("[SYNC] Checking system sounds...");
-    JsonArray systemSounds = doc["system_sounds"].as<JsonArray>();
-    if (!SD.exists("/data/system"))
-        SD.mkdir("/data/system");
-
-    std::set<String> expectedSounds;
-    JsonDocument soundsDoc;
-    uint32_t dummy1 = 0, dummy2 = 0;
-
-    for (JsonObject s : systemSounds)
-    {
-        String name = s["name"].as<String>();
-        String filename = s["filename"].as<String>();
-        String sdPath = "/data/system/" + filename;
-        expectedSounds.insert(filename);
-        soundsDoc[name] = sdPath;
-
-        if (!SD.exists(sdPath))
-        {
-            String urlPath = "/api/stream/file/" + urlEncode(filename);
-            syncDownloadFile(client, urlPath, sdPath, 0, dummy1, dummy2);
-            syncLogf("[SYNC] Sound '%s': downloaded", name.c_str());
-        }
-        else
-        {
-            syncLogf("[SYNC] Sound '%s': exists", name.c_str());
-        }
-    }
-
-    if (SD.exists("/data/system_sounds.json"))
-        SD.remove("/data/system_sounds.json");
-    File sf = SD.open("/data/system_sounds.json", FILE_WRITE);
-    if (sf) { serializeJson(soundsDoc, sf); sf.close(); syncLogf("[SYNC] system_sounds.json saved"); }
-
-    syncCleanDir("/data/system", expectedSounds);
-
-    // Generate mappings.json
-    syncLogf("[SYNC] Generating mappings.json...");
-
-    JsonDocument mappingsDoc;
-    JsonObject mFigurines = mappingsDoc["figurines"].to<JsonObject>();
-    for (JsonObject f : figurines)
-    {
-        String uid = f["nfc_uid"].as<String>();
-        JsonObject entry = mFigurines[uid].to<JsonObject>();
-        entry["file"] = f["track_filename"].as<String>();
-    }
-
-    if (SD.exists("/data/mappings.json"))
-        SD.remove("/data/mappings.json");
-
-    File mf = SD.open("/data/mappings.json", FILE_WRITE);
-    if (!mf)
-    {
-        syncLogf("[SYNC] Cannot write mappings.json");
-        client.stop();
-        return false;
-    }
-
-    serializeJson(mappingsDoc, mf);
-    mf.close();
-    syncLogf("[SYNC] mappings.json saved!");
-
-    client.stop();
-    return failed == 0;
+    uint64_t mac = ESP.getEfuseMac();
+    char buf[17];
+    snprintf(buf, sizeof(buf), "%04X%08lX",
+             (uint16_t)(mac >> 32), (unsigned long)(mac & 0xFFFFFFFFULL));
+    return String(buf);
 }
 
 static void clearSyncFlag()
 {
-    if (SD.exists("/data/sync_pending"))
-        SD.remove("/data/sync_pending");
+    if (SD.exists(SYNC_PENDING_PATH))
+        SD.remove(SYNC_PENDING_PATH);
+}
+
+static void disableBtForSync()
+{
+    esp_bt_controller_disable();
+    esp_bt_controller_deinit();
+    esp_bt_mem_release(ESP_BT_MODE_BTDM);
+}
+
+static void configureSyncWatchdog()
+{
+#if ESP_IDF_VERSION_MAJOR >= 5
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000,
+        .idle_core_mask = 0,
+        .trigger_panic = false
+    };
+    esp_task_wdt_reconfigure(&wdt_cfg);
+#else
+    esp_task_wdt_init(15, false);
+#endif
+    esp_task_wdt_add(NULL);
+}
+
+static void disableSyncWatchdog()
+{
+    esp_task_wdt_delete(NULL);
+}
+
+static bool isPathSafe(const String &path)
+{
+    return path.startsWith("/") && path.indexOf("..") < 0 &&
+           path.indexOf('\\') < 0 && path.indexOf("//") < 0;
+}
+
+static bool isManagedPath(const String &path)
+{
+    if (!isPathSafe(path))
+        return false;
+    return path == "/data/mappings.json" ||
+           path == "/data/system_sounds.json" ||
+           path == "/data/led_config.json" ||
+           path.startsWith("/music/") ||
+           path.startsWith("/data/system/");
+}
+
+static bool isUploadPath(const String &path)
+{
+    if (!isManagedPath(path))
+        return false;
+    return path.startsWith("/music/") || path.startsWith("/data/system/");
+}
+
+static bool isSyncLogName(const String &name)
+{
+    for (size_t i = 0; i < SYNC_LOG_COUNT; i++)
+    {
+        if (name == SYNC_LOG_NAMES[i])
+            return true;
+    }
+    return false;
+}
+
+static String syncLogPath(const String &name)
+{
+    if (!isSyncLogName(name))
+        return String();
+    return "/data/" + name;
+}
+
+static void ensureDataDirs()
+{
+    if (!SD.exists("/music"))
+        SD.mkdir("/music");
+    if (!SD.exists("/data"))
+        SD.mkdir("/data");
+    if (!SD.exists("/data/system"))
+        SD.mkdir("/data/system");
+}
+
+static void loadSyncMeta(JsonDocument &doc)
+{
+    doc.clear();
+    File f = SD.open(SYNC_META_PATH, FILE_READ);
+    if (!f)
+        return;
+    deserializeJson(doc, f);
+    f.close();
+    if (!doc.is<JsonObject>())
+        doc.to<JsonObject>();
+}
+
+static void saveSyncMeta(JsonDocument &doc)
+{
+    if (SD.exists(SYNC_META_PATH))
+        SD.remove(SYNC_META_PATH);
+    File f = SD.open(SYNC_META_PATH, FILE_WRITE);
+    if (!f)
+        return;
+    serializeJson(doc, f);
+    f.close();
+}
+
+static uint64_t getTrackedMtime(const String &path, File &file)
+{
+    JsonDocument doc;
+    loadSyncMeta(doc);
+    JsonObject root = doc.as<JsonObject>();
+    if (root[path].is<uint64_t>())
+        return root[path].as<uint64_t>();
+    return (uint64_t)file.getLastWrite();
+}
+
+static void setTrackedMtime(const String &path, uint32_t mtime)
+{
+    JsonDocument doc;
+    loadSyncMeta(doc);
+    JsonObject root = doc.as<JsonObject>();
+    root[path] = mtime;
+    saveSyncMeta(doc);
+}
+
+static void removeTrackedMtime(const String &path)
+{
+    JsonDocument doc;
+    loadSyncMeta(doc);
+    JsonObject root = doc.as<JsonObject>();
+    root.remove(path);
+    saveSyncMeta(doc);
+}
+
+static void sendSyncSnapshot()
+{
+    BatteryReading bat = readBatteryReading();
+    esp_reset_reason_t reason = esp_reset_reason();
+    syncLogf("[SYNC] uptime_ms=%lu reset=%d(%s) ip=%s rssi=%d",
+             millis(), (int)reason, resetReasonName(reason),
+             WiFi.localIP().toString().c_str(), WiFi.RSSI());
+    syncLogf("[SYNC] battery adc_pin_v=%.3f battery_v=%.3f bars=%d color=%s charging_known=false",
+             bat.adcPinVoltage, bat.batteryVoltage, bat.bars, bat.color);
+    syncLogf("[SYNC] heap free=%u min=%u largest=%u sketch_free=%u",
+             ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreeSketchSpace());
+    syncLogf("[SYNC] hwm loop=%u led=%u audio=%u nfc=%u",
+             uxTaskGetStackHighWaterMark(NULL), ledGetTaskHWM(), audioGetTaskHWM(), nfcGetTaskHWM());
+}
+
+static bool handleButtonExit()
+{
+    static bool armed = false;
+    static unsigned long holdStart = 0;
+
+    bool bothDown = digitalRead(BTN_A) == LOW && digitalRead(BTN_B) == LOW;
+    if (!armed)
+    {
+        if (!bothDown)
+            armed = true;
+        return false;
+    }
+
+    if (!bothDown)
+    {
+        holdStart = 0;
+        return false;
+    }
+
+    if (holdStart == 0)
+        holdStart = millis();
+    return millis() - holdStart >= LONG_PRESS_MS;
+}
+
+enum SyncSleepAction
+{
+    SYNC_SLEEP_NONE = 0,
+    SYNC_SLEEP_NORMAL,
+    SYNC_SLEEP_EMERGENCY
+};
+
+static SyncSleepAction handleSleepButton()
+{
+    static bool btnCHeld = false;
+    static bool sleepArmed = false;
+    static unsigned long holdStart = 0;
+
+    bool cDown = digitalRead(BTN_C) == LOW;
+    bool dDown = digitalRead(BTN_D) == LOW;
+
+    if (dDown)
+    {
+        btnCHeld = false;
+        sleepArmed = false;
+        holdStart = 0;
+        return SYNC_SLEEP_NONE;
+    }
+
+    if (cDown)
+    {
+        if (!btnCHeld)
+        {
+            btnCHeld = true;
+            sleepArmed = false;
+            holdStart = millis();
+        }
+
+        unsigned long heldMs = millis() - holdStart;
+        if (heldMs >= EMERGENCY_SLEEP_MS)
+        {
+            btnCHeld = false;
+            sleepArmed = false;
+            holdStart = 0;
+            syncLogf("[SYNC] emergency sleep requested by long BTN_C");
+            return SYNC_SLEEP_EMERGENCY;
+        }
+
+        if (!sleepArmed && heldMs >= LONG_PRESS_MS)
+        {
+            sleepArmed = true;
+            syncLogf("[SYNC] sleep armed - release BTN_C for deep sleep");
+        }
+
+        return SYNC_SLEEP_NONE;
+    }
+
+    if (btnCHeld)
+    {
+        bool triggerSleep = sleepArmed && (millis() - holdStart >= LONG_PRESS_MS);
+        btnCHeld = false;
+        sleepArmed = false;
+        holdStart = 0;
+        return triggerSleep ? SYNC_SLEEP_NORMAL : SYNC_SLEEP_NONE;
+    }
+
+    return SYNC_SLEEP_NONE;
+}
+
+static void exitSyncMode(const char *reason)
+{
+    syncLogf("[SYNC] exit requested: %s", reason);
+    ledFlashResult(true);
+    clearSyncFlag();
+    delay(500);
+    ESP.restart();
+}
+
+static void sendJson(int code, JsonDocument &doc)
+{
+    String body;
+    serializeJson(doc, body);
+    httpServer.send(code, "application/json", body);
+}
+
+static void sendError(int code, const char *message)
+{
+    JsonDocument doc;
+    doc["error"] = message;
+    sendJson(code, doc);
+}
+
+static bool requireSdReady()
+{
+    if (sdReady)
+        return true;
+    sendError(503, "sd not ready");
+    return false;
+}
+
+static void appendFileInfo(JsonArray files, const String &path, File &file)
+{
+    JsonObject obj = files.add<JsonObject>();
+    obj["path"] = path;
+    obj["size"] = (uint64_t)file.size();
+    obj["mtime"] = getTrackedMtime(path, file);
+}
+
+static void appendDirectoryFiles(JsonArray files, const char *dirPath)
+{
+    File dir = SD.open(dirPath);
+    if (!dir || !dir.isDirectory())
+        return;
+
+    while (true)
+    {
+        File entry = dir.openNextFile();
+        if (!entry)
+            break;
+        if (!entry.isDirectory())
+        {
+            String path = entry.name();
+            if (!path.startsWith("/"))
+                path = String(dirPath) + "/" + path;
+            appendFileInfo(files, path, entry);
+        }
+        entry.close();
+    }
+    dir.close();
+}
+
+static void populateStatus(JsonDocument &doc)
+{
+    BatteryReading bat = readBatteryReading();
+    doc["device_id"] = syncDeviceId;
+    doc["hostname"] = syncHostname;
+    doc["mode"] = "sync";
+    doc["ip"] = WiFi.localIP().toString();
+    doc["rssi"] = WiFi.RSSI();
+    doc["sd_ok"] = sdReady;
+    doc["battery_v"] = bat.batteryVoltage;
+    doc["battery_bars"] = bat.bars;
+    if (sdReady)
+    {
+        doc["sd_total"] = (uint64_t)SD.totalBytes();
+        doc["sd_used"] = (uint64_t)SD.usedBytes();
+    }
+}
+
+static void handleStatus()
+{
+    JsonDocument doc;
+    populateStatus(doc);
+    sendJson(200, doc);
+}
+
+static void handleFiles()
+{
+    if (!requireSdReady())
+        return;
+
+    JsonDocument doc;
+    populateStatus(doc);
+    JsonArray files = doc["files"].to<JsonArray>();
+    appendDirectoryFiles(files, "/music");
+    appendDirectoryFiles(files, "/data/system");
+
+    const char *singles[] = {
+        "/data/mappings.json",
+        "/data/system_sounds.json",
+        "/data/led_config.json",
+    };
+    for (const char *path : singles)
+    {
+        File f = SD.open(path, FILE_READ);
+        if (f && !f.isDirectory())
+            appendFileInfo(files, path, f);
+        if (f)
+            f.close();
+    }
+    sendJson(200, doc);
+}
+
+static bool writeJsonFile(const char *path, const String &body)
+{
+    JsonDocument doc;
+    if (deserializeJson(doc, body) != DeserializationError::Ok)
+        return false;
+
+    String tempPath = String(path) + ".tmp";
+    if (SD.exists(tempPath))
+        SD.remove(tempPath);
+
+    File f = SD.open(tempPath, FILE_WRITE);
+    if (!f)
+        return false;
+    size_t written = serializeJson(doc, f);
+    f.close();
+    if (written == 0)
+    {
+        SD.remove(tempPath);
+        return false;
+    }
+
+    if (SD.exists(path))
+        SD.remove(path);
+    if (!SD.rename(tempPath, path))
+    {
+        SD.remove(tempPath);
+        return false;
+    }
+    return true;
+}
+
+static void handleWriteMappings()
+{
+    if (!requireSdReady())
+        return;
+
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+    if (!writeJsonFile("/data/mappings.json", body))
+    {
+        sendError(400, "invalid mappings json");
+        return;
+    }
+    JsonDocument doc;
+    doc["saved"] = "/data/mappings.json";
+    sendJson(200, doc);
+}
+
+static void handleWriteSystemSounds()
+{
+    if (!requireSdReady())
+        return;
+
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+    if (!writeJsonFile("/data/system_sounds.json", body))
+    {
+        sendError(400, "invalid system_sounds json");
+        return;
+    }
+    JsonDocument doc;
+    doc["saved"] = "/data/system_sounds.json";
+    sendJson(200, doc);
+}
+
+static void handleGetLedConfig()
+{
+    if (!requireSdReady())
+        return;
+    httpServer.send(200, "application/json", ledGetConfigJson());
+}
+
+static void handleSaveLedConfig()
+{
+    if (!requireSdReady())
+        return;
+
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+    if (!ledSaveConfigJson(body))
+    {
+        sendError(400, "invalid led config");
+        return;
+    }
+    JsonDocument doc;
+    doc["saved"] = "/data/led_config.json";
+    sendJson(200, doc);
+}
+
+static void handleDeleteFile()
+{
+    if (!requireSdReady())
+        return;
+
+    String path = httpServer.arg("path");
+    if (!isManagedPath(path))
+    {
+        sendError(400, "invalid path");
+        return;
+    }
+    if (SD.exists(path) && !SD.remove(path))
+    {
+        sendError(500, "delete failed");
+        return;
+    }
+    removeTrackedMtime(path);
+
+    JsonDocument doc;
+    doc["deleted"] = path;
+    sendJson(200, doc);
+}
+
+static void handleRestart()
+{
+    JsonDocument doc;
+    doc["restart"] = true;
+    sendJson(200, doc);
+    delay(200);
+    exitSyncMode("http restart");
+}
+
+static void appendSyncLogInfo(JsonArray logs, const char *name)
+{
+    String path = syncLogPath(name);
+    if (!path.length())
+        return;
+
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory())
+    {
+        if (f)
+            f.close();
+        return;
+    }
+
+    JsonObject obj = logs.add<JsonObject>();
+    obj["name"] = name;
+    obj["size"] = (uint64_t)f.size();
+    obj["mtime"] = (uint64_t)f.getLastWrite();
+    f.close();
+}
+
+static void handleLogs()
+{
+    if (!requireSdReady())
+        return;
+
+    JsonDocument doc;
+    JsonArray logs = doc["logs"].to<JsonArray>();
+    for (size_t i = 0; i < SYNC_LOG_COUNT; i++)
+        appendSyncLogInfo(logs, SYNC_LOG_NAMES[i]);
+    sendJson(200, doc);
+}
+
+static void handleLogContent()
+{
+    if (!requireSdReady())
+        return;
+
+    String name = httpServer.arg("name");
+    if (!isSyncLogName(name))
+    {
+        sendError(400, "invalid log name");
+        return;
+    }
+
+    int tail = httpServer.arg("tail").toInt();
+    if (tail <= 0)
+        tail = 200;
+    if (tail > 500)
+        tail = 500;
+
+    String path = syncLogPath(name);
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory())
+    {
+        if (f)
+            f.close();
+        sendError(404, "log not found");
+        return;
+    }
+
+    String *ring = new String[tail];
+    int totalLines = 0;
+    while (f.available())
+    {
+        String line = f.readStringUntil('\n');
+        while (line.endsWith("\n") || line.endsWith("\r"))
+            line.remove(line.length() - 1);
+        ring[totalLines % tail] = line;
+        totalLines++;
+    }
+    f.close();
+
+    int count = totalLines < tail ? totalLines : tail;
+    int start = totalLines > tail ? (totalLines % tail) : 0;
+    String text;
+    for (int i = 0; i < count; i++)
+    {
+        const String &line = ring[(start + i) % tail];
+        text += line;
+        text += '\n';
+    }
+    delete[] ring;
+
+    JsonDocument doc;
+    doc["name"] = name;
+    doc["text"] = text;
+    doc["truncated"] = totalLines > tail;
+    sendJson(200, doc);
+}
+
+static void handleLogDownload()
+{
+    if (!requireSdReady())
+        return;
+
+    String name = httpServer.arg("name");
+    if (!isSyncLogName(name))
+    {
+        sendError(400, "invalid log name");
+        return;
+    }
+
+    String path = syncLogPath(name);
+    File f = SD.open(path, FILE_READ);
+    if (!f || f.isDirectory())
+    {
+        if (f)
+            f.close();
+        sendError(404, "log not found");
+        return;
+    }
+
+    httpServer.sendHeader("Content-Disposition", "attachment; filename=\"" + name + "\"");
+    httpServer.streamFile(f, "text/plain; charset=utf-8");
+    f.close();
+}
+
+static void handleUploadResult()
+{
+    if (!uploadError.isEmpty())
+    {
+        sendError(400, uploadError.c_str());
+        uploadError = "";
+        return;
+    }
+
+    JsonDocument doc;
+    doc["uploaded"] = uploadFinalPath;
+    sendJson(200, doc);
+}
+
+static void handleUploadStream()
+{
+    HTTPUpload &upload = httpServer.upload();
+
+    if (upload.status == UPLOAD_FILE_START)
+    {
+        esp_task_wdt_reset();
+        uploadError = "";
+        uploadTempPath = "";
+        uploadFinalPath = "";
+        uploadSourceMtime = 0;
+        uploadFile = File();
+
+        if (!sdReady)
+        {
+            uploadError = "sd not ready";
+            return;
+        }
+
+        uploadFinalPath = httpServer.arg("path");
+        if (!isUploadPath(uploadFinalPath))
+        {
+            uploadError = "invalid upload path";
+            return;
+        }
+        uploadSourceMtime = (uint32_t)httpServer.arg("mtime").toInt();
+
+        uploadTempPath = uploadFinalPath + ".tmp";
+        if (SD.exists(uploadTempPath))
+            SD.remove(uploadTempPath);
+        uploadFile = SD.open(uploadTempPath, FILE_WRITE);
+        if (!uploadFile)
+            uploadError = "cannot open temp file";
+    }
+    else if (upload.status == UPLOAD_FILE_WRITE)
+    {
+        if (uploadError.isEmpty() && uploadFile)
+        {
+            esp_task_wdt_reset();
+            if (uploadFile.write(upload.buf, upload.currentSize) != upload.currentSize)
+                uploadError = "write failed";
+        }
+    }
+    else if (upload.status == UPLOAD_FILE_END)
+    {
+        esp_task_wdt_reset();
+        if (uploadFile)
+            uploadFile.close();
+        if (uploadError.isEmpty())
+        {
+            if (SD.exists(uploadFinalPath))
+                SD.remove(uploadFinalPath);
+            if (!SD.rename(uploadTempPath, uploadFinalPath))
+            {
+                SD.remove(uploadTempPath);
+                uploadError = "rename failed";
+            }
+            else if (uploadSourceMtime > 0)
+            {
+                setTrackedMtime(uploadFinalPath, uploadSourceMtime);
+            }
+        }
+        else if (uploadTempPath.length())
+        {
+            SD.remove(uploadTempPath);
+        }
+        uploadFile = File();
+    }
+    else if (upload.status == UPLOAD_FILE_ABORTED)
+    {
+        esp_task_wdt_reset();
+        if (uploadFile)
+            uploadFile.close();
+        if (uploadTempPath.length())
+            SD.remove(uploadTempPath);
+        uploadError = "upload aborted";
+        uploadFile = File();
+    }
+}
+
+static void handleNotFound()
+{
+    sendError(404, "not found");
+}
+
+static void setupHttpRoutes()
+{
+    httpServer.on("/diag/status", HTTP_GET, handleStatus);
+    httpServer.on("/diag/files", HTTP_GET, handleFiles);
+    httpServer.on("/diag/upload", HTTP_POST, handleUploadResult, handleUploadStream);
+    httpServer.on("/diag/file", HTTP_DELETE, handleDeleteFile);
+    httpServer.on("/diag/logs", HTTP_GET, handleLogs);
+    httpServer.on("/diag/log-content", HTTP_GET, handleLogContent);
+    httpServer.on("/diag/log-download", HTTP_GET, handleLogDownload);
+    httpServer.on("/diag/write-mappings", HTTP_POST, handleWriteMappings);
+    httpServer.on("/diag/write-system-sounds", HTTP_POST, handleWriteSystemSounds);
+    httpServer.on("/diag/config", HTTP_GET, handleGetLedConfig);
+    httpServer.on("/diag/config", HTTP_POST, handleSaveLedConfig);
+    httpServer.on("/diag/restart", HTTP_POST, handleRestart);
+    httpServer.onNotFound(handleNotFound);
+    httpServer.begin();
+}
+
+static void setupOta()
+{
+    ArduinoOTA.setHostname(syncHostname.c_str());
+    ArduinoOTA.setPort(SYNC_OTA_PORT);
+    ArduinoOTA.onStart([]() {
+        syncLogf("[OTA] start");
+        ledSetSyncWifi();
+    });
+    ArduinoOTA.onEnd([]() {
+        syncLogf("[OTA] complete");
+    });
+    ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+        esp_task_wdt_reset();
+        static unsigned int lastPct = 0;
+        unsigned int pct = total ? (progress * 100U) / total : 0;
+        if (pct >= lastPct + 10 || pct == 100)
+        {
+            lastPct = pct;
+            syncLogf("[OTA] %u%%", pct);
+        }
+    });
+    ArduinoOTA.onError([](ota_error_t error) {
+        syncLogf("[OTA] error=%u", (unsigned int)error);
+    });
+    ArduinoOTA.begin();
 }
 
 void runSyncMode()
 {
-    syncLogf("");
-    syncLogf("=== zBox SYNC MODE ===");
-    syncLogf("");
+    LOGLN("\n=== zBox SYNC MODE ===\n");
     ledSetSyncWifi();
+    disableBtForSync();
+    ensureDataDirs();
 
-    // Disable BT controller to free the radio for WiFi (BT/WiFi coexistence)
-    esp_bt_controller_disable();
-    esp_bt_controller_deinit();
-    esp_bt_mem_release(ESP_BT_MODE_BTDM);
-    syncLogf("[SYNC] BT controller released");
+    syncDeviceId = buildDeviceId();
+    syncHostname = String("zbox-") + syncDeviceId.substring(max(0, (int)syncDeviceId.length() - 6));
 
     WiFiManager wm;
     wm.setConfigPortalTimeout(180);
     wm.setConnectTimeout(10);
+    wm.setAPCallback([](WiFiManager *mgr) {
+        (void)mgr;
+        syncLogf("[SYNC] WiFi connect failed - starting config portal SSID=%s ip=%s",
+                 SYNC_AP_NAME, WiFi.softAPIP().toString().c_str());
+    });
 
-    if (!wm.autoConnect("zBox-Setup"))
+    disableSyncWatchdog();
+    syncLogf("[SYNC] Connecting to stored WiFi or starting config portal");
+
+    if (!wm.autoConnect(SYNC_AP_NAME))
     {
-        syncLogf("[SYNC] WiFi not connected!");
+        syncLogf("[SYNC] Config portal timed out - returning to normal mode");
+        LOGLN("[SYNC] WiFi not connected");
         ledFlashResult(false);
         clearSyncFlag();
-        delay(3000);
+        delay(1000);
         ESP.restart();
     }
 
-    LOG("[SYNC] WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
-    syncServerIP = SERVER_HOST;
-    syncTelnetServer.begin();
-    syncTelnetServer.setNoDelay(true);
-    syncLogf("[SYNC] Telnet server listening on %s:%d",
-             WiFi.localIP().toString().c_str(), SYNC_TELNET_PORT);
-    syncLogf("[SYNC] Connect with: nc %s %d",
-             WiFi.localIP().toString().c_str(), SYNC_TELNET_PORT);
-    esp_err_t psResult = esp_wifi_set_ps(WIFI_PS_NONE);
-    syncLogf("[SYNC] esp_wifi_set_ps(NONE) -> %d", psResult);
+    configureSyncWatchdog();
+    syncLogf("[SYNC] WiFi connected ssid=%s ip=%s",
+             WiFi.SSID().c_str(), WiFi.localIP().toString().c_str());
 
-    wifi_ps_type_t psMode;
-    esp_wifi_get_ps(&psMode);
-    syncLogf("[SYNC] Verified PS mode: %d (0=NONE, 1=MIN, 2=MAX)", psMode);
+    setupHttpRoutes();
+    setupOta();
 
-    WiFiClient testClient;
-    if (!testClient.connect(syncServerIP.c_str(), SERVER_PORT))
+    LOG("[SYNC] device=%s ip=%s ota=%d http=%d\n",
+        syncDeviceId.c_str(), WiFi.localIP().toString().c_str(),
+        SYNC_OTA_PORT, SYNC_HTTP_PORT);
+
+    unsigned long lastSnapshot = 0;
+    for (;;)
     {
-        syncLogf("[SYNC] Cannot reach server!");
-        testClient.stop();
-        ledFlashResult(false);
-        clearSyncFlag();
-        delay(3000);
-        ESP.restart();
+        esp_task_wdt_reset();
+        ArduinoOTA.handle();
+        httpServer.handleClient();
+
+        if (handleButtonExit())
+            exitSyncMode("buttons A+B long");
+
+        SyncSleepAction sleepAction = handleSleepButton();
+        if (sleepAction == SYNC_SLEEP_NORMAL)
+        {
+            syncLogf("[SYNC] deep sleep requested by BTN_C");
+            enterDeepSleep();
+        }
+        else if (sleepAction == SYNC_SLEEP_EMERGENCY)
+        {
+            enterEmergencyDeepSleep();
+        }
+
+        unsigned long now = millis();
+        if (now - lastSnapshot >= SYNC_LOG_INTERVAL_MS)
+        {
+            sendSyncSnapshot();
+            lastSnapshot = now;
+        }
+
+        delay(20);
     }
-    testClient.stop();
-    syncLogf("[SYNC] Server reachable!");
-    ledSetSyncProgress(0, 1);
-
-    bool success = performSync();
-
-    if (syncTelnetClient)
-        syncTelnetClient.stop();
-    syncTelnetServer.stop();
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-
-    syncLogf("%s", success ? "[SYNC] COMPLETE!" : "[SYNC] FAILED");
-    ledFlashResult(success);
-
-    clearSyncFlag();
-    delay(2000);
-    ESP.restart();
 }

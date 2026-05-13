@@ -19,8 +19,8 @@
 #define LED_COUNT 12
 #define LED_BRIGHTNESS 40
 
-#define BTN_A 32 // free (RTC)
-#define BTN_B 33 // free (RTC)
+#define BTN_A 32
+#define BTN_B 33
 #define BTN_C 25 // VOL- (RTC)
 #define BTN_D 26 // VOL+ (RTC, deep-sleep wake through ext0)
 #define BTN_COUNT 4
@@ -71,12 +71,9 @@
 #define IDLE_TIMEOUT_MS (10UL * 60 * 1000) // 10 minutes without playback
 #define NIGHT_LIGHT_TIMEOUT_MS (15UL * 60 * 1000)
 
-// Sync
-#define SERVER_HOST "zbox.local"
-#define SERVER_PORT 8000
-#define HTTP_TIMEOUT 15000
-#define DOWNLOAD_BUF_SIZE 16384
-
-// Sync mode
+// Sync / service mode
 #define SYNC_PENDING_PATH "/data/sync_pending"
-#define SYNC_TELNET_PORT 23
+#define SYNC_AP_NAME "zBox-Sync"
+#define SYNC_HTTP_PORT 80
+#define SYNC_OTA_PORT 3232
+#define SYNC_LOG_INTERVAL_MS 5000

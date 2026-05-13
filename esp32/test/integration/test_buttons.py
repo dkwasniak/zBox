@@ -58,15 +58,13 @@ def test_deep_sleep_long_press_c_does_not_change_volume(reset_esp, button_tester
 
 
 def test_sync_mode_trigger(reset_esp, button_tester):
-    """Combo BTN_C+BTN_D (2500ms) → sync flag written + restart + SYNC MODE."""
+    """Combo BTN_A+BTN_B (2500ms) → sync restart path + reboot + SYNC MODE."""
     _boot_ready(reset_esp)
-    button_tester.press_combo("CD", 2500)
+    button_tester.press_combo("AB", 2500)
 
-    # 1. Sync flag written
-    reset_esp.wait_for_line(r">>> Sync flag written", timeout_s=5)
-    # 2. Restart (new boot)
+    # 1. Restart request is emitted and the device reboots
     reset_esp.wait_for_line(r"=== zBox ===", timeout_s=10)
-    # 3. Sync mode
+    # 2. Sync mode boot banner appears
     reset_esp.wait_for_line(r"zBox SYNC MODE", timeout_s=10)
 
 

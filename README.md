@@ -37,7 +37,7 @@ The box itself is built around a 3D-printed shell and custom electronics. This r
 
 ## Project split
 
-- `esp32/` contains the offline playback firmware, Bluetooth audio pipeline, NFC handling, LED logic, and sync mode.
+- `esp32/` contains the offline playback firmware, Bluetooth audio pipeline, NFC handling, LED logic, and Sync Mode service flow.
 - `server/` contains the FastAPI backend, SQLite integration, sync logic, and admin API.
 - `web/` contains the static admin portal served by the backend.
 - `hardware/pcb/kicad/` contains the PCB and schematic sources for the hardware build.
@@ -178,7 +178,7 @@ Format the card as FAT32. A 4–16 GB card is sufficient for most use cases. Lea
 
 **2. Configure the firmware**
 
-Open `esp32/src/zbox_config.h` and set `SERVER_HOST` to the IP address or hostname of the machine that will run the server. This value is baked in at compile time and must be correct before flashing.
+Open the server configuration and set `ZBOX_IP` in `.env` to the IP address or hostname of the ESP32. The admin portal uses this address to reach the device in Sync Mode.
 
 **3. Flash the firmware**
 
@@ -193,7 +193,7 @@ pio run -t upload
 docker compose up -d --build
 ```
 
-The admin portal is available at `http://<host>:8000`. Set `ZBOX_IP` in `.env` to the IP address or mDNS hostname of the ESP32 so the admin portal can reach the device for diagnostics and sync.
+The admin portal is available at `http://<host>:8000`. Set `ZBOX_IP` in `.env` to the IP address or mDNS hostname of the ESP32 so the admin portal can reach the device for maintenance and sync.
 
 **5. Pair the Bluetooth speaker**
 
@@ -234,7 +234,7 @@ Go to **Tags**. Power on the ESP32 and hold an NFC tag over the PN532 reader —
 
 **3. Sync**
 
-After saving the mapping, trigger a sync from the portal. The device downloads the updated manifest and any new audio files to the SD card. Once sync finishes, presenting the tag in Card Mode starts the assigned track.
+After saving the mapping, trigger a sync from the portal. The server pushes the updated mappings and audio files to the device over Wi-Fi. Once sync finishes, presenting the tag in Card Mode starts the assigned track.
 
 ## Admin portal
 
@@ -316,8 +316,7 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 
 ## Configuration model
 
-- Server runtime configuration is local and installation-specific. The only required variable is `ZBOX_IP` — the IP address or mDNS hostname of the ESP32 (e.g. `zbox.local`). Copy `.env.example` to `.env` and set it before starting the container.
-- The firmware `SERVER_HOST` value in [`esp32/src/zbox_config.h`](esp32/src/zbox_config.h) is a placeholder and must be set for your own deployment before flashing.
+- Server runtime configuration is local and installation-specific. The only required variable is `ZBOX_IP` — the IP address or mDNS hostname of the ESP32. Copy `.env.example` to `.env` and set it before starting the container.
 - Wiring and GPIO pin assignments are documented in [`docs/hardware.md`](docs/hardware.md).
 
 ## Modes
@@ -325,7 +324,7 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 - **Card Mode**. Default playback mode. The device reacts to NFC tags. Placing a known tag starts the assigned track from the SD card.
 - **Music Mode**. Library playback mode. NFC is ignored and the buttons control pause, previous, and next track inside the local music library.
 - **Light Mode**. Night light mode. Started from deep sleep by holding `D` longer during wake. In this mode `C` and `D` change brightness instead of volume.
-- **Sync Mode**. Service mode used by the admin portal for maintenance, diagnostics, and sync-related operations.
+- **Sync Mode**. Service mode used by the admin portal for maintenance, file transfer, log access, and configuration over Wi-Fi.
 
 ## Button shortcuts
 
@@ -357,9 +356,9 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 - **Volume**. Temporary white bar showing the current volume level for about one second after `Vol +` or `Vol -`.
 - **Mode change**. Two short flashes. Music Mode uses the Music color, Card Mode uses the Card color.
 - **Sleep ready**. Red blinking animation after holding `C` for two seconds. Releasing `C` at that point enters normal deep sleep.
-- **Sync mode entry**. Purple animated dot pattern shown after `A+B` is held, while the device is preparing to reboot into sync mode.
-- **Wi-Fi sync**. Blue blinking after the reboot, while the device is connecting to Wi-Fi and reaching the server.
-- **Sync progress**. Blue progress bar that fills as files are downloaded to the SD card during sync.
+- **Sync mode entry**. Purple animated dot pattern shown after `A+B` is held, while the device is preparing to reboot into Sync Mode.
+- **Wi-Fi sync**. Blue blinking after the reboot, while the device is connecting to Wi-Fi and exposing the service endpoints used by the admin portal.
+- **Sync progress**. Blue progress bar that fills while files are transferred to the SD card during sync.
 - **Warning**. Slow amber breathing pulse when a mapping or file is missing.
 - **Shutdown**. Purple sweep animation before the device powers down.
 - **Battery check**. A color-coded bar on the LEDs: blue for high charge, then green, yellow, orange, and red for critical battery.
@@ -377,7 +376,7 @@ The firmware depends on `esp32/lib/ESP32-A2DP`, which is kept as a Git submodule
 The intended deployment is:
 
 1. Build and run the FastAPI server in Docker on a small Linux host such as a Raspberry Pi.
-2. Flash the ESP32 with firmware configured to reach that server.
+2. Flash the ESP32 and configure the server to reach it via `ZBOX_IP`.
 3. Use the web admin portal to manage tracks, NFC mappings, system sounds, and sync operations.
 
 ## Documentation

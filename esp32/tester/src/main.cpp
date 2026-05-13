@@ -7,7 +7,7 @@
 //   OUT_D (GPIO7)  → BTN_D (GPIO26 DUT)
 //   GND            → GND DUT (common ground!)
 //
-// DUT: INPUT_PULLUP, active LOW.
+// DUT: active LOW.
 // Press  = pinMode(pin, OUTPUT) + digitalWrite(pin, LOW)
 // Release= pinMode(pin, INPUT)  — Hi-Z, DUT pullup pulls to HIGH
 //

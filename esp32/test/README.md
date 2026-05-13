@@ -226,14 +226,14 @@ Separate firmware for a second ESP32-S3 (N16R8) that physically simulates DUT bu
 Tester ESP32-S3          DUT Lolin D32 Pro
   GPIO4  (OUT_A) ──────  GPIO32 (BTN_A, long press = battery)
   GPIO5  (OUT_B) ──────  GPIO33 (BTN_B, free)
-  GPIO6  (OUT_C) ──────  GPIO25 (BTN_C, VOL- / sleep / sync)
+  GPIO6  (OUT_C) ──────  GPIO25 (BTN_C, VOL- / sleep)
   GPIO7  (OUT_D) ──────  GPIO26 (BTN_D, VOL+ / wake)
   GND            ──────  GND   (common ground — mandatory!)
 ```
 
 ### Operating principle
 
-- **Press** = `pinMode(pin, OUTPUT)` + `digitalWrite(pin, LOW)` — DUT INPUT_PULLUP sees LOW
+- **Press** = `pinMode(pin, OUTPUT)` + `digitalWrite(pin, LOW)` — DUT sees LOW
 - **Release** = `pinMode(pin, INPUT)` — Hi-Z, DUT pullup pulls to HIGH
 - **NEVER** `OUTPUT HIGH` — avoids conflict with DUT pullup
 
@@ -242,7 +242,7 @@ Tester ESP32-S3          DUT Lolin D32 Pro
 | Command | Effect |
 |---------|-------|
 | `PRESS A 2000\n` | Press BTN_A for 2000ms, then release |
-| `PRESS_COMBO CD 2500\n` | Press BTN_C + BTN_D simultaneously for 2500ms |
+| `PRESS_COMBO AB 2500\n` | Press BTN_A + BTN_B simultaneously for 2500ms |
 | `RELEASE ALL\n` | Release all pins (Hi-Z) |
 | `PING\n` | Responds with `PONG\n` |
 
@@ -297,7 +297,7 @@ Each test waits for `BT A2DP starting` before performing any action (ensuring th
 | `test_battery_long_press_a` | Long BTN_A (2500ms) | `[BAT] Voltage:` |
 | `test_battery_voltage_range` | Long BTN_A (2500ms) | voltage 3.0V–4.5V |
 | `test_deep_sleep_trigger` | Long BTN_C (2500ms) | `[SLEEP]` |
-| `test_sync_mode_trigger` | Combo BTN_C+D (2500ms) | `Sync flag written` → restart → `SYNC MODE` |
+| `test_sync_mode_trigger` | Combo BTN_A+B (2500ms) | `sync_pending flag` / restart → `SYNC MODE` |
 
 ---
 
@@ -349,7 +349,7 @@ Buffer: `deque(maxlen=2000)`. Reader thread runs in the background at all times.
 | Method | Command sent |
 |--------|-----------------|
 | `press(btn, duration_ms)` | `PRESS A 2000\n` |
-| `press_combo(btns, duration_ms)` | `PRESS_COMBO CD 2500\n` |
+| `press_combo(btns, duration_ms)` | `PRESS_COMBO AB 2500\n` |
 | `release_all()` | `RELEASE ALL\n` |
 
 ### `conftest.py` — fixtures and markers
