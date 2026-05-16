@@ -1,25 +1,31 @@
 #include "volume.h"
 #include <Preferences.h>
-#include "zbox_config.h"
 #include "logging.h"
 #include "audio.h"
+#include "volume_scale.h"
 
-static int btVolume = BT_VOL_DEFAULT;
+static uint8_t outputVolumeLevel = OUTPUT_VOL_LEVEL_DEFAULT;
+static uint8_t outputVolumePercent = volumeLevelToPercent(OUTPUT_VOL_LEVEL_DEFAULT);
 static Preferences preferences;
 
-void loadBtVolume()
+void loadOutputVolume()
 {
     preferences.begin("zbox", true);
-    btVolume = preferences.getInt("bt_volume", BT_VOL_DEFAULT);
+    outputVolumeLevel = clampVolumeLevel(preferences.getUChar("volume_level", OUTPUT_VOL_LEVEL_DEFAULT));
     preferences.end();
-    btVolume = constrain(btVolume, BT_VOL_MIN, BT_VOL_MAX);
-    LOGI("[VOL] Restored: %d%%\n", btVolume);
+    outputVolumePercent = volumeLevelToPercent(outputVolumeLevel);
+    LOGI("[VOL] Restored output volume: level=%u percent=%u\n",
+         (unsigned)outputVolumeLevel,
+         (unsigned)outputVolumePercent);
 }
 
-void applyBtVolume()
+void applyOutputVolume()
 {
-    audioSetBtVolumePercent(btVolume);
-    LOGI("[VOL] Applied: %d%%\n", btVolume);
+    outputVolumePercent = volumeLevelToPercent(outputVolumeLevel);
+    audioSetOutputVolumePercent(outputVolumePercent);
+    LOGI("[VOL] Applied output volume: level=%u percent=%u\n",
+         (unsigned)outputVolumeLevel,
+         (unsigned)outputVolumePercent);
 }
 
 void volumeTick()
@@ -27,14 +33,14 @@ void volumeTick()
     // no-op: throttle and deferred save removed; saving done via PersistVolume effect
 }
 
-void setBtVolumeAndApply(uint8_t percent)
+void setOutputVolumeAndApply(uint8_t percent)
 {
-    btVolume = constrain((int)percent, BT_VOL_MIN, BT_VOL_MAX);
-    applyBtVolume();
-    LOGI("[VOL] Set+apply: %d%%\n", btVolume);
+    outputVolumePercent = constrain((int)percent, OUTPUT_VOL_PERCENT_MIN, OUTPUT_VOL_PERCENT_MAX);
+    audioSetOutputVolumePercent(outputVolumePercent);
+    LOGI("[VOL] Set+apply output volume: %u%%\n", (unsigned)outputVolumePercent);
 }
 
-uint8_t getBtVolume()
+uint8_t getOutputVolumeLevel()
 {
-    return (uint8_t)btVolume;
+    return outputVolumeLevel;
 }

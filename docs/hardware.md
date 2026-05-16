@@ -4,7 +4,8 @@
 
 - ESP32 Lolin D32 Pro
 - PN532 NFC reader over software SPI
-- Bluetooth speaker controlled through A2DP and a power transistor
+- NS4168 I2S amplifier as the default speaker output
+- Optional Bluetooth headphones mode over A2DP
 - WS2812B LED strip
 - SD card for offline music and mappings
 - Custom PCB for wiring and power distribution
@@ -16,7 +17,8 @@
 ```text
 ESP32 + SD + NFC + LEDs + buttons
         │
-        ├── Bluetooth A2DP audio ──> speaker
+        ├── I2S audio ──> NS4168 amplifier ──> speaker
+        ├── Optional Bluetooth A2DP audio ──> headphones
         └── Wi-Fi only during sync / diagnostics
 ```
 
@@ -27,16 +29,17 @@ ESP32 + SD + NFC + LEDs + buttons
 | `4` | SD card chip select |
 | `5` | PN532 chip select |
 | `0` | PN532 MOSI |
-| `13` | Speaker power transistor |
+| `13` | NS4168 I2S data out |
 | `14` | WS2812B data |
 | `21` | PN532 MISO |
 | `22` | PN532 SCK |
 | `25` | Button C |
 | `26` | Button D |
 | `27` | LED power enable |
-| `32` | Button A |
-| `33` | Button B |
-| `34` | Speaker status ADC |
+| `32` | NS4168 I2S bit clock |
+| `33` | NS4168 I2S word select |
+| `36` | Button A |
+| `39` | Button B |
 
 ## Lolin D32 Pro header numbering from the board photo
 
@@ -83,35 +86,40 @@ The board photo uses `L1..L16` on the left header and `R1..R16` on the right hea
 
 | Position | Function |
 |---|---|
-| `L5` | `GPIO34 / JBL_STATUS` |
-| `L6` | `GPIO32 / BTN_A` |
-| `L7` | `GPIO33 / BTN_B` |
+| `L3` | `GPIO36 / BTN_A` |
+| `L4` | `GPIO39 / BTN_B` |
+| `L6` | `GPIO32 / AUDIO_I2S_BCLK` |
+| `L7` | `GPIO33 / AUDIO_I2S_LRCK` |
 | `L8` | `GPIO25 / BTN_C` |
 | `L9` | `GPIO26 / BTN_D` |
 | `L10` | `GPIO27 / LED_EN` |
 | `L11` | `GPIO14 / LED_PIN` |
-| `L13` | `GPIO13 / JBL_POWER` |
+| `L13` | `GPIO13 / AUDIO_I2S_DOUT` |
 | `R3` | `GPIO22 / PN532_SCK` |
 | `R6` | `GPIO21 / PN532_MISO` |
 | `R9` | `GPIO5 / PN532_SS` |
 | `R12` | `GPIO4 / SD_CS` |
 | `R13` | `GPIO0 / PN532_MOSI` |
 
-## Speaker wiring
+## Audio wiring
 
-The JBL Go 2 is connected to the PCB on three points:
+The current board revision assumes a direct digital audio path:
 
-**Power button** — the two legs of the speaker's physical power button are wired to the PCB. The ESP32 shorts them through an NPN transistor (`BC547`, GPIO `13`) to simulate a button press. This is how the firmware turns the speaker on and off without touching it mechanically.
+- `GPIO32` -> `NS4168 BCLK`
+- `GPIO33` -> `NS4168 LRCK / WS`
+- `GPIO13` -> `NS4168 DIN`
 
-**Power line (JBL status)** — one wire taps into a point inside the speaker where voltage appears only after the speaker has powered on. This is read by the ESP32 on GPIO `34` (ADC) to detect whether the speaker is actually on. The exact tap point needs to be found with a multimeter — look for a point that reads ~0 V when the speaker is off and a measurable voltage (above the `JBL_STATUS_THRESHOLD` in firmware) when it is on.
+The old JBL-specific control wiring is no longer part of the active firmware design:
 
-**Charging (+/−)** — the speaker's USB charging input is wired to the PCB's USB-C receptacle so the JBL battery can be charged through the zBox's USB-C port, without a separate cable plugged into the speaker.
+- `GPIO13` is reused for I2S data.
+- `GPIO34` is free from audio duties.
+- There is no firmware dependency on a speaker power transistor or speaker status ADC.
 
 ## Notes
 
 - The PN532 is wired over software SPI: `SS=GPIO5`, `SCK=GPIO22`, `MISO=GPIO21`, `MOSI=GPIO0`.
 - The SD card uses the board SPI wiring, so the related SPI pins should not be repurposed.
-- The current firmware uses Bluetooth audio only. The older PCM5102A path is not part of the active design.
+- The current firmware starts on local I2S audio immediately. Bluetooth is only an on-demand headphones mode triggered by a long hold on `BTN_A`.
 - LED power is switched so the strip can be fully shut down during sleep.
 - The PCB currently uses a `470uF` polarized capacitor (`C1`) in the power path near the step-up / LED supply section.
 

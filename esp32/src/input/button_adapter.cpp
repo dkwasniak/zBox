@@ -18,9 +18,23 @@ static constexpr uint32_t LONG_PRESS_SLEEP_MS = NIGHT_LIGHT_SLEEP_HOLD_MS; // 10
 static constexpr uint32_t EMERG_SLEEP_MS      = EMERGENCY_SLEEP_MS;      // 10000
 static constexpr uint32_t COMBO_AB_MS         = LONG_PRESS_MS;           // 2000 (match current)
 static constexpr uint32_t COMBO_CD_SLEEP_MS   = 5000;
-static constexpr uint32_t BATTERY_LONG_MS     = LONG_PRESS_MS;           // 2000
+static constexpr uint32_t BT_HEADPHONES_LONG_MS = LONG_PRESS_MS;         // 2000
+static constexpr uint32_t BATTERY_CHECK_LONG_MS = LONG_PRESS_MS;         // 2000
 
 static const uint8_t BUTTON_PINS[BTN_COUNT] = { BTN_A, BTN_B, BTN_C, BTN_D };
+
+static uint8_t buttonPinMode(uint8_t pin)
+{
+    switch (pin) {
+    case 34:
+    case 35:
+    case 36:
+    case 39:
+        return INPUT;
+    default:
+        return INPUT_PULLUP;
+    }
+}
 
 // ── Raw queue ──────────────────────────────────────────────────────────────
 static QueueHandle_t s_rawQueue;
@@ -215,14 +229,12 @@ void buttonDecoderTick(uint32_t now_ms)
         }
         uint32_t held = now_ms - b.press_ms;
 
-        if (id == 0 && held >= BATTERY_LONG_MS && !s_btn[1].down) {
-            // BTN_A long hold (alone) → battery check
+        if (id == 0 && held >= BT_HEADPHONES_LONG_MS && !s_btn[1].down) {
+            // BTN_A long hold (alone) -> temporary BT headphones mode
             b.long_handled = true;
             b.click_count = 0;
-            float v = readBatteryVoltage();
-            uint8_t bars = (uint8_t)batteryBars(v);
-            LOGC("[BTN_ADAPTER] BTN_A long -> BatteryCheck %.2fV %d bars\n", v, (int)bars);
-            postEventFromTask(makeBatteryCheckEvent(bars));
+            LOGC("[BTN_ADAPTER] BTN_A long -> BtHeadphonesModeRequested\n");
+            postEventFromTask(makeEvent(EventType::BtHeadphonesModeRequested));
         }
         if (id == 1 && held >= LONG_PRESS_SLEEP_MS && !s_btn[0].down) {
             // BTN_B long hold (alone) → mode toggle
@@ -230,6 +242,13 @@ void buttonDecoderTick(uint32_t now_ms)
             b.click_count = 0;
             LOGC("[BTN_ADAPTER] BTN_B long -> ModeToggleRequested\n");
             postEventFromTask(makeEvent(EventType::ModeToggleRequested));
+        }
+        if (id == 3 && held >= BATTERY_CHECK_LONG_MS && !s_btn[2].down) {
+            b.long_handled = true;
+            const float v = readBatteryVoltage();
+            const uint8_t bars = (uint8_t)batteryBars(v);
+            LOGC("[BTN_ADAPTER] BTN_D long -> BatteryCheck %.2fV %d bars\n", v, (int)bars);
+            postEventFromTask(makeBatteryCheckEvent(bars));
         }
         if (id == 2 && held >= LONG_PRESS_SLEEP_MS && !b.sleep_warn_fired && !b.long_handled && !s_btn[3].down) {
             b.sleep_warn_fired = true;
@@ -293,7 +312,7 @@ void buttonAdapterInit()
 {
     s_rawQueue = xQueueCreate(8, sizeof(RawButtonEvent));
     for (uint8_t i = 0; i < BTN_COUNT; i++) {
-        pinMode(BUTTON_PINS[i], INPUT_PULLUP);
+        pinMode(BUTTON_PINS[i], buttonPinMode(BUTTON_PINS[i]));
         attachInterruptArg(digitalPinToInterrupt(BUTTON_PINS[i]),
                            buttonAdapterISR, (void *)(uintptr_t)i, CHANGE);
     }
@@ -303,7 +322,7 @@ void buttonAdapterStartTask()
 {
     xTaskCreatePinnedToCore(
         buttonAdapterTask, "btnadapt",
-        2048, nullptr,
+        4096, nullptr,
         2, nullptr,
         1   // core 1
     );

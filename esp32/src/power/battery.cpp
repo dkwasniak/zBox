@@ -10,6 +10,7 @@ constexpr int BAT_TRIM_COUNT = 8;
 constexpr float BAT_FILTER_ALPHA = 0.15f;
 constexpr float BAT_FILTER_ALPHA_LARGE_STEP = 0.03f;
 constexpr float BAT_FILTER_LARGE_STEP_V = 0.20f;
+static uint16_t s_batterySamples[BAT_SAMPLE_COUNT];
 
 static void sortSamples(uint16_t *values, int count)
 {
@@ -46,18 +47,17 @@ BatteryReading readBatteryReading()
 {
     ensureBatteryAdcConfigured();
 
-    uint16_t samples[BAT_SAMPLE_COUNT];
     for (int i = 0; i < BAT_SAMPLE_COUNT; i++)
     {
-        samples[i] = (uint16_t)analogReadMilliVolts(BAT_ADC_PIN);
+        s_batterySamples[i] = (uint16_t)analogReadMilliVolts(BAT_ADC_PIN);
         delayMicroseconds(250);
     }
 
-    sortSamples(samples, BAT_SAMPLE_COUNT);
+    sortSamples(s_batterySamples, BAT_SAMPLE_COUNT);
 
     long sum = 0;
     for (int i = BAT_TRIM_COUNT; i < BAT_SAMPLE_COUNT - BAT_TRIM_COUNT; ++i)
-        sum += samples[i];
+        sum += s_batterySamples[i];
 
     constexpr int keptSamples = BAT_SAMPLE_COUNT - (2 * BAT_TRIM_COUNT);
     float vPinInstant = (sum / (float)keptSamples) / 1000.0f; // mV -> V on GPIO35 (VBAT/2)

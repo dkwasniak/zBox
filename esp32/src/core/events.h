@@ -1,109 +1,89 @@
 #pragma once
 #include "app_state.h"
 
-// ---------------------------------------------------------------------------
-// EventType — all events that drive the reducer
-// ---------------------------------------------------------------------------
 enum class EventType : uint8_t {
-    // Boot
     BootStarted,
     WakeCauseResolvedNormal,
     WakeCauseResolvedNightLight,
     BootInitCompleted,
-    MappingsLoaded,              // carries: uint16_t total_track_count
-    VolumeLoaded,                // carries: uint8_t percent
-    BtInitStarted,
-    NfcPreScanCompleted,         // carries: bool uid_found, char uid[24]
+    PlaybackModeLoaded,
+    MappingsLoaded,
+    VolumeLoaded,
+    NfcPreScanCompleted,
 
-    // BT
+    BtHeadphonesModeRequested,
     BtConnected,
     BtDisconnected,
-    BtRecoveryPulseCompleted,
-    BtRecoveryPulseFailed,       // carries: BtFailReason
-    BtDiscoveryRestarted,
-    BtDiscoveryRestartFailed,    // carries: BtFailReason
-    BtShutdownCompleted,
-    BtShutdownFailed,            // carries: BtFailReason
+    BtHeadphonesModeStopped,
+    BtHeadphonesModeStartFailed,
+    BtHeadphonesModeStopFailed,
 
-    // Audio
-    AudioCommandRejected,        // carries: CmdId, PlaybackFailReason
-    NfcPlaybackStarted,          // carries: char uid[24], CmdId
-    NfcPlaybackStartFailed,      // carries: char uid[24], PlaybackFailReason, CmdId
-    MusicTrackStarted,           // carries: uint16_t index, CmdId
-    MusicTrackStartFailed,       // carries: uint16_t index, PlaybackFailReason, CmdId
-    AudioStopped,                // carries: CmdId
-    SystemSoundCompleted,        // carries: uint8_t sound_id, CmdId
-    SystemSoundFailed,           // carries: uint8_t sound_id, SoundFailReason, CmdId
-    TrackEnded,                  // natural completion only
+    AudioCommandRejected,
+    NfcPlaybackStarted,
+    NfcPlaybackStartFailed,
+    MusicTrackStarted,
+    MusicTrackStartFailed,
+    AudioStopped,
+    SystemSoundCompleted,
+    SystemSoundFailed,
+    TrackEnded,
 
-    // NFC
-    NfcTagDetected,              // carries: char uid[24]
+    NfcTagDetected,
     NfcTagRemoved,
 
-    // Buttons / user input
-    SleepHoldWarning,            // BTN_C held past sleep threshold — warn user before release
-    SleepRequested,              // carries: RequestedSleepKind
+    SleepHoldWarning,
+    SleepRequested,
     PlayPausePressed,
     NextTrackPressed,
     PrevTrackPressed,
     VolumeUpPressed,
     VolumeDownPressed,
     ModeToggleRequested,
-    BatteryCheckRequested,       // carries: uint8_t bars
+    BatteryCheckRequested,
     SyncModeRequested,
 
-    // Timers
     IdleTimeoutFired,
     NightLightTimeoutFired,
     VolumeOverlayExpired,
     BatteryPreviewExpired,
-    JblRecoveryTimeoutFired,
-    BtReconnectTimeoutFired,
     BrightnessSaveDeadlineFired,
 
-    // Persistence feedback
-    BrightnessLoaded,            // carries: uint8_t percent
+    BrightnessLoaded,
     BrightnessPersisted,
-    BrightnessPersistFailed,     // carries: PersistenceFailReason
+    BrightnessPersistFailed,
     PlaybackModePersisted,
-    PlaybackModePersistFailed,   // carries: PersistenceFailReason
+    PlaybackModePersistFailed,
 
-    // Sync
     SyncStarted,
     SyncCompleted,
     SyncFailed,
     SyncModeEntered,
 };
 
-// ---------------------------------------------------------------------------
-// Event — tagged union carrying optional payload
-// ---------------------------------------------------------------------------
 struct Event {
     EventType type;
     union {
-        struct { bool uid_found; char uid[24]; }                          nfc_prescan;
-        struct { char uid[24]; CmdId cmd_id; }                           playback_started;
+        struct { bool uid_found; char uid[24]; } nfc_prescan;
+        struct { char uid[24]; CmdId cmd_id; } playback_started;
         struct { char uid[24]; PlaybackFailReason reason; CmdId cmd_id; } nfc_fail;
-        struct { uint16_t index; CmdId cmd_id; }                         track_started;
+        struct { uint16_t index; CmdId cmd_id; } track_started;
         struct { uint16_t index; PlaybackFailReason reason; CmdId cmd_id; } track_fail;
-        struct { CmdId cmd_id; }                                          audio_stopped;
-        struct { uint8_t sound_id; CmdId cmd_id; }                       sound_completed;
+        struct { CmdId cmd_id; } audio_stopped;
+        struct { uint8_t sound_id; CmdId cmd_id; } sound_completed;
         struct { uint8_t sound_id; SoundFailReason reason; CmdId cmd_id; } sound_failed;
-        struct { char uid[24]; }                                          nfc_detected;
-        struct { RequestedSleepKind kind; }                               sleep_requested;
-        struct { CmdId cmd_id; PlaybackFailReason reason; }              cmd_rejected;
-        struct { BtFailReason reason; }                                   bt_fail;
-        struct { PersistenceFailReason reason; }                          persist_fail;
-        struct { uint16_t total_track_count; }                            mappings_loaded;
-        struct { uint8_t percent; }                                       volume_loaded;
-        struct { uint8_t bars; }                                          battery_check;
-        struct { uint8_t percent; }                                       brightness_loaded;
+        struct { char uid[24]; } nfc_detected;
+        struct { RequestedSleepKind kind; } sleep_requested;
+        struct { CmdId cmd_id; PlaybackFailReason reason; } cmd_rejected;
+        struct { BtFailReason reason; } bt_fail;
+        struct { PersistenceFailReason reason; } persist_fail;
+        struct { PlaybackMode mode; } playback_mode_loaded;
+        struct { uint16_t total_track_count; } mappings_loaded;
+        struct { uint8_t level; } volume_loaded;
+        struct { uint8_t bars; } battery_check;
+        struct { uint8_t percent; } brightness_loaded;
     } payload;
 };
 
-// ---------------------------------------------------------------------------
-// Convenience constructors
-// ---------------------------------------------------------------------------
 inline Event makeEvent(EventType type) {
     Event e{};
     e.type = type;
@@ -235,9 +215,16 @@ inline Event makeMappingsLoadedEvent(uint16_t total_track_count) {
     return e;
 }
 
-inline Event makeVolumeLoadedEvent(uint8_t percent) {
+inline Event makePlaybackModeLoadedEvent(PlaybackMode mode) {
+    Event e{};
+    e.type = EventType::PlaybackModeLoaded;
+    e.payload.playback_mode_loaded.mode = mode;
+    return e;
+}
+
+inline Event makeVolumeLoadedEvent(uint8_t level) {
     Event e{};
     e.type = EventType::VolumeLoaded;
-    e.payload.volume_loaded.percent = percent;
+    e.payload.volume_loaded.level = level;
     return e;
 }

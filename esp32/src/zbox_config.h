@@ -19,14 +19,15 @@
 #define LED_COUNT 12
 #define LED_BRIGHTNESS 40
 
-#define BTN_A 32
-#define BTN_B 33
+#define BTN_A 36 // VP / input-only, external pull-up required
+#define BTN_B 39 // VN / input-only, external pull-up required
 #define BTN_C 25 // VOL- (RTC)
 #define BTN_D 26 // VOL+ (RTC, deep-sleep wake through ext0)
 #define BTN_COUNT 4
 
-#define JBL_POWER 13  // NPN transistor driving the speaker power button
-#define JBL_STATUS 34 // ADC input for the speaker status line (10k/22k divider)
+#define AUDIO_I2S_BCLK 32
+#define AUDIO_I2S_LRCK 33
+#define AUDIO_I2S_DOUT 13
 #define BAT_ADC_PIN 35 // GPIO35 (I35) reads the onboard D32 Pro battery divider
 #define BAT_ADC_DIVIDER_RATIO 2.0f // D32 Pro: VBAT --100k-- GPIO35 --100k-- GND
 #define BAT_ADC_CALIBRATION 0.983f // Per-device ADC calibration factor
@@ -34,8 +35,6 @@
 // =============================================================================
 // Configuration
 // =============================================================================
-
-#define BT_SPEAKER_NAME "JBL GO 2"
 
 #define LONG_PRESS_MS 2000
 #define DOUBLE_CLICK_WINDOW_MS 350
@@ -52,16 +51,8 @@
 #define PN532_WAKE_SETTLE_MS 5
 #define AUDIO_BUF_SIZE 2048
 
-// JBL
-#define JBL_POWER_PRESS_MS 500
-#define JBL_STATUS_THRESHOLD 500  // ~0.4V; residual/noise stays below, ON is usually ~2V+
-#define JBL_BOOT_WAIT_MS 5000 // timeout for cold boot + A2DP reconnect
-
-// Bluetooth volume (AVRCP)
-#define BT_VOL_STEP 5
-#define BT_VOL_MIN 0
-#define BT_VOL_MAX 100
-#define BT_VOL_DEFAULT 50
+// Output volume
+#define SYSTEM_SOUND_VOL_PERCENT 20
 #define NIGHT_LIGHT_BRIGHTNESS_STEP 10
 #define NIGHT_LIGHT_BRIGHTNESS_MIN 10
 #define NIGHT_LIGHT_BRIGHTNESS_MAX 100

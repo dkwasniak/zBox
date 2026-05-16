@@ -1,5 +1,8 @@
 """zBox server for the ESP32-based NFC audio box."""
 
+import logging
+import shutil
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -7,13 +10,28 @@ from fastapi.staticfiles import StaticFiles
 from database import create_tables, SessionLocal, SystemSound
 from paths import DATA_DIR, MUSIC_DIR, SYSTEM_SOUNDS_DIR, WEB_DIR
 from routers import api, admin
-from system_sounds import ACTIVE_SYSTEM_SOUND_NAMES
+from system_sounds import ACTIVE_SYSTEM_SOUND_NAMES, DEFAULT_SYSTEM_SOUND_FILES
+
+
+def configure_logging() -> None:
+    root = logging.getLogger()
+    if root.handlers:
+        root.setLevel(logging.INFO)
+        return
+
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
 
 
 # Create runtime directories if they do not exist yet.
 MUSIC_DIR.mkdir(parents=True, exist_ok=True)
 SYSTEM_SOUNDS_DIR.mkdir(parents=True, exist_ok=True)
 DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+configure_logging()
+logger = logging.getLogger("zbox.main")
 
 # Initialize the database.
 create_tables()
@@ -37,13 +55,28 @@ def seed_system_sounds():
         for name in ACTIVE_SYSTEM_SOUND_NAMES:
             existing = db.query(SystemSound).filter(SystemSound.name == name).first()
             if not existing:
-                db.add(SystemSound(name=name))
+                existing = SystemSound(name=name)
+                db.add(existing)
+
+            default_filename = DEFAULT_SYSTEM_SOUND_FILES.get(name)
+            if not default_filename:
+                continue
+
+            default_path = SYSTEM_SOUNDS_DIR / default_filename
+            if not default_path.exists():
+                bundled_path = MUSIC_DIR / "system" / default_filename
+                if bundled_path.exists() and bundled_path != default_path:
+                    shutil.copy2(bundled_path, default_path)
+
+            if not existing.filename and default_path.exists():
+                existing.filename = default_filename
         db.commit()
     finally:
         db.close()
 
 
 seed_system_sounds()
+logger.info("zBox server initialized")
 
 app = FastAPI(
     title="zBox",

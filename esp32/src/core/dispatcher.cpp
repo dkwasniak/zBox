@@ -45,7 +45,7 @@ static AppState s_state{};
 struct TransitionEntry {
     uint32_t   timestamp_ms;
     EventType  event_type;
-    BtState    bt_state;
+    BtHeadphonesState bt_state;
     AudioState audio_state;
     uint8_t    effect_count;
 };
@@ -136,7 +136,7 @@ static void onAudioFeedbackEvent(const Event& ev) {
 static void ringPush(uint32_t ts, const Event& ev, const ReduceResult& r) {
     s_ring[s_ring_head] = {
         ts, ev.type,
-        r.next_state.bt_state,
+        r.next_state.bt_headphones_state,
         r.next_state.audio_state,
         r.effect_count
     };
@@ -155,7 +155,7 @@ static void applyLedScene(const LedSceneParams& scene) {
         case LedSceneType::NightLight:
             ledSetNightLight(scene.params.night_light.percent); break;
         case LedSceneType::VolumeOverlay:
-            ledShowVolume(scene.params.volume.percent); break;
+            ledShowVolume(scene.params.volume.level); break;
         case LedSceneType::BatteryPreview:
             ledShowBattery(scene.params.battery.bars); break;
         case LedSceneType::SyncEntry:     ledSetSyncEntry(); break;
@@ -165,14 +165,13 @@ static void applyLedScene(const LedSceneParams& scene) {
 
 // ----- Effect execution (Stage 2: BT/NFC domain; Stage 3: audio domain) -----
 #if DISPATCHER_OWNS_BT_NFC
-static void executeEffect(const Effect& eff) {
-    uint32_t now = millis();
+static void executeEffect(const Effect& eff, uint32_t now) {
     switch (eff.type) {
-        case EffectType::SetVolume:
+        case EffectType::SetOutputVolume:
 #if DISPATCHER_OWNS_BUTTONS
-            setBtVolumeAndApply(eff.payload.volume.level_percent);
+            setOutputVolumeAndApply(eff.payload.volume.level_percent);
 #else
-            applyBtVolume();
+            applyOutputVolume();
 #endif
             break;
 
@@ -244,16 +243,13 @@ static void executeEffect(const Effect& eff) {
             break;
 #endif // DISPATCHER_OWNS_AUDIO
 
-        case EffectType::TriggerBtRecoveryPulse:
-            btAdapterTriggerRecoveryPulse(eff.payload.audio_control.cmd_id);
-            break;
-        case EffectType::TriggerBtDiscoveryRestart:
-            btAdapterTriggerDiscoveryRestart(eff.payload.audio_control.cmd_id);
+        case EffectType::StartBtHeadphonesMode:
+            btAdapterStartHeadphonesMode(0);
             break;
 
 #if DISPATCHER_OWNS_SLEEP
-        case EffectType::ShutdownBt:
-            btAdapterShutdown(0);
+        case EffectType::StopBtHeadphonesMode:
+            btAdapterStopHeadphonesMode(0);
             break;
         case EffectType::EnterDeepSleep:
             sleepExecuteDeepSleep(eff.payload.deep_sleep.kind);
@@ -263,12 +259,12 @@ static void executeEffect(const Effect& eff) {
 
         default: break;
     }
-    (void)now;
 }
 
 static void executeEffects(const ReduceResult& result) {
+    const uint32_t now = millis();
     for (uint8_t i = 0; i < result.effect_count; i++) {
-        executeEffect(result.effects[i]);
+        executeEffect(result.effects[i], now);
     }
 }
 #endif
@@ -286,10 +282,6 @@ static void checkDeadlines(const AppState& s) {
         postEventFromTask(makeEvent(EventType::BatteryPreviewExpired));
     if (s.brightness_save_deadline_ms   && now >= s.brightness_save_deadline_ms)
         postEventFromTask(makeEvent(EventType::BrightnessSaveDeadlineFired));
-    if (s.jbl_recovery_deadline_ms      && now >= s.jbl_recovery_deadline_ms)
-        postEventFromTask(makeEvent(EventType::JblRecoveryTimeoutFired));
-    if (s.bt_reconnect_deadline_ms      && now >= s.bt_reconnect_deadline_ms)
-        postEventFromTask(makeEvent(EventType::BtReconnectTimeoutFired));
 #if DISPATCHER_OWNS_AUDIO
     checkPendingTimeouts(now);
 #endif
@@ -318,7 +310,7 @@ static void dispatcherTask(void*) {
 
             LOGI("[DISP] ev=%d → {bt=%d, audio=%d, boot=%d} +%u fx\n",
                  (int)ev.type,
-                 (int)result.next_state.bt_state,
+                 (int)result.next_state.bt_headphones_state,
                  (int)result.next_state.audio_state,
                  (int)result.next_state.boot_state,
                  result.effect_count);
@@ -362,18 +354,6 @@ static void dispatcherTask(void*) {
 void dispatcherInit() {
     g_dispatcherQueue = xQueueCreate(DISPATCHER_QUEUE_DEPTH, sizeof(Event));
     MUSICBOX_ASSERT(g_dispatcherQueue != nullptr, "dispatcher queue alloc failed");
-}
-
-void dispatcherSetInitialPlaybackMode(PlaybackMode mode) {
-    s_state.playback_mode = mode;
-}
-
-void dispatcherSetInitialVolume(uint8_t percent) {
-    s_state.music_volume_percent = percent;
-}
-
-void dispatcherSetInitialNightLightBrightness(uint8_t percent) {
-    s_state.night_light_brightness_percent = percent;
 }
 
 void dispatcherStartTask() {

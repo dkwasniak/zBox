@@ -4,11 +4,9 @@
 // Call once after audioInit() to capture initial BT connection state.
 void btAdapterInit();
 
-// Call each loop iteration. Runs old audioPollBtConnection() (dual-call)
-// then posts BtConnected / BtDisconnected to dispatcher on state change.
+// Call each loop iteration and post BtConnected/BtDisconnected edges while
+// the temporary headphones mode is active.
 void btAdapterPoll();
 
-// Stage 2+: called by dispatcher executor when DISPATCHER_OWNS_BT_NFC = 1
-void btAdapterTriggerRecoveryPulse(CmdId cmd_id);
-void btAdapterTriggerDiscoveryRestart(CmdId cmd_id);
-void btAdapterShutdown(CmdId cmd_id);
+void btAdapterStartHeadphonesMode(CmdId cmd_id);
+void btAdapterStopHeadphonesMode(CmdId cmd_id);

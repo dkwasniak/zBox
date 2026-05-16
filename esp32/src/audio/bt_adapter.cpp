@@ -5,51 +5,60 @@
 #include "event_queue.h"
 #include "events.h"
 #include "logging.h"
-#include <esp_bt.h>
-#include <Arduino.h>
 
 static bool s_prevConnected = false;
+static bool s_stopPending = false;
+
+static void postBtStopCompleted() {
+    s_stopPending = false;
+    s_prevConnected = false;
+    postEventFromTask(makeEvent(EventType::BtHeadphonesModeStopped));
+    LOGI("[BT_ADAPTER] BtHeadphonesModeStopped\n");
+}
 
 void btAdapterInit() {
-    s_prevConnected = audioBtIsConnected();
+    s_prevConnected = audioBtHeadphonesAreConnected();
+    s_stopPending = false;
 }
 
 void btAdapterPoll() {
-#if DISPATCHER_OWNS_BT_NFC
-    // Dispatcher authoritative: poll directly; skip old audioPollBtConnection().
-    // Write g_btConnected for audio.cpp internal state tracking.
-    bool connected = audioBtIsConnected();
-    g_btConnected = connected;
-#else
-    // Stage 1 dual-call: run old handler first so g_btConnected and loop() logic work.
-    audioPollBtConnection();
-    bool connected = audioBtIsConnected();
-#endif
+    const bool running = audioBtHeadphonesModeIsRunning();
+    const bool connected = running && audioBtHeadphonesAreConnected();
+
+    if (s_stopPending) {
+        if (!running) {
+            postBtStopCompleted();
+        }
+        return;
+    }
 
     if (connected != s_prevConnected) {
         s_prevConnected = connected;
-        EventType type = connected ? EventType::BtConnected : EventType::BtDisconnected;
-        postEventFromTask(makeEvent(type));
+        postEventFromTask(makeEvent(connected ? EventType::BtConnected : EventType::BtDisconnected));
         LOGI("[BT_ADAPTER] %s\n", connected ? "BtConnected" : "BtDisconnected");
     }
 }
 
-void btAdapterTriggerRecoveryPulse(CmdId cmd_id) {
-    (void)cmd_id;  // Stage 2+
-}
-
-void btAdapterTriggerDiscoveryRestart(CmdId cmd_id) {
-    (void)cmd_id;  // Stage 2+
-}
-
-void btAdapterShutdown(CmdId cmd_id) {
+void btAdapterStartHeadphonesMode(CmdId cmd_id) {
     (void)cmd_id;
-    LOGC("[BT_ADAPTER] Shutting down BT controller\n");
-    esp_err_t err = esp_bt_controller_disable();
-    if (err != ESP_OK) {
-        LOGW("[BT_ADAPTER] esp_bt_controller_disable err=%d (ok if already disabled)\n", (int)err);
+    s_stopPending = false;
+    if (!audioStartBtHeadphonesMode()) {
+        postEventFromTask(makeEvent(EventType::BtHeadphonesModeStartFailed));
+        return;
     }
-    delay(50);
-    // Always report success — sleep must not be blocked by BT state
-    postEventFromTask(makeEvent(EventType::BtShutdownCompleted));
+    const bool connected = audioBtHeadphonesAreConnected();
+    s_prevConnected = connected;
+    if (connected) {
+        postEventFromTask(makeEvent(EventType::BtConnected));
+        LOGI("[BT_ADAPTER] BtConnected (already connected on mode start)\n");
+    }
+}
+
+void btAdapterStopHeadphonesMode(CmdId cmd_id) {
+    (void)cmd_id;
+    s_stopPending = true;
+    audioStopBtHeadphonesMode();
+    if (!audioBtHeadphonesModeIsRunning()) {
+        postBtStopCompleted();
+    }
 }

@@ -61,7 +61,7 @@ void ledSetWaitBt();
 void ledSetIdle();
 void ledSetPlaying();
 void ledSetNightLight(int brightnessPercent);
-void ledShowVolume(int volumePercent);
+void ledShowVolume(int volumeLevel);
 void ledShowModeChange(bool musicMode);
 void ledSetSleepReady();
 void ledSetWarningFlash();

@@ -21,6 +21,7 @@ inline unsigned long millis() { return 0; }
 #define HEX 16
 
 // GPIO stubs (used by button_adapter native tests)
+#define INPUT        0
 #define INPUT_PULLUP 2
 #define CHANGE       3
 inline void pinMode(int, int) {}

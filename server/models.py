@@ -125,6 +125,12 @@ class DeviceSyncStartResponse(BaseModel):
     task_id: str
 
 
+class DeviceSyncFileStatus(BaseModel):
+    path: str
+    status: str
+    progress: int | None = None
+
+
 class DeviceSyncTaskStatus(BaseModel):
     task_id: str
     device_id: str
@@ -138,6 +144,7 @@ class DeviceSyncTaskStatus(BaseModel):
     current_file_index: int | None = None
     current_file_total: int | None = None
     current_file_progress: int | None = None
+    sync_files: list[DeviceSyncFileStatus]
     uploaded: list[str]
     deleted: list[str]
     uploaded_count: int

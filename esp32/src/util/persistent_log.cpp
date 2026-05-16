@@ -165,6 +165,7 @@ void logWritef(const char* level, bool persistent, const char* fmt, ...)
 
 void plogFlushToSd()
 {
+    if (!plogSdAttached) return;
     unsigned long now = millis();
     if (now - lastFlushMs < 10000) return;
     lastFlushMs = now;

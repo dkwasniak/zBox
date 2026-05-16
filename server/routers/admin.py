@@ -1,5 +1,6 @@
 """Admin API endpoints for the zBox portal."""
 
+import logging
 import os
 import uuid
 import subprocess
@@ -53,12 +54,14 @@ from system_sounds import ACTIVE_SYSTEM_SOUND_NAMES, ACTIVE_SYSTEM_SOUND_SET
 
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
+logger = logging.getLogger("zbox.admin")
 
 VALID_SYSTEM_SOUNDS = ACTIVE_SYSTEM_SOUND_SET
 
 # Global dictionaries tracking background task progress.
 youtube_tasks: Dict[str, dict] = {}
 device_sync_tasks: Dict[str, dict] = {}
+last_known_device_status: dict | None = None
 
 
 def _device_error_detail(exc: RequestException) -> str:
@@ -166,6 +169,7 @@ def _create_sync_task_state(task_id: str, device_id: str) -> dict:
         "current_file_index": None,
         "current_file_total": None,
         "current_file_progress": None,
+        "sync_files": [],
         "uploaded": [],
         "deleted": [],
         "uploaded_count": 0,
@@ -193,17 +197,61 @@ def _get_current_sync_task(device_id: str) -> dict | None:
     return max(running_tasks, key=lambda task: task.get("started_at") or "")
 
 
+def _remember_device_status(payload: dict) -> dict:
+    global last_known_device_status
+    last_known_device_status = dict(payload)
+    return last_known_device_status
+
+
+def _log_sync_progress(task_id: str, update: dict, requested_device_id: str, device: dict) -> None:
+    stage = update.get("stage")
+    current_file = update.get("current_file")
+    error = update.get("error")
+    if not stage and not current_file and not error:
+        return
+
+    logger.info(
+        "Sync progress task_id=%s requested_device_id=%s device_ip=%s stage=%s progress=%s current_file=%s file_progress=%s message=%s error=%s",
+        task_id,
+        requested_device_id,
+        device.get("ip", "unknown"),
+        stage,
+        update.get("progress"),
+        current_file,
+        update.get("current_file_progress"),
+        update.get("message"),
+        error,
+    )
+
+
 def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
     db = SessionLocal()
     try:
+        logger.info(
+            "Background sync task started task_id=%s requested_device_id=%s device_ip=%s",
+            task_id,
+            requested_device_id,
+            device.get("ip", "unknown"),
+        )
         _normalize_track_filenames(db)
         result = sync_device(
             device,
             db,
-            progress_callback=lambda update: device_sync_tasks[task_id].update(update),
+            progress_callback=lambda update: (
+                device_sync_tasks[task_id].update(update),
+                _log_sync_progress(task_id, update, requested_device_id, device),
+            ),
         )
         device_sync_tasks[task_id].update(result)
         device_sync_tasks[task_id]["finished_at"] = datetime.now(UTC).isoformat()
+        logger.info(
+            "Background sync task completed task_id=%s requested_device_id=%s resolved_device_id=%s uploaded_count=%s deleted_count=%s",
+            task_id,
+            requested_device_id,
+            result.get("device_id"),
+            result.get("uploaded_count"),
+            result.get("deleted_count"),
+        )
     except RequestException as exc:
         current = device_sync_tasks.get(task_id, _create_sync_task_state(task_id, requested_device_id))
         current.update({
@@ -214,6 +262,15 @@ def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
             "error": str(exc),
         })
         device_sync_tasks[task_id] = current
+        logger.warning(
+            "Background sync task failed with device connection error task_id=%s requested_device_id=%s device_ip=%s stage=%s progress=%s error=%s",
+            task_id,
+            requested_device_id,
+            device.get("ip", "unknown"),
+            current.get("stage"),
+            current.get("progress"),
+            exc,
+        )
     except Exception as exc:
         current = device_sync_tasks.get(task_id, _create_sync_task_state(task_id, requested_device_id))
         current.update({
@@ -224,6 +281,14 @@ def _run_device_sync_task(task_id: str, device: dict, requested_device_id: str):
             "error": str(exc),
         })
         device_sync_tasks[task_id] = current
+        logger.exception(
+            "Background sync task crashed task_id=%s requested_device_id=%s device_ip=%s stage=%s progress=%s",
+            task_id,
+            requested_device_id,
+            device.get("ip", "unknown"),
+            current.get("stage"),
+            current.get("progress"),
+        )
     finally:
         db.close()
 
@@ -299,9 +364,6 @@ async def upload_track(
 
 def download_youtube_task(task_id: str, title: str, youtube_url: str):
     """Background task for YouTube audio import."""
-    import logging
-    logger = logging.getLogger(__name__)
-
     try:
         youtube_tasks[task_id] = {
             'status': 'downloading',
@@ -754,10 +816,31 @@ def update_device_settings(payload: DeviceSettings):
 
 @router.get("/devices", response_model=List[DeviceStatus])
 def list_devices():
-    """Return the configured device if it is reachable."""
+    """Return the configured device, falling back to the last known status during active sync."""
     try:
-        return [fetch_device_status(_get_device_or_404())]
-    except RequestException:
+        device = _get_device_or_404()
+        payload = _remember_device_status(fetch_device_status(device))
+        return [payload]
+    except RequestException as exc:
+        configured = get_device_settings()
+        running_syncs = [
+            task_id for task_id, task in device_sync_tasks.items()
+            if task.get("status") == "running"
+        ]
+        if running_syncs and last_known_device_status:
+            logger.warning(
+                "Configured device status fetch failed during active sync; returning cached device status configured_ip=%s running_sync_task_ids=%s error=%s",
+                configured.get("ip") or "unknown",
+                running_syncs,
+                exc,
+            )
+            return [dict(last_known_device_status)]
+        logger.warning(
+            "Configured device is unreachable configured_ip=%s running_sync_task_ids=%s error=%s",
+            configured.get("ip") or "unknown",
+            running_syncs,
+            exc,
+        )
         return []
 
 
@@ -767,6 +850,7 @@ def get_device_files(device_id: str):
     try:
         return fetch_device_files(_get_device_or_404())
     except RequestException as exc:
+        logger.warning("Fetching device files failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
@@ -775,6 +859,7 @@ def get_device_logs(device_id: str):
     try:
         return fetch_device_logs(_get_device_or_404())
     except RequestException as exc:
+        logger.warning("Fetching device logs failed device_id=%s error=%s", device_id, exc)
         detail = _device_error_detail(exc)
         status = exc.response.status_code if exc.response is not None else 502
         raise HTTPException(status_code=status, detail=detail) from exc
@@ -785,6 +870,13 @@ def get_device_log_content(device_id: str, name: str, tail: int = 200):
     try:
         return fetch_device_log_content(_get_device_or_404(), name=name, tail=tail)
     except RequestException as exc:
+        logger.warning(
+            "Fetching device log content failed device_id=%s log_name=%s tail=%s error=%s",
+            device_id,
+            name,
+            tail,
+            exc,
+        )
         detail = _device_error_detail(exc)
         status = exc.response.status_code if exc.response is not None else 502
         raise HTTPException(status_code=status, detail=detail) from exc
@@ -795,6 +887,7 @@ def get_device_log_download(device_id: str, name: str):
     try:
         response = download_device_log(_get_device_or_404(), name=name)
     except RequestException as exc:
+        logger.warning("Downloading device log failed device_id=%s log_name=%s error=%s", device_id, name, exc)
         detail = _device_error_detail(exc)
         status = exc.response.status_code if exc.response is not None else 502
         raise HTTPException(status_code=status, detail=detail) from exc
@@ -821,6 +914,14 @@ def check_device_sync(device_id: str, db: Session = Depends(get_db)):
     try:
         _normalize_track_filenames(db)
         plan = build_sync_plan(_get_device_or_404(), db)
+        logger.info(
+            "Sync check completed device_id=%s resolved_device_id=%s needs_sync=%s upload_count=%s delete_count=%s",
+            device_id,
+            plan["device_id"],
+            plan["needs_sync"],
+            plan["upload_count"],
+            plan["delete_count"],
+        )
         return {
             "device_id": plan["device_id"],
             "needs_sync": plan["needs_sync"],
@@ -849,6 +950,7 @@ def check_device_sync(device_id: str, db: Session = Depends(get_db)):
             "system_sounds_manifest_needs_update": plan["system_sounds_manifest_needs_update"],
         }
     except RequestException as exc:
+        logger.warning("Sync check failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
@@ -858,6 +960,7 @@ def get_device_config(device_id: str):
     try:
         return fetch_led_config(_get_device_or_404())
     except RequestException as exc:
+        logger.warning("Fetching device config failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
@@ -867,8 +970,15 @@ def save_device_config(device_id: str, payload: dict):
     try:
         device = _get_device_or_404()
         push_led_config(device, payload)
+        logger.info(
+            "Device config saved device_id=%s device_ip=%s keys=%s",
+            device_id,
+            device.get("ip", "unknown"),
+            sorted(payload.keys()),
+        )
         return {"saved": True, "device_id": device_id}
     except RequestException as exc:
+        logger.warning("Saving device config failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
@@ -878,10 +988,23 @@ def sync_device_now(device_id: str):
     try:
         current_task = _get_current_sync_task(device_id)
         if current_task:
+            logger.info(
+                "Reusing running sync task device_id=%s task_id=%s progress=%s stage=%s",
+                device_id,
+                current_task["task_id"],
+                current_task.get("progress"),
+                current_task.get("stage"),
+            )
             return {"task_id": current_task["task_id"]}
         device = _get_device_or_404()
         task_id = uuid.uuid4().hex
         device_sync_tasks[task_id] = _create_sync_task_state(task_id, device_id)
+        logger.info(
+            "Starting new sync task device_id=%s task_id=%s device_ip=%s",
+            device_id,
+            task_id,
+            device.get("ip", "unknown"),
+        )
         thread = threading.Thread(
             target=_run_device_sync_task,
             args=(task_id, device, device_id),
@@ -890,6 +1013,7 @@ def sync_device_now(device_id: str):
         thread.start()
         return {"task_id": task_id}
     except RequestException as exc:
+        logger.warning("Starting sync failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
 
 
@@ -905,6 +1029,7 @@ def get_current_device_sync(device_id: str):
 def get_device_sync_status(device_id: str, task_id: str):
     task = device_sync_tasks.get(task_id)
     if not task or task.get("device_id") != device_id:
+        logger.warning("Requested unknown sync task device_id=%s task_id=%s", device_id, task_id)
         raise HTTPException(status_code=404, detail="Sync task not found")
     return task
 
@@ -914,6 +1039,8 @@ def restart_device_now(device_id: str):
     """Restart the device after service operations."""
     try:
         restart_device(_get_device_or_404())
+        logger.warning("Restart requested from admin device_id=%s", device_id)
         return {"restart": True, "device_id": device_id}
     except RequestException as exc:
+        logger.warning("Restarting device failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc

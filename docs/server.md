@@ -64,6 +64,39 @@ The `/admin/...` routes provide:
 - device sync planning and execution
 - diagnostic log browsing and download
 
+## Sync diagnostics
+
+The backend now emits structured application logs for device connectivity and sync execution. The most useful log streams are:
+
+- `zbox.main`: server startup and base runtime initialization
+- `zbox.admin`: admin-triggered sync task lifecycle, per-stage progress, offline detection, log download failures, and restart requests
+- `zbox.device_sync`: direct HTTP interactions with the ESP32, sync plan generation, per-file upload start/finish, delete operations, metadata writes, and retry-after-connection-reset events
+
+When investigating a failed or interrupted sync, look for:
+
+- the sync `task_id`
+- configured device IP and resolved `device_id`
+- current sync `stage`
+- `current_file` and per-file upload progress
+- connection errors raised while polling `/diag/status`, `/diag/files`, `/diag/logs`, or `/diag/upload`
+
+## Sync task status payload
+
+The admin sync status response includes both aggregate progress and per-file progress for uploads.
+
+Important fields on `GET /admin/devices/{device_id}/sync/{task_id}/status`:
+
+- `progress`: whole-task progress in percent
+- `stage`: current sync stage such as `fetching_device_state`, `uploading_audio`, or `writing_system_sounds`
+- `current_file`: file currently being uploaded
+- `current_file_progress`: percent for the current file
+- `sync_files`: ordered list of files scheduled for upload, each with:
+  - `path`
+  - `status`: `pending`, `uploading`, or `uploaded`
+  - `progress`
+
+The web admin uses `sync_files` to render the live upload queue so short connectivity glitches are easier to correlate with the exact file being transferred.
+
 ## Runtime model
 
 ```bash

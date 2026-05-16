@@ -29,7 +29,7 @@ struct LedSceneParams {
     union {
         struct { uint8_t step; uint8_t total; } boot_progress;
         struct { uint8_t percent; }             night_light;
-        struct { uint8_t percent; }             volume;
+        struct { uint8_t level; }               volume;
         struct { uint8_t bars; }                battery;
     } params;
 };

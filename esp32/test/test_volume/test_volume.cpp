@@ -2,25 +2,10 @@
 #include <Arduino.h>
 #include <algorithm>
 #include "helpers.h"
-
-// Constants from zbox_config.h (local copies for pure-logic tests)
-#define BT_VOL_STEP 5
-#define BT_VOL_MIN  0
-#define BT_VOL_MAX  100
+#include "volume_scale.h"
 #define NIGHT_LIGHT_BRIGHTNESS_STEP 10
 #define NIGHT_LIGHT_BRIGHTNESS_MIN 10
 #define NIGHT_LIGHT_BRIGHTNESS_MAX 100
-
-// Pure volume logic (math only, no hardware side effects)
-static int volumeUp(int current)
-{
-    return std::min(current + BT_VOL_STEP, BT_VOL_MAX);
-}
-
-static int volumeDown(int current)
-{
-    return std::max(current - BT_VOL_STEP, BT_VOL_MIN);
-}
 
 static int nightLightUp(int current)
 {
@@ -34,34 +19,24 @@ static int nightLightDown(int current)
 
 // Volume tests
 
-void test_vol_up_normal()
+void test_volume_level_table_matches_expected_percents()
 {
-    TEST_ASSERT_EQUAL_INT(55, volumeUp(50));
+    const uint8_t expected[] = {0, 1, 2, 4, 6, 9, 13, 18, 25, 34, 45, 60, 80};
+    for (uint8_t level = OUTPUT_VOL_LEVEL_MIN; level <= OUTPUT_VOL_LEVEL_MAX; ++level) {
+        TEST_ASSERT_EQUAL_UINT8(expected[level], volumeLevelToPercent(level));
+    }
 }
 
-void test_vol_up_clamps_at_100()
+void test_volume_level_up_steps_one_level_and_clamps()
 {
-    TEST_ASSERT_EQUAL_INT(100, volumeUp(100));
+    TEST_ASSERT_EQUAL_UINT8(8, stepVolumeLevelUp(7));
+    TEST_ASSERT_EQUAL_UINT8(OUTPUT_VOL_LEVEL_MAX, stepVolumeLevelUp(OUTPUT_VOL_LEVEL_MAX));
 }
 
-void test_vol_near_max()
+void test_volume_level_down_steps_one_level_and_clamps()
 {
-    TEST_ASSERT_EQUAL_INT(100, volumeUp(98));
-}
-
-void test_vol_down_normal()
-{
-    TEST_ASSERT_EQUAL_INT(45, volumeDown(50));
-}
-
-void test_vol_down_clamps_at_0()
-{
-    TEST_ASSERT_EQUAL_INT(0, volumeDown(0));
-}
-
-void test_vol_near_min()
-{
-    TEST_ASSERT_EQUAL_INT(0, volumeDown(2));
+    TEST_ASSERT_EQUAL_UINT8(6, stepVolumeLevelDown(7));
+    TEST_ASSERT_EQUAL_UINT8(OUTPUT_VOL_LEVEL_MIN, stepVolumeLevelDown(OUTPUT_VOL_LEVEL_MIN));
 }
 
 void test_night_light_up_normal()
@@ -152,12 +127,9 @@ void tearDown() {}
 int main()
 {
     UNITY_BEGIN();
-    RUN_TEST(test_vol_up_normal);
-    RUN_TEST(test_vol_up_clamps_at_100);
-    RUN_TEST(test_vol_near_max);
-    RUN_TEST(test_vol_down_normal);
-    RUN_TEST(test_vol_down_clamps_at_0);
-    RUN_TEST(test_vol_near_min);
+    RUN_TEST(test_volume_level_table_matches_expected_percents);
+    RUN_TEST(test_volume_level_up_steps_one_level_and_clamps);
+    RUN_TEST(test_volume_level_down_steps_one_level_and_clamps);
     RUN_TEST(test_night_light_up_normal);
     RUN_TEST(test_night_light_up_clamps);
     RUN_TEST(test_night_light_down_normal);

@@ -5,6 +5,7 @@ const AppCtx = createContext({
   tracks: [], figurines: [], sounds: [], device: null,
   deviceSettings: { ip: "" }, loading: true, error: null,
   refresh: () => {}, refreshDevice: () => {},
+  syncActive: false, setSyncActive: () => {},
 });
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
@@ -13,6 +14,17 @@ const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
   "softness": "medium",
   "showLed": false
 }/*EDITMODE-END*/;
+
+function loadStoredDevice() {
+  try {
+    const raw = localStorage.getItem("zbox_last_device");
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.device_id ? parsed : null;
+  } catch {
+    return null;
+  }
+}
 
 function App() {
   const [tweaks, setTweak] = useTweaks(TWEAK_DEFAULTS);
@@ -25,10 +37,12 @@ function App() {
   const [tracks, setTracks] = useState([]);
   const [figurines, setFigurines] = useState([]);
   const [sounds, setSounds] = useState([]);
-  const [device, setDevice] = useState(null);
+  const [device, setDevice] = useState(() => loadStoredDevice());
   const [deviceSettings, setDeviceSettings] = useState({ ip: "" });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [syncActive, setSyncActive] = useState(false);
+  const deviceFailureCountRef = useRef(0);
 
   const fetchAll = useCallback(async () => {
     try {
@@ -51,13 +65,33 @@ function App() {
   }, []);
 
   const fetchDevice = useCallback(async () => {
+    if (syncActive) {
+      return;
+    }
     try {
       const devs = await apiFetch("/admin/devices");
-      setDevice(devs && devs.length > 0 ? devs[0] : null);
+      if (devs && devs.length > 0) {
+        deviceFailureCountRef.current = 0;
+        localStorage.setItem("zbox_last_device", JSON.stringify(devs[0]));
+        setDevice(devs[0]);
+        return;
+      }
+
+      deviceFailureCountRef.current += 1;
+      setDevice(current => {
+        const next = current && deviceFailureCountRef.current < 3 ? current : null;
+        if (!next) localStorage.removeItem("zbox_last_device");
+        return next;
+      });
     } catch {
-      setDevice(null);
+      deviceFailureCountRef.current += 1;
+      setDevice(current => {
+        const next = current && deviceFailureCountRef.current < 3 ? current : null;
+        if (!next) localStorage.removeItem("zbox_last_device");
+        return next;
+      });
     }
-  }, []);
+  }, [syncActive]);
 
   useEffect(() => {
     fetchAll();
@@ -117,6 +151,8 @@ function App() {
     refresh: fetchAll,
     refreshDevice: fetchDevice,
     setDeviceSettings,
+    syncActive,
+    setSyncActive,
   };
   const intl = { locale, setLocale, t };
 

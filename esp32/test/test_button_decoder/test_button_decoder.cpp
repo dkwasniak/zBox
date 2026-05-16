@@ -192,6 +192,23 @@ void test_a_debounced_release_tick_accumulates_click() {
 
 // ── B long hold → ModeToggleRequested, suppresses PlayPause on release ────────
 
+void test_a_long_hold_posts_bt_headphones_request() {
+    gpioSet(PIN[0], true);
+    buttonDecoderFeed({0, true, 1000});
+    buttonDecoderTick(1000 + LONG_PRESS_MS + 10);
+    TEST_ASSERT_TRUE(hasEvent(EventType::BtHeadphonesModeRequested));
+    TEST_ASSERT_FALSE(hasEvent(EventType::PlayPausePressed));
+}
+
+void test_d_long_hold_posts_battery_check() {
+    gpioSet(PIN[3], true);
+    buttonDecoderFeed({3, true, 1000});
+    buttonDecoderTick(1000 + LONG_PRESS_MS + 10);
+    TEST_ASSERT_TRUE(hasEvent(EventType::BatteryCheckRequested));
+    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeUpPressed));
+    TEST_ASSERT_EQUAL_UINT8(5, s_posted[0].payload.battery_check.bars);
+}
+
 void test_b_long_hold_posts_mode_toggle() {
     gpioSet(PIN[1], true);
     buttonDecoderFeed({1, true, 1000});
@@ -259,7 +276,8 @@ void test_d_multiple_quick_presses_each_produce_volume_up() {
 void test_d_stuck_down_past_long_press_no_phantom_event() {
     // Stuck b.down on D for > LONG_PRESS_MS, GPIO HIGH (not physically held).
     // Short-press synthesis window has expired, so no VolumeUp.
-    // D has no long-press handler, so no long-press event either.
+    // D now owns battery preview on long hold, but that must not trigger from
+    // a phantom long-press caused by a swallowed release.
     // Key check: state is cleaned up so the next real press works normally.
     gpioSet(PIN[3], true);
     buttonDecoderFeed({3, true, 1000});
@@ -392,6 +410,8 @@ int main() {
     RUN_TEST(test_a_double_click_posts_prev_track);
     RUN_TEST(test_b_double_click_posts_next_track);
     RUN_TEST(test_a_debounced_release_tick_accumulates_click);
+    RUN_TEST(test_a_long_hold_posts_bt_headphones_request);
+    RUN_TEST(test_d_long_hold_posts_battery_check);
 
     RUN_TEST(test_b_long_hold_posts_mode_toggle);
     RUN_TEST(test_b_long_hold_suppresses_playpause);

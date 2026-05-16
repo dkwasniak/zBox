@@ -244,6 +244,7 @@ const TRANSLATIONS = {
       replace: "Replace",
     },
     soundSlots: {
+      startup: "Device startup",
       power_off: "Device power off",
       nfc_mode: "NFC mode",
       music_mode: "Music mode",
@@ -487,6 +488,7 @@ const TRANSLATIONS = {
       replace: "Podmień",
     },
     soundSlots: {
+      startup: "Start urządzenia",
       power_off: "Wyłączenie urządzenia",
       nfc_mode: "Tryb NFC",
       music_mode: "Tryb Music",
@@ -596,6 +598,7 @@ function fmtPercent(used, total) {
 }
 
 const SOUND_SLOT_META = {
+  startup:    { labelKey: "soundSlots.startup",   event: "system.startup",   icon: "ready",      tone: "ok"     },
   power_off:  { labelKey: "soundSlots.power_off", event: "system.power_off", icon: "power",      tone: "coral"  },
   nfc_mode:   { labelKey: "soundSlots.nfc_mode",  event: "mode.nfc",         icon: "tag",        tone: "coral"  },
   music_mode: { labelKey: "soundSlots.music_mode",event: "mode.music",       icon: "music",      tone: "petrol" },

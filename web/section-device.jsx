@@ -2,7 +2,7 @@
 const { useState: useStateDev, useEffect: useEffectDev, useContext: useContextDev, useRef: useRefDev } = React;
 
 function DeviceSection({ offline }) {
-  const { device, deviceSettings, refresh, refreshDevice, setDeviceSettings } = useContextDev(AppCtx);
+  const { device, deviceSettings, refresh, refreshDevice, setDeviceSettings, setSyncActive } = useContextDev(AppCtx);
   const { locale, t } = useI18n();
   const [sdFiles, setSdFiles] = useStateDev(null);
   const [sdLoading, setSdLoading] = useStateDev(false);
@@ -32,6 +32,8 @@ function DeviceSection({ offline }) {
 
   useEffectDev(() => {
     if (!device) {
+      setSyncTask(null);
+      setSyncActive(false);
       setLogsMeta([]);
       setSelectedLog("");
       setLogContent("");
@@ -56,6 +58,11 @@ function DeviceSection({ offline }) {
   }, [device?.device_id]);
 
   useEffectDev(() => {
+    setSyncActive(syncTask?.status === "running");
+    return () => setSyncActive(false);
+  }, [syncTask?.status, setSyncActive]);
+
+  useEffectDev(() => {
     if (!device || !selectedLog) {
       setLogContent("");
       setLogTruncated(false);
@@ -75,6 +82,13 @@ function DeviceSection({ offline }) {
       })
       .finally(() => setLogContentLoading(false));
   }, [device?.device_id, selectedLog, logTail]);
+
+  useEffectDev(() => {
+    if (!device) return;
+    apiFetch(`/admin/devices/${device.device_id}/sync/current`)
+      .then(status => setSyncTask(status))
+      .catch(() => setSyncTask(null));
+  }, [device?.device_id]);
 
   // Sync task polling
   useEffectDev(() => {
@@ -415,7 +429,7 @@ function DeviceField({ lbl, val, mono, tone }) {
 // ── Sync Card ────────────────────────────────────────────────────────────────
 
 function SyncCardLive({ syncTask, syncBusy, syncStarting, onSync, offline }) {
-  const { t } = useI18n();
+  const { locale, t } = useI18n();
   if (!syncTask) {
     return (
       <div className="sync-card">
@@ -439,16 +453,29 @@ function SyncCardLive({ syncTask, syncBusy, syncStarting, onSync, offline }) {
     );
   }
 
-  const { status, progress, message, stage, current_file, current_file_index, current_file_total, uploaded_count, deleted_count, error } = syncTask;
+  const {
+    status,
+    progress,
+    message,
+    stage,
+    current_file,
+    current_file_index,
+    current_file_total,
+    current_file_progress,
+    uploaded_count,
+    deleted_count,
+    error,
+    sync_files,
+  } = syncTask;
 
   const steps = [
-    { label: t("device.checkChanges"),   stages: ["checking", "queued"],          meta: t("device.filesWord", { count: syncTask.upload_count || 0 }) },
+    { label: t("device.checkChanges"),   stages: ["fetching_device_state", "comparing_files", "queued"], meta: t("device.filesWord", { count: syncTask.upload_count || 0 }) },
     { label: t("device.tagMappings"),    stages: ["writing_mappings"],             meta: t("device.tagsWord", { count: syncTask.mappings_count || 0 }) },
-    { label: t("device.uploadFiles"),    stages: ["uploading"],                    meta: current_file_total ? `${current_file_index || 0} / ${current_file_total}` : "—" },
-    { label: t("device.systemSounds"),   stages: ["writing_system_sounds", "done"], meta: t("device.slotsWord", { count: syncTask.system_sounds_count || 0 }) },
+    { label: t("device.uploadFiles"),    stages: ["uploading_audio", "deleting_remote"], meta: current_file_total ? `${current_file_index || 0} / ${current_file_total}` : "—" },
+    { label: t("device.systemSounds"),   stages: ["writing_system_sounds", "completed"], meta: t("device.slotsWord", { count: syncTask.system_sounds_count || 0 }) },
   ];
 
-  const stageOrder = ["queued", "checking", "writing_mappings", "uploading", "writing_system_sounds", "done"];
+  const stageOrder = ["queued", "fetching_device_state", "comparing_files", "uploading_audio", "deleting_remote", "writing_mappings", "writing_system_sounds", "writing_led_config", "completed"];
   const currentIdx = stageOrder.indexOf(stage);
 
   const getStepStatus = (stepStages) => {
@@ -461,6 +488,17 @@ function SyncCardLive({ syncTask, syncBusy, syncStarting, onSync, offline }) {
 
   const isDone = status === "completed" || status === "done";
   const isError = status === "error";
+  const fileItems = sync_files || [];
+
+  const syncFileLabel = (item) => {
+    if (item.status === "uploaded") return localeLabel("gotowe", "done");
+    if (item.status === "uploading") return item.progress != null ? `${item.progress}%` : localeLabel("w toku", "in progress");
+    return localeLabel("oczekuje", "pending");
+  };
+
+  function localeLabel(pl, en) {
+    return locale === "pl" ? pl : en;
+  }
 
   return (
     <div className="sync-card">
@@ -506,6 +544,34 @@ function SyncCardLive({ syncTask, syncBusy, syncStarting, onSync, offline }) {
           );
         })}
       </div>
+
+      {!!fileItems.length && (
+        <div style={{ padding: "8px 24px 18px" }}>
+          <div style={{ fontSize: "var(--fs-caption)", color: "var(--ink-3)", marginBottom: 10 }}>
+            {t("device.uploadFiles")} · {t("device.filesWord", { count: fileItems.length })}
+          </div>
+          <div className="sync-file-list">
+            {fileItems.map((item) => {
+              const isCurrent = item.path === current_file && status === "running";
+              const itemProgress = isCurrent ? current_file_progress : item.progress;
+              return (
+                <div key={item.path} className={"sync-file-row " + item.status}>
+                  <div className="sync-file-main">
+                    <div className="sync-file-path">{item.path}</div>
+                    <div className="sync-file-state">{syncFileLabel({ ...item, progress: itemProgress })}</div>
+                  </div>
+                  <div className="sync-file-bar">
+                    <div
+                      className="sync-file-bar-fill"
+                      style={{ width: `${item.status === "uploaded" ? 100 : Math.max(0, Math.min(100, itemProgress || 0))}%` }}
+                    />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       {(isDone || isError) && (
         <div style={{ padding: "0 24px 18px" }}>

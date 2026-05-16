@@ -35,8 +35,8 @@ LedSceneParams deriveLedScene(const AppState& s) {
     }
 
     // Priority 6: waiting for BT speaker
-    if (s.bt_state == BtState::WaitingForSpeaker ||
-        s.bt_state == BtState::RecoveryPulsePending) {
+    if (s.bt_headphones_mode_active &&
+        s.bt_headphones_state == BtHeadphonesState::WaitingForHeadphones) {
         p.type = LedSceneType::WaitBt;
         return p;
     }
@@ -51,7 +51,7 @@ LedSceneParams deriveLedScene(const AppState& s) {
     // Priority 8: volume overlay (active while deadline is non-zero)
     if (s.volume_overlay_deadline_ms != 0) {
         p.type = LedSceneType::VolumeOverlay;
-        p.params.volume.percent = s.volume_overlay_level_percent;
+        p.params.volume.level = s.volume_overlay_level;
         return p;
     }
 

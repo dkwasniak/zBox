@@ -5,9 +5,11 @@
 #include <ArduinoJson.h>
 #include <FastLED.h>
 #include <SD.h>
+#include "battery.h"
 #include "zbox_config.h"
 #include "logging.h"
 #include "state.h"
+#include "volume_scale.h"
 
 // =============================================================================
 // Private module variables for LED
@@ -47,6 +49,9 @@ static volatile unsigned long ledVolumeShowTime = 0;
 static LedMode ledPreVolumeMode = LED_IDLE;
 static volatile int ledSyncLit = 0;
 static volatile int ledNightLightBrightnessPercent = NIGHT_LIGHT_BRIGHTNESS_DEFAULT;
+static bool s_lowBatteryWarningEnabled = false;
+static unsigned long s_lowBatteryLastCheckMs = 0;
+static unsigned long s_lowBatteryBlinkStartMs = 0;
 static LedConfig ledConfig = {
     .waitBtColor = {0, 0, 80},
     .idleColor = {0, 80, 0},
@@ -70,6 +75,14 @@ static LedConfig ledConfig = {
     .animateSyncEntry = true,
 };
 
+namespace {
+constexpr float LOW_BATTERY_WARNING_VOLTAGE = 3.725f;   // approx. 25% for 1S Li-Po
+constexpr unsigned long LOW_BATTERY_CHECK_MS = 60000UL; // sample battery once per minute
+constexpr unsigned long LOW_BATTERY_BLINK_MS = 1200UL;  // 4 short blinks
+constexpr unsigned long LOW_BATTERY_BLINK_STEP_MS = 150UL;
+constexpr uint8_t LOW_BATTERY_LED_INDEX = LED_COUNT - 1;
+}
+
 static CRGB toCRGB(const LedColorConfig &cfg)
 {
     return CRGB(cfg.r, cfg.g, cfg.b);
@@ -92,6 +105,67 @@ static CRGB scaledNightLightColor(int brightnessPercent)
         scale8(base.r, redLevel),
         scale8(base.g, greenLevel),
         scale8(base.b, blueLevel));
+}
+
+static CRGB batteryGradientColor(int index, int lit)
+{
+    if (lit <= 1) return CRGB(140, 0, 0);
+
+    const uint8_t t = static_cast<uint8_t>((index * 255) / (lit - 1));
+    if (t < 85) {
+        const uint8_t u = static_cast<uint8_t>((t * 255) / 85);
+        return CRGB(140, (50U * u) / 255, 0);
+    }
+    if (t < 170) {
+        const uint8_t u = static_cast<uint8_t>(((t - 85) * 255) / 85);
+        return CRGB(140 - ((40U * u) / 255), 50 + ((70U * u) / 255), 0);
+    }
+
+    const uint8_t u = static_cast<uint8_t>(((t - 170) * 255) / 85);
+    return CRGB(100 - ((100U * u) / 255), 120 + ((10U * u) / 255), 0);
+}
+
+static CRGB volumeGradientColor(int index, int lit)
+{
+    if (lit <= 1) return CRGB(0, 130, 0);
+
+    const uint8_t t = static_cast<uint8_t>((index * 255) / (lit - 1));
+    if (t < 85) {
+        const uint8_t u = static_cast<uint8_t>((t * 255) / 85);
+        return CRGB((130U * u) / 255, 130, 0);
+    }
+    if (t < 170) {
+        const uint8_t u = static_cast<uint8_t>(((t - 85) * 255) / 85);
+        return CRGB(130 + ((10U * u) / 255), 130 - ((80U * u) / 255), 0);
+    }
+
+    const uint8_t u = static_cast<uint8_t>(((t - 170) * 255) / 85);
+    return CRGB(140, 50 - ((50U * u) / 255), 0);
+}
+
+static void updateLowBatteryWarning(unsigned long now)
+{
+    if (s_lowBatteryLastCheckMs != 0 &&
+        now - s_lowBatteryLastCheckMs < LOW_BATTERY_CHECK_MS)
+        return;
+
+    s_lowBatteryLastCheckMs = now;
+    const float batteryVoltage = readBatteryVoltage();
+    s_lowBatteryWarningEnabled = batteryVoltage < LOW_BATTERY_WARNING_VOLTAGE;
+    if (s_lowBatteryWarningEnabled)
+        s_lowBatteryBlinkStartMs = now;
+}
+
+static void applyLowBatteryOverlay(unsigned long now)
+{
+    if (!s_lowBatteryWarningEnabled || LED_COUNT == 0)
+        return;
+
+    const unsigned long blinkElapsed = now - s_lowBatteryBlinkStartMs;
+    if (blinkElapsed < LOW_BATTERY_BLINK_MS &&
+        ((blinkElapsed / LOW_BATTERY_BLINK_STEP_MS) % 2 == 0)) {
+        leds[LOW_BATTERY_LED_INDEX] = CRGB(140, 0, 0);
+    }
 }
 
 static bool parseColor(JsonObject obj, const char *key, LedColorConfig &out)
@@ -384,16 +458,14 @@ void ledSetNightLight(int brightnessPercent)
     FastLED.show();
 }
 
-void ledShowVolume(int volumePercent)
+void ledShowVolume(int volumeLevel)
 {
     ledPreVolumeMode = (ledMode == LED_VOLUME) ? ledPreVolumeMode : ledMode;
     ledMode = LED_VOLUME;
-    int lit = map(volumePercent, BT_VOL_MIN, BT_VOL_MAX, 0, LED_COUNT);
-    if (volumePercent > BT_VOL_MIN && lit == 0)
-        lit = 1;
+    int lit = constrain((int)clampVolumeLevel(volumeLevel), 0, LED_COUNT);
     for (int i = 0; i < LED_COUNT; i++)
     {
-        leds[i] = (i < lit) ? toCRGB(ledConfig.volumeColor) : CRGB::Black;
+        leds[i] = (i < lit) ? volumeGradientColor(i, lit) : CRGB::Black;
     }
     FastLED.show();
     ledVolumeShowTime = millis();
@@ -554,22 +626,15 @@ void ledShowBattery(int bars)
     ledMode = LED_OFF;
     delay(20); // give the task time to exit FastLED.show()
 
-    // Colour depends on level — 5 distinct hues
-    CRGB color;
-    if      (bars >= 5) color = CRGB(0,    50, 140);  // blue   (full)
-    else if (bars == 4) color = CRGB(0,   130,   0);  // green
-    else if (bars == 3) color = CRGB(130, 120,   0);  // yellow
-    else if (bars == 2) color = CRGB(140,  50,   0);  // orange
-    else                color = CRGB(140,   0,   0);  // red    (critical)
-
     // Number of lit LEDs: bars=1 → 2, bars=2 → 4, bars=3 → 7, bars=4 → 9, bars=5 → 12
     int lit = map(bars, 1, 5, 2, LED_COUNT);
+    lit = constrain(lit, 1, LED_COUNT);
 
     // Phase 1: sweep in — light one LED at a time from the left
     FastLED.clear();
     FastLED.show();
     for (int i = 0; i < lit; i++) {
-        leds[i] = color;
+        leds[i] = batteryGradientColor(i, lit);
         FastLED.show();
         delay(40);
     }
@@ -583,7 +648,7 @@ void ledShowBattery(int bars)
             FastLED.clear();
             FastLED.show();
             delay(180);
-            for (int i = 0; i < lit; i++) leds[i] = color;
+            for (int i = 0; i < lit; i++) leds[i] = CRGB(140, 0, 0);
             FastLED.show();
             delay(180);
         }
@@ -610,6 +675,7 @@ static void ledTaskFunc(void *param)
     for (;;)
     {
         unsigned long now = millis();
+        updateLowBatteryWarning(now);
 
         // Heartbeat every 5s — BEFORE FastLED.show(), so the log is visible even if show() hangs
         if (now - lastLedHeartbeat > 5000) {
@@ -661,6 +727,7 @@ static void ledTaskFunc(void *param)
             {
                 fill_solid(leds, LED_COUNT, toCRGB(ledConfig.idleColor));
             }
+            applyLowBatteryOverlay(now);
             FastLED.show();
             break;
         }
@@ -695,6 +762,7 @@ static void ledTaskFunc(void *param)
                 uint8_t hue = beatHue + beatRot + (uint8_t)(i * 255 / LED_COUNT);
                 leds[i] = CHSV(hue, 230, beatBright);
             }
+            applyLowBatteryOverlay(now);
             FastLED.show();
             break;
         }

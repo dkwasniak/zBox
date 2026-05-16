@@ -11,12 +11,6 @@
 // Call during setup() before starting any adapter that may post events.
 void dispatcherInit();
 
-// Set initial AppState fields before the dispatcher task starts.
-// Must be called after setup() initializes playback mode (Stage 2+).
-void dispatcherSetInitialPlaybackMode(PlaybackMode mode);
-void dispatcherSetInitialVolume(uint8_t percent);
-void dispatcherSetInitialNightLightBrightness(uint8_t percent);
-
 // Creates the "app" FreeRTOS task. Call after all hardware adapters are ready.
 void dispatcherStartTask();
 

@@ -29,6 +29,9 @@ static String uploadTempPath;
 static String uploadFinalPath;
 static String uploadError;
 static uint32_t uploadSourceMtime = 0;
+static bool uploadInProgress = false;
+static size_t uploadBytesWritten = 0;
+static unsigned long uploadStartedAtMs = 0;
 static String syncHostname;
 static String syncDeviceId;
 
@@ -317,6 +320,19 @@ static void sendError(int code, const char *message)
     sendJson(code, doc);
 }
 
+static bool rejectWhileUploadBusy(const char *routeName)
+{
+    if (!uploadInProgress)
+        return false;
+
+    syncLogf("[SYNC] busy upload blocking route=%s target=%s bytes=%u",
+             routeName,
+             uploadFinalPath.c_str(),
+             (unsigned int)uploadBytesWritten);
+    sendError(503, "upload in progress");
+    return true;
+}
+
 static bool requireSdReady()
 {
     if (sdReady)
@@ -376,13 +392,24 @@ static void populateStatus(JsonDocument &doc)
 
 static void handleStatus()
 {
+    if (rejectWhileUploadBusy("status"))
+        return;
     JsonDocument doc;
     populateStatus(doc);
+    doc["upload_in_progress"] = uploadInProgress;
+    if (uploadInProgress)
+    {
+        doc["upload_path"] = uploadFinalPath;
+        doc["upload_bytes_written"] = (uint64_t)uploadBytesWritten;
+        doc["upload_elapsed_ms"] = millis() - uploadStartedAtMs;
+    }
     sendJson(200, doc);
 }
 
 static void handleFiles()
 {
+    if (rejectWhileUploadBusy("files"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -441,6 +468,8 @@ static bool writeJsonFile(const char *path, const String &body)
 
 static void handleWriteMappings()
 {
+    if (rejectWhileUploadBusy("write-mappings"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -462,6 +491,8 @@ static void handleWriteMappings()
 
 static void handleWriteSystemSounds()
 {
+    if (rejectWhileUploadBusy("write-system-sounds"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -483,6 +514,8 @@ static void handleWriteSystemSounds()
 
 static void handleGetLedConfig()
 {
+    if (rejectWhileUploadBusy("get-config"))
+        return;
     if (!requireSdReady())
         return;
     httpServer.send(200, "application/json", ledGetConfigJson());
@@ -490,6 +523,8 @@ static void handleGetLedConfig()
 
 static void handleSaveLedConfig()
 {
+    if (rejectWhileUploadBusy("save-config"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -511,6 +546,8 @@ static void handleSaveLedConfig()
 
 static void handleDeleteFile()
 {
+    if (rejectWhileUploadBusy("delete-file"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -534,6 +571,8 @@ static void handleDeleteFile()
 
 static void handleRestart()
 {
+    if (rejectWhileUploadBusy("restart"))
+        return;
     JsonDocument doc;
     doc["restart"] = true;
     sendJson(200, doc);
@@ -564,6 +603,8 @@ static void appendSyncLogInfo(JsonArray logs, const char *name)
 
 static void handleLogs()
 {
+    if (rejectWhileUploadBusy("logs"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -576,6 +617,8 @@ static void handleLogs()
 
 static void handleLogContent()
 {
+    if (rejectWhileUploadBusy("log-content"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -634,6 +677,8 @@ static void handleLogContent()
 
 static void handleLogDownload()
 {
+    if (rejectWhileUploadBusy("log-download"))
+        return;
     if (!requireSdReady())
         return;
 
@@ -663,14 +708,21 @@ static void handleUploadResult()
 {
     if (!uploadError.isEmpty())
     {
+        syncLogf("[SYNC] upload result error target=%s error=%s", uploadFinalPath.c_str(), uploadError.c_str());
         sendError(400, uploadError.c_str());
         uploadError = "";
+        uploadInProgress = false;
         return;
     }
 
+    syncLogf("[SYNC] upload result ok target=%s bytes=%u elapsed_ms=%lu",
+             uploadFinalPath.c_str(),
+             (unsigned int)uploadBytesWritten,
+             millis() - uploadStartedAtMs);
     JsonDocument doc;
     doc["uploaded"] = uploadFinalPath;
     sendJson(200, doc);
+    uploadInProgress = false;
 }
 
 static void handleUploadStream()
@@ -680,10 +732,13 @@ static void handleUploadStream()
     if (upload.status == UPLOAD_FILE_START)
     {
         esp_task_wdt_reset();
+        uploadInProgress = true;
         uploadError = "";
         uploadTempPath = "";
         uploadFinalPath = "";
         uploadSourceMtime = 0;
+        uploadBytesWritten = 0;
+        uploadStartedAtMs = millis();
         uploadFile = File();
 
         if (!sdReady)
@@ -699,6 +754,7 @@ static void handleUploadStream()
             return;
         }
         uploadSourceMtime = (uint32_t)httpServer.arg("mtime").toInt();
+        syncLogf("[SYNC] upload start target=%s mtime=%u", uploadFinalPath.c_str(), (unsigned int)uploadSourceMtime);
 
         uploadTempPath = uploadFinalPath + ".tmp";
         if (SD.exists(uploadTempPath))
@@ -714,6 +770,8 @@ static void handleUploadStream()
             esp_task_wdt_reset();
             if (uploadFile.write(upload.buf, upload.currentSize) != upload.currentSize)
                 uploadError = "write failed";
+            else
+                uploadBytesWritten += upload.currentSize;
         }
     }
     else if (upload.status == UPLOAD_FILE_END)
@@ -734,12 +792,21 @@ static void handleUploadStream()
             {
                 setTrackedMtime(uploadFinalPath, uploadSourceMtime);
             }
+            syncLogf("[SYNC] upload end target=%s bytes=%u elapsed_ms=%lu",
+                     uploadFinalPath.c_str(),
+                     (unsigned int)uploadBytesWritten,
+                     millis() - uploadStartedAtMs);
         }
         else if (uploadTempPath.length())
         {
             SD.remove(uploadTempPath);
+            syncLogf("[SYNC] upload failed target=%s error=%s bytes=%u",
+                     uploadFinalPath.c_str(),
+                     uploadError.c_str(),
+                     (unsigned int)uploadBytesWritten);
         }
         uploadFile = File();
+        uploadInProgress = false;
     }
     else if (upload.status == UPLOAD_FILE_ABORTED)
     {
@@ -749,7 +816,12 @@ static void handleUploadStream()
         if (uploadTempPath.length())
             SD.remove(uploadTempPath);
         uploadError = "upload aborted";
+        syncLogf("[SYNC] upload aborted target=%s bytes=%u elapsed_ms=%lu",
+                 uploadFinalPath.c_str(),
+                 (unsigned int)uploadBytesWritten,
+                 millis() - uploadStartedAtMs);
         uploadFile = File();
+        uploadInProgress = false;
     }
 }
 

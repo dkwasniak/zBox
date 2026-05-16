@@ -18,6 +18,7 @@ static SemaphoreHandle_t nfcMutex = NULL;
 static volatile bool nfcTaskStopRequested = false;
 static RTC_DATA_ATTR bool rtcNfcPowerDownSent = false;
 static int nfcErrorCount = 0;
+static bool s_nfcReady = false;
 
 // =============================================================================
 // Private: mutex / bus helpers
@@ -219,20 +220,20 @@ static void reinitNfc()
     nfcCriticalEnd();
     if (ok)
     {
-        nfcReady = true;
+        s_nfcReady = true;
         nfcErrorCount = 0;
         LOGC("[RECOVERY] NFC reinit OK\n");
     }
     else
     {
-        nfcReady = false;
+        s_nfcReady = false;
         LOGE("[NFC] reinit FAIL\n");
     }
 }
 
 static String readNfcTag()
 {
-    if (!nfcReady)
+    if (!s_nfcReady)
     {
         if (++nfcErrorCount > NFC_ERROR_THRESHOLD)
         {
@@ -327,14 +328,19 @@ bool nfcInit()
 {
     if (nfcCriticalBegin(portMAX_DELAY))
     {
-        nfcReady = nfcInitSequence();
+        s_nfcReady = nfcInitSequence();
         nfcCriticalEnd();
     }
     else
     {
-        nfcReady = false;
+        s_nfcReady = false;
     }
-    return nfcReady;
+    return s_nfcReady;
+}
+
+bool nfcIsReady()
+{
+    return s_nfcReady;
 }
 
 bool nfcPrescan(char *uidBuf, size_t len)
@@ -384,7 +390,7 @@ void nfcStopTaskForSleep()
 
 void nfcPowerDown()
 {
-    if (!nfcReady)
+    if (!s_nfcReady)
     {
         LOGW("[NFC] PowerDown skipped - not ready\n");
         rtcNfcPowerDownSent = false;
@@ -401,7 +407,7 @@ void nfcPowerDown()
     uint8_t cmd[] = {PN532_COMMAND_POWERDOWN, PN532_WAKEUP_SPI};
     bool ack = nfc.sendCommandCheckAck(cmd, sizeof(cmd), 100);
     rtcNfcPowerDownSent = ack;
-    nfcReady = false;
+    s_nfcReady = false;
     nfcCriticalEnd();
     LOGC("[SLEEP] NFC PowerDown wake=SPI(0x%02X) ack=%d\n", PN532_WAKEUP_SPI, (int)ack);
     if (ack)

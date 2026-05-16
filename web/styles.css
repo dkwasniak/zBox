@@ -794,6 +794,57 @@ input, textarea, select { font-family: inherit; color: inherit; }
 .sync-step.now { color: var(--ink); font-weight: 600; }
 .sync-step.now .marker { background: var(--ink); border-color: var(--ink); color: var(--coral); }
 .sync-step .meta { color: var(--ink-3); font-size: var(--fs-caption); font-variant-numeric: tabular-nums; font-family: var(--font-mono); font-weight: 400; }
+.sync-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.sync-file-row {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-md);
+  background: var(--bg-2);
+  padding: 10px 12px;
+}
+.sync-file-main {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.sync-file-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--fs-caption);
+  color: var(--ink-2);
+}
+.sync-file-state {
+  flex-shrink: 0;
+  font-size: var(--fs-caption);
+  font-weight: 600;
+  color: var(--ink-3);
+}
+.sync-file-row.uploading .sync-file-state { color: var(--petrol); }
+.sync-file-row.uploaded .sync-file-state { color: var(--ok); }
+.sync-file-bar {
+  margin-top: 8px;
+  height: 6px;
+  background: var(--line-soft);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.sync-file-bar-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, var(--petrol) 0%, var(--coral) 100%);
+  border-radius: 999px;
+  transition: width 0.25s ease;
+}
+.sync-file-row.uploaded .sync-file-bar-fill {
+  background: var(--ok);
+}
 
 /* ============== Sound slot card ============== */
 

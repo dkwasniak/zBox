@@ -6,6 +6,7 @@
 #include "effects.h"
 #include "state.h"
 #include "playback.h"
+#include "sd_storage.h"
 #include "logging.h"
 #include <Arduino.h>
 
@@ -23,16 +24,15 @@ bool audioAdapterStartNfcPlayback(const char *uid, CmdId cmd_id)
         return false;
     }
 
-    auto it = figurineMap.find(String(uid));
-    if (it == figurineMap.end()) {
+    char path[256] = {};
+    if (!lookupMappingPath(uid, path, sizeof(path))) {
         LOGW("[AUDIO_ADAP] No mapping for uid=%s cmd_id=%u\n", uid, (unsigned)cmd_id);
         postEventFromTask(makeNfcPlaybackStartFailedEvent(
             uid, PlaybackFailReason::MappingNotFound, cmd_id));
         return false;
     }
 
-    String path = "/music/" + it->second;
-    if (!audioStartNfcTrack(path.c_str(), uid, cmd_id)) {
+    if (!audioStartNfcTrack(path, uid, cmd_id)) {
         LOGW("[AUDIO_ADAP] Queue full, NFC start rejected cmd_id=%u\n", (unsigned)cmd_id);
         postEventFromTask(makeAudioCommandRejectedEvent(
             cmd_id, PlaybackFailReason::AudioCommandRejected));
@@ -89,6 +89,7 @@ bool audioAdapterPlaySystemSound(uint8_t sound_id, CmdId cmd_id)
         case SOUND_ID_POWER_OFF:  name = "power_off";  break;
         case SOUND_ID_NFC_MODE:   name = "nfc_mode";   break;
         case SOUND_ID_MUSIC_MODE: name = "music_mode"; break;
+        case SOUND_ID_STARTUP:    name = "startup";    break;
         default: break;
     }
 
@@ -99,15 +100,15 @@ bool audioAdapterPlaySystemSound(uint8_t sound_id, CmdId cmd_id)
         return false;
     }
 
-    auto it = systemSoundMap.find(String(name));
-    if (it == systemSoundMap.end()) {
+    char path[256] = {};
+    if (!lookupSystemSoundPath(name, path, sizeof(path))) {
         LOGW("[AUDIO_ADAP] System sound '%s' not in map cmd_id=%u\n", name, (unsigned)cmd_id);
         postEventFromTask(makeSystemSoundFailedEvent(
             sound_id, SoundFailReason::FileNotFound, cmd_id));
         return false;
     }
 
-    if (!audioPlaySystemSound(it->second.c_str(), sound_id, cmd_id)) {
+    if (!audioPlaySystemSound(path, sound_id, cmd_id)) {
         LOGW("[AUDIO_ADAP] Queue full, system sound rejected cmd_id=%u\n", (unsigned)cmd_id);
         postEventFromTask(makeAudioCommandRejectedEvent(
             cmd_id, PlaybackFailReason::AudioCommandRejected));

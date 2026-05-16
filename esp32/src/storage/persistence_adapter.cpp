@@ -8,7 +8,7 @@ namespace {
 constexpr const char *PREF_NS        = "zbox";
 constexpr const char *BRIGHTNESS_KEY = "night_light";
 constexpr const char *PLAYBACK_KEY   = "playback_mode";
-constexpr const char *VOLUME_KEY     = "bt_volume";
+constexpr const char *VOLUME_KEY     = "volume_level";
 }
 
 void persistenceAdapterSaveBrightness(uint8_t percent) {
@@ -29,10 +29,10 @@ void persistenceAdapterSavePlaybackMode(PlaybackMode mode) {
     postEventFromTask(makeEvent(EventType::PlaybackModePersisted));
 }
 
-void persistenceAdapterSaveVolume(uint8_t percent) {
+void persistenceAdapterSaveVolume(uint8_t level) {
     Preferences prefs;
     prefs.begin(PREF_NS, false);
-    prefs.putInt(VOLUME_KEY, (int)percent);  // putInt matches loadBtVolume() getInt format
+    prefs.putUChar(VOLUME_KEY, level);
     prefs.end();
-    LOGI("[PERSIST] Volume saved: %d%%\n", percent);
+    LOGI("[PERSIST] Volume level saved: %u\n", (unsigned)level);
 }

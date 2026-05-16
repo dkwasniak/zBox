@@ -7,7 +7,7 @@ QueueHandle_t g_dispatcherQueue = nullptr;
 EventDropPolicy getEventDropPolicy(EventType type) {
     switch (type) {
         case EventType::SleepRequested:
-        case EventType::BtShutdownCompleted:
+        case EventType::BtHeadphonesModeStopped:
             return EventDropPolicy::Critical;
 
         case EventType::IdleTimeoutFired:
@@ -15,8 +15,6 @@ EventDropPolicy getEventDropPolicy(EventType type) {
         case EventType::VolumeOverlayExpired:
         case EventType::BatteryPreviewExpired:
         case EventType::BrightnessSaveDeadlineFired:
-        case EventType::JblRecoveryTimeoutFired:
-        case EventType::BtReconnectTimeoutFired:
             return EventDropPolicy::Coalescible;
 
         case EventType::NfcTagDetected:

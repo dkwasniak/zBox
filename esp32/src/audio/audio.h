@@ -12,10 +12,11 @@ bool audioIsRunning();
 bool audioIsPaused();
 bool audioIsReady();
 void audioDeleteTaskForSleep();
-void audioSetBtVolumePercent(int percent);
-bool audioBtIsConnected();
-void audioPollBtConnection();
-bool audioRestartDiscovery();
+void audioSetOutputVolumePercent(int percent);
+bool audioStartBtHeadphonesMode();
+void audioStopBtHeadphonesMode();
+bool audioBtHeadphonesAreConnected();
+bool audioBtHeadphonesModeIsRunning();
 uint32_t audioGetTaskHWM();
 
 // Stage 3+ correlation API (called by audio_adapter when DISPATCHER_OWNS_AUDIO=1).

@@ -4,12 +4,10 @@
 #include "state.h"
 #include "audio.h"
 #include "nfc_module.h"
-#include "jbl.h"
 #include "leds.h"
 #include "night_light.h"
 #include "musicbox_assert.h"
 #include <esp_sleep.h>
-#include <esp_bt.h>
 
 // Used only by sync mode (outside normal dispatcher path).
 void enterDeepSleep()
@@ -19,13 +17,10 @@ void enterDeepSleep()
     delay(50);
     nfcStopTaskForSleep();
     nfcPowerDown();
-    esp_bt_controller_disable();
-    delay(50);
     ledSuspendTask();
     delay(20);
     ledShutdownAnim();
     ledPowerOff();
-    jblPowerOff();
     Serial.flush();
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
@@ -34,21 +29,9 @@ void enterDeepSleep()
 void enterEmergencyDeepSleep()
 {
     LOGC("[SLEEP] enterEmergencyDeepSleep (sync mode path)\n");
-    pinMode(JBL_POWER, OUTPUT);
-    digitalWrite(JBL_POWER, LOW);
-    pinMode(JBL_STATUS, INPUT);
-    int maxVal = 0;
-    for (int i = 0; i < 5; i++) {
-        int v = analogRead(JBL_STATUS);
-        if (v > maxVal) maxVal = v;
-        delayMicroseconds(200);
-    }
-    if (maxVal > JBL_STATUS_THRESHOLD) {
-        digitalWrite(JBL_POWER, HIGH);
-        delay(JBL_POWER_PRESS_MS);
-        digitalWrite(JBL_POWER, LOW);
-        delay(50);
-    }
+    audioDeleteTaskForSleep();
+    if (nfcIsReady()) nfcPowerDown();
+    ledPowerOff();
     Serial.flush();
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();
@@ -61,11 +44,9 @@ void sleepExecuteDeepSleep(RequestedSleepKind kind)
     switch (kind) {
         case RequestedSleepKind::Emergency:
             LOGC("[SLEEP] Executing deep sleep (emergency, via dispatcher)\n");
-            // BT already disabled by btAdapterShutdown()
-            audioDeleteTaskForSleep();            // MUST
-            if (nfcReady) nfcPowerDown();         // conditional
-            ledPowerOff();                        // best-effort, no animation
-            jblPowerOff();                        // MUST
+            audioDeleteTaskForSleep();
+            if (nfcIsReady()) nfcPowerDown();
+            ledPowerOff();
             Serial.flush();
             esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
             esp_deep_sleep_start();
@@ -73,17 +54,15 @@ void sleepExecuteDeepSleep(RequestedSleepKind kind)
 
         case RequestedSleepKind::NightLightTimeout:
             LOGC("[SLEEP] Executing deep sleep (night-light timeout, via dispatcher)\n");
-            nightLightFlushPendingSave();         // Step 1, best-effort
-            // BT already handled (Disabled in NL mode, btAdapterShutdown no-ops)
-            audioDeleteTaskForSleep();            // Step 3, conditional
+            nightLightFlushPendingSave();
+            audioDeleteTaskForSleep();
             delay(50);
-            nfcStopTaskForSleep();                // Step 4a
-            nfcPowerDown();                       // Step 4b
-            ledSuspendTask();                     // Step 6a
+            nfcStopTaskForSleep();
+            nfcPowerDown();
+            ledSuspendTask();
             delay(20);
-            ledShutdownAnim();                    // Step 6b
-            ledPowerOff();                        // Step 6c
-            jblPowerOff();                        // Step 7, conditional (safe if already off)
+            ledShutdownAnim();
+            ledPowerOff();
             Serial.flush();
             esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
             esp_deep_sleep_start();
@@ -92,18 +71,15 @@ void sleepExecuteDeepSleep(RequestedSleepKind kind)
         case RequestedSleepKind::Normal:
         default:
             LOGC("[SLEEP] Executing deep sleep (normal, via dispatcher)\n");
-            nightLightFlushPendingSave();         // Step 1, best-effort
-            // Step 2 (power_off sound) already played by reducer state machine
-            // BT (Step 5) already disabled by btAdapterShutdown()
-            audioDeleteTaskForSleep();            // Step 3, MUST
+            nightLightFlushPendingSave();
+            audioDeleteTaskForSleep();
             delay(50);
-            nfcStopTaskForSleep();                // Step 4a
-            nfcPowerDown();                       // Step 4b
-            ledSuspendTask();                     // Step 6a
+            nfcStopTaskForSleep();
+            nfcPowerDown();
+            ledSuspendTask();
             delay(20);
-            ledShutdownAnim();                    // Step 6b
-            ledPowerOff();                        // Step 6c
-            jblPowerOff();                        // Step 7, MUST
+            ledShutdownAnim();
+            ledPowerOff();
             Serial.flush();
             esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
             esp_deep_sleep_start();

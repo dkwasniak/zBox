@@ -3,6 +3,7 @@
 #include "shared_types.h"
 
 bool nfcInit();
+bool nfcIsReady();
 bool nfcPrescan(char *uidBuf, size_t len);
 void nfcStartTask();
 bool nfcGetEvent(NfcEvent *e, TickType_t timeout);

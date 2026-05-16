@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 from pathlib import Path
 from typing import Callable, Dict, List
 
@@ -14,6 +15,7 @@ from paths import DATA_DIR, MUSIC_DIR, SYSTEM_SOUNDS_DIR
 HTTP_TIMEOUT = 20
 UPLOAD_TIMEOUT = 120
 DEVICE_SETTINGS_PATH = DATA_DIR / "device_settings.json"
+logger = logging.getLogger("zbox.device_sync")
 
 
 def _load_device_settings() -> dict:
@@ -57,26 +59,48 @@ def _http_client(session: requests.Session | None = None):
     return session or requests
 
 
+def _device_log_ctx(device: dict | None) -> str:
+    if not device:
+        return "device_ip=unknown"
+    return f"device_ip={device.get('ip', 'unknown')}"
+
+
 def fetch_device_status(device: dict | None = None, session: requests.Session | None = None) -> dict:
     device = device or get_configured_device()
+    logger.debug("Fetching device status: %s", _device_log_ctx(device))
     response = _http_client(session).get(f"{_base_url(device)}/diag/status", timeout=HTTP_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
     payload["ip"] = device["ip"]
+    logger.info(
+        "Device status fetched: %s device_id=%s mode=%s sd_ok=%s",
+        _device_log_ctx(device),
+        payload.get("device_id", "unknown"),
+        payload.get("mode", "unknown"),
+        payload.get("sd_ok"),
+    )
     return payload
 
 
 def fetch_device_files(device: dict | None = None, session: requests.Session | None = None) -> dict:
     device = device or get_configured_device()
+    logger.debug("Fetching device file list: %s", _device_log_ctx(device))
     response = _http_client(session).get(f"{_base_url(device)}/diag/files", timeout=HTTP_TIMEOUT)
     response.raise_for_status()
     payload = response.json()
     payload["ip"] = device["ip"]
+    logger.info(
+        "Device file list fetched: %s device_id=%s file_count=%s",
+        _device_log_ctx(device),
+        payload.get("device_id", "unknown"),
+        len(payload.get("files", [])),
+    )
     return payload
 
 
 def fetch_led_config(device: dict | None = None, session: requests.Session | None = None) -> dict:
     device = device or get_configured_device()
+    logger.debug("Fetching LED config: %s", _device_log_ctx(device))
     response = _http_client(session).get(f"{_base_url(device)}/diag/config", timeout=HTTP_TIMEOUT)
     response.raise_for_status()
     return response.json()
@@ -84,9 +108,16 @@ def fetch_led_config(device: dict | None = None, session: requests.Session | Non
 
 def fetch_device_logs(device: dict | None = None, session: requests.Session | None = None) -> dict:
     device = device or get_configured_device()
+    logger.debug("Fetching device log list: %s", _device_log_ctx(device))
     response = _http_client(session).get(f"{_base_url(device)}/diag/logs", timeout=HTTP_TIMEOUT)
     response.raise_for_status()
-    return response.json()
+    payload = response.json()
+    logger.info(
+        "Device log list fetched: %s log_count=%s",
+        _device_log_ctx(device),
+        len(payload.get("logs", [])),
+    )
+    return payload
 
 
 def fetch_device_log_content(
@@ -96,13 +127,26 @@ def fetch_device_log_content(
     session: requests.Session | None = None,
 ) -> dict:
     device = device or get_configured_device()
+    logger.debug(
+        "Fetching device log content: %s log_name=%s tail=%s",
+        _device_log_ctx(device),
+        name,
+        tail,
+    )
     response = _http_client(session).get(
         f"{_base_url(device)}/diag/log-content",
         params={"name": name, "tail": tail},
         timeout=HTTP_TIMEOUT,
     )
     response.raise_for_status()
-    return response.json()
+    payload = response.json()
+    logger.info(
+        "Device log content fetched: %s log_name=%s truncated=%s",
+        _device_log_ctx(device),
+        name,
+        payload.get("truncated"),
+    )
+    return payload
 
 
 def download_device_log(
@@ -111,6 +155,7 @@ def download_device_log(
     session: requests.Session | None = None,
 ) -> requests.Response:
     device = device or get_configured_device()
+    logger.info("Downloading device log: %s log_name=%s", _device_log_ctx(device), name)
     response = _http_client(session).get(
         f"{_base_url(device)}/diag/log-download",
         params={"name": name},
@@ -123,6 +168,7 @@ def download_device_log(
 
 def push_led_config(device: dict | None, config: dict, session: requests.Session | None = None) -> None:
     device = device or get_configured_device()
+    logger.info("Pushing LED config: %s keys=%s", _device_log_ctx(device), sorted(config.keys()))
     if session is not None:
         response = _post_json(session, f"{_base_url(device)}/diag/config", config)
     else:
@@ -132,6 +178,7 @@ def push_led_config(device: dict | None, config: dict, session: requests.Session
 
 def restart_device(device: dict | None = None, session: requests.Session | None = None) -> None:
     device = device or get_configured_device()
+    logger.warning("Restarting device via admin API: %s", _device_log_ctx(device))
     response = _http_client(session).post(f"{_base_url(device)}/diag/restart", timeout=HTTP_TIMEOUT)
     response.raise_for_status()
 
@@ -260,6 +307,16 @@ def build_sync_plan(device: dict | None, db: Session, session: requests.Session 
     else:
         message = "Brak zmian. Muzyka, mapowania i system sounds wygladaja na aktualne."
 
+    logger.info(
+        "Built sync plan: %s device_id=%s upload_count=%s delete_count=%s mappings_needs_update=%s system_sounds_needs_update=%s",
+        _device_log_ctx(device),
+        resolved_device_id,
+        len(pending_uploads),
+        len(pending_deletions),
+        mappings_needs_update,
+        system_sounds_needs_update,
+    )
+
     return {
         "device_id": resolved_device_id,
         "needs_sync": needs_sync,
@@ -304,6 +361,7 @@ def _post_json(session: requests.Session, url: str, payload: dict, timeout: int 
     try:
         return session.post(url, json=payload, timeout=timeout)
     except requests.exceptions.ConnectionError:
+        logger.warning("Retrying JSON POST after connection reset: url=%s", url)
         return session.post(url, json=payload, timeout=timeout)
 
 
@@ -320,6 +378,30 @@ def _stage_progress(start: int, end: int, index: int, total: int) -> int:
     return start + int(((end - start) * index) / (total - 1))
 
 
+def _build_sync_file_entries(paths: List[str]) -> List[dict]:
+    return [{"path": path, "status": "pending", "progress": 0} for path in paths]
+
+
+def _update_sync_file_entries(entries: List[dict], remote_path: str, status: str, progress: int | None = None) -> List[dict]:
+    updated: List[dict] = []
+    found = False
+    for entry in entries:
+        if entry["path"] == remote_path:
+            updated.append({
+                **entry,
+                "status": status,
+                "progress": progress if progress is not None else entry.get("progress"),
+            })
+            found = True
+        else:
+            updated.append(entry)
+
+    if not found:
+        updated.append({"path": remote_path, "status": status, "progress": progress})
+
+    return updated
+
+
 def _upload_file_with_progress(
     device: dict,
     remote_path: str,
@@ -327,38 +409,70 @@ def _upload_file_with_progress(
     local_mtime: int,
     file_index: int,
     file_total: int,
+    sync_files: List[dict],
     session: requests.Session | None = None,
     progress_callback: Callable[[dict], None] | None = None,
 ) -> requests.Response:
-    with local_path.open("rb") as fh:
-        encoder = MultipartEncoder(
-            fields={"file": (local_path.name, fh, "audio/mpeg")}
+    for attempt in range(1, 3):
+        logger.info(
+            "Uploading file to device: %s remote_path=%s local_path=%s file_index=%s file_total=%s size=%s attempt=%s",
+            _device_log_ctx(device),
+            remote_path,
+            local_path,
+            file_index,
+            file_total,
+            local_path.stat().st_size,
+            attempt,
         )
+        try:
+            with local_path.open("rb") as fh:
+                encoder = MultipartEncoder(
+                    fields={"file": (local_path.name, fh, "audio/mpeg")}
+                )
 
-        def _on_upload(monitor: MultipartEncoderMonitor) -> None:
-            current_percent = int((monitor.bytes_read / monitor.len) * 100) if monitor.len else 0
-            file_fraction = (file_index - 1 + (current_percent / 100)) / max(1, file_total)
-            overall_progress = 20 + int(file_fraction * 50)
-            _emit_progress(
-                progress_callback,
-                progress=max(20, min(70, overall_progress)),
-                stage="uploading_audio",
-                message=f"Przesylanie plikow audio: {file_index}/{file_total}",
-                current_file=remote_path,
-                current_file_index=file_index,
-                current_file_total=file_total,
-                current_file_progress=max(0, min(100, current_percent)),
+                def _on_upload(monitor: MultipartEncoderMonitor) -> None:
+                    current_percent = int((monitor.bytes_read / monitor.len) * 100) if monitor.len else 0
+                    file_fraction = (file_index - 1 + (current_percent / 100)) / max(1, file_total)
+                    overall_progress = 20 + int(file_fraction * 50)
+                    current_sync_files = _update_sync_file_entries(sync_files, remote_path, "uploading", current_percent)
+                    _emit_progress(
+                        progress_callback,
+                        progress=max(20, min(70, overall_progress)),
+                        stage="uploading_audio",
+                        message=f"Przesylanie plikow audio: {file_index}/{file_total}",
+                        current_file=remote_path,
+                        current_file_index=file_index,
+                        current_file_total=file_total,
+                        current_file_progress=max(0, min(100, current_percent)),
+                        sync_files=current_sync_files,
+                    )
+
+                monitor = MultipartEncoderMonitor(encoder, _on_upload)
+                response = _http_client(session).post(
+                    f"{_base_url(device)}/diag/upload",
+                    params={"path": remote_path, "mtime": str(local_mtime)},
+                    data=monitor,
+                    headers={"Content-Type": monitor.content_type},
+                    timeout=(HTTP_TIMEOUT, UPLOAD_TIMEOUT),
+                )
+            logger.info(
+                "Upload request finished: %s remote_path=%s status_code=%s attempt=%s",
+                _device_log_ctx(device),
+                remote_path,
+                response.status_code,
+                attempt,
             )
-
-        monitor = MultipartEncoderMonitor(encoder, _on_upload)
-        response = _http_client(session).post(
-            f"{_base_url(device)}/diag/upload",
-            params={"path": remote_path, "mtime": str(local_mtime)},
-            data=monitor,
-            headers={"Content-Type": monitor.content_type},
-            timeout=(HTTP_TIMEOUT, UPLOAD_TIMEOUT),
-        )
-    return response
+            return response
+        except requests.exceptions.ConnectionError:
+            if attempt >= 2:
+                raise
+            logger.warning(
+                "Retrying file upload after connection reset: %s remote_path=%s attempt=%s",
+                _device_log_ctx(device),
+                remote_path,
+                attempt,
+            )
+    raise RuntimeError(f"Upload retry loop exhausted for {remote_path}")
 
 
 def sync_device(
@@ -368,6 +482,7 @@ def sync_device(
     progress_callback: Callable[[dict], None] | None = None,
 ) -> dict:
     device = device or get_configured_device()
+    logger.info("Starting device sync: %s led_config=%s", _device_log_ctx(device), led_config is not None)
     with requests.Session() as session:
         _emit_progress(
             progress_callback,
@@ -404,6 +519,16 @@ def sync_device(
         pending_upload_paths = sorted(sync_plan["files_to_upload"])
         pending_uploads = [(remote_path, expected_files[remote_path]) for remote_path in pending_upload_paths]
         managed_remote = sync_plan["files_to_delete"]
+        sync_file_entries = _build_sync_file_entries(pending_upload_paths)
+        logger.info(
+            "Sync work queued: %s device_id=%s uploads=%s deletes=%s mappings_needs_update=%s system_sounds_needs_update=%s",
+            _device_log_ctx(device),
+            resolved_device_id,
+            len(pending_uploads),
+            len(managed_remote),
+            sync_plan["mappings_needs_update"],
+            sync_plan["system_sounds_needs_update"],
+        )
 
         _emit_progress(
             progress_callback,
@@ -423,6 +548,7 @@ def sync_device(
             current_file_index=None,
             current_file_total=len(pending_uploads),
             current_file_progress=0 if pending_uploads else None,
+            sync_files=list(sync_file_entries),
         )
         for index, (remote_path, local_path) in enumerate(pending_uploads, start=1):
             local_mtime = int(local_path.stat().st_mtime)
@@ -433,11 +559,13 @@ def sync_device(
                 local_mtime=local_mtime,
                 file_index=index,
                 file_total=len(pending_uploads),
+                sync_files=sync_file_entries,
                 session=session,
                 progress_callback=progress_callback,
             )
             response.raise_for_status()
             uploaded.append(remote_path)
+            sync_file_entries = _update_sync_file_entries(sync_file_entries, remote_path, "uploaded", 100)
             _emit_progress(
                 progress_callback,
                 progress=20 + int((index / max(1, len(pending_uploads))) * 50) if pending_uploads else 70,
@@ -447,6 +575,7 @@ def sync_device(
                 current_file_index=index,
                 current_file_total=len(pending_uploads),
                 current_file_progress=100,
+                sync_files=list(sync_file_entries),
                 uploaded=list(uploaded),
                 deleted=list(deleted),
                 uploaded_count=len(uploaded),
@@ -465,12 +594,20 @@ def sync_device(
             current_file_index=None,
             current_file_total=None,
             current_file_progress=None,
+            sync_files=list(sync_file_entries),
             uploaded=list(uploaded),
             deleted=list(deleted),
             uploaded_count=len(uploaded),
             deleted_count=len(deleted),
         )
         for index, remote_path in enumerate(managed_remote, start=1):
+            logger.info(
+                "Deleting remote file from device: %s remote_path=%s index=%s total=%s",
+                _device_log_ctx(device),
+                remote_path,
+                index,
+                len(managed_remote),
+            )
             response = session.delete(
                 f"{_base_url(device)}/diag/file",
                 params={"path": remote_path},
@@ -489,6 +626,12 @@ def sync_device(
             )
 
         if sync_plan["mappings_needs_update"]:
+            logger.info(
+                "Writing figurine mappings: %s device_id=%s mapping_count=%s",
+                _device_log_ctx(device),
+                resolved_device_id,
+                mappings_count,
+            )
             _emit_progress(
                 progress_callback,
                 progress=75,
@@ -496,6 +639,7 @@ def sync_device(
                 message="Zapisywanie mapowan figurek...",
                 uploaded=list(uploaded),
                 deleted=list(deleted),
+                sync_files=list(sync_file_entries),
             )
             response = _post_json(session, f"{_base_url(device)}/diag/write-mappings", mappings_payload)
             response.raise_for_status()
@@ -513,8 +657,15 @@ def sync_device(
             mappings_written=mappings_written,
             mappings_count=mappings_count,
             mappings_path="/data/mappings.json",
+            sync_files=list(sync_file_entries),
         )
         if sync_plan["system_sounds_needs_update"]:
+            logger.info(
+                "Writing system sounds metadata: %s device_id=%s sound_count=%s",
+                _device_log_ctx(device),
+                resolved_device_id,
+                system_sounds_count,
+            )
             response = _post_json(session, f"{_base_url(device)}/diag/write-system-sounds", system_sounds_payload)
             response.raise_for_status()
             system_sounds_written = True
@@ -528,9 +679,21 @@ def sync_device(
                 system_sounds_written=system_sounds_written,
                 system_sounds_count=system_sounds_count,
                 system_sounds_path="/data/system_sounds.json",
+                sync_files=list(sync_file_entries),
             )
             push_led_config(device, led_config, session=session)
             led_written = True
+
+    logger.info(
+        "Device sync completed: %s device_id=%s uploaded_count=%s deleted_count=%s mappings_written=%s system_sounds_written=%s led_written=%s",
+        _device_log_ctx(device),
+        resolved_device_id,
+        len(uploaded),
+        len(deleted),
+        mappings_written,
+        system_sounds_written,
+        led_written,
+    )
 
     return {
         "device_id": resolved_device_id,
@@ -538,6 +701,11 @@ def sync_device(
         "progress": 100,
         "message": "Sync completed. Restart is still a separate action.",
         "stage": "completed",
+        "current_file": None,
+        "current_file_index": len(pending_uploads) if pending_uploads else None,
+        "current_file_total": len(pending_uploads) if pending_uploads else None,
+        "current_file_progress": 100 if pending_uploads else None,
+        "sync_files": list(sync_file_entries),
         "uploaded": uploaded,
         "deleted": deleted,
         "uploaded_count": len(uploaded),
