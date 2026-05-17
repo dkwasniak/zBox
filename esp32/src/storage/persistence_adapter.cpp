@@ -2,6 +2,7 @@
 #include "event_queue.h"
 #include "events.h"
 #include "logging.h"
+#include "zbox_config.h"
 #include <Preferences.h>
 
 namespace {
@@ -35,4 +36,20 @@ void persistenceAdapterSaveVolume(uint8_t level) {
     prefs.putUChar(VOLUME_KEY, level);
     prefs.end();
     LOGI("[PERSIST] Volume level saved: %u\n", (unsigned)level);
+}
+
+void persistenceAdapterSaveBtTarget(const char* name) {
+    Preferences prefs;
+    prefs.begin(PREF_NS, false);
+    prefs.putString(BT_TARGET_NVS_KEY, name);
+    prefs.end();
+    LOGI("[PERSIST] BT target saved: %s\n", name);
+}
+
+void persistenceAdapterLoadBtTarget(char* buf, size_t len) {
+    Preferences prefs;
+    prefs.begin(PREF_NS, true);
+    String val = prefs.getString(BT_TARGET_NVS_KEY, BT_DEFAULT_NAME);
+    prefs.end();
+    strlcpy(buf, val.c_str(), len);
 }

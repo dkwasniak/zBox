@@ -149,6 +149,16 @@ def fetch_device_log_content(
     return payload
 
 
+def fetch_recent_log(device: dict, since: int = 0) -> dict:
+    response = requests.get(
+        f"{_base_url(device)}/diag/recent-log",
+        params={"since": since},
+        timeout=HTTP_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def download_device_log(
     device: dict | None = None,
     name: str = "debug.log",
@@ -181,6 +191,45 @@ def restart_device(device: dict | None = None, session: requests.Session | None 
     logger.warning("Restarting device via admin API: %s", _device_log_ctx(device))
     response = _http_client(session).post(f"{_base_url(device)}/diag/restart", timeout=HTTP_TIMEOUT)
     response.raise_for_status()
+
+
+BT_TIMEOUT = 20  # BT init (controller + bluedroid) can take 10-15 s on cold start
+
+
+def fetch_bt_devices(device: dict | None = None) -> dict:
+    device = device or get_configured_device()
+    logger.debug("Fetching BT scan results: %s", _device_log_ctx(device))
+    response = requests.get(f"{_base_url(device)}/bt/devices", timeout=BT_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def start_bt_scan(device: dict | None = None) -> dict:
+    device = device or get_configured_device()
+    logger.info("Starting BT scan: %s", _device_log_ctx(device))
+    response = requests.post(f"{_base_url(device)}/bt/start-scan", timeout=BT_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def stop_bt_scan(device: dict | None = None) -> dict:
+    device = device or get_configured_device()
+    logger.info("Stopping BT scan: %s", _device_log_ctx(device))
+    response = requests.post(f"{_base_url(device)}/bt/stop-scan", timeout=BT_TIMEOUT)
+    response.raise_for_status()
+    return response.json()
+
+
+def select_bt_device(device: dict | None = None, name: str = "") -> dict:
+    device = device or get_configured_device()
+    logger.info("Selecting BT target '%s': %s", name, _device_log_ctx(device))
+    response = requests.post(
+        f"{_base_url(device)}/bt/select",
+        json={"name": name},
+        timeout=BT_TIMEOUT,
+    )
+    response.raise_for_status()
+    return response.json()
 
 
 def _build_mappings_payload(db: Session) -> dict:

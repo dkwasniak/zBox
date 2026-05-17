@@ -68,3 +68,9 @@
 #define SYNC_HTTP_PORT 80
 #define SYNC_OTA_PORT 3232
 #define SYNC_LOG_INTERVAL_MS 5000
+
+// Bluetooth target speaker (NVS-backed, changeable from web portal)
+#define BT_TARGET_NVS_KEY   "bt_target"
+#define BT_DEFAULT_NAME     "zBox Headphones"
+#define BT_SCAN_MAX_RESULTS 12
+#define BT_SCAN_NAME_MAX    64

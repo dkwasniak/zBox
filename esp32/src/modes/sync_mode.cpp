@@ -13,11 +13,14 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
 #include <ArduinoOTA.h>
+#include <Preferences.h>
 #include <SD.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <WebServer.h>
 #include <esp_bt.h>
+#include <esp_bt_main.h>
+#include <esp_gap_bt_api.h>
 #include <esp_idf_version.h>
 #include <esp_task_wdt.h>
 #include <stdarg.h>
@@ -39,6 +42,31 @@ static const char *SYNC_META_PATH = "/data/sync_meta.json";
 static const char *SYNC_LOG_NAMES[] = {"debug.log", "debug.log.old"};
 static const size_t SYNC_LOG_COUNT = sizeof(SYNC_LOG_NAMES) / sizeof(SYNC_LOG_NAMES[0]);
 
+// ── BT scan state ────────────────────────────────────────────────────────────
+// Results held in memory only — no SD write. Protected by s_scanMux because
+// the GAP callback runs in the Bluedroid task while HTTP handlers run in the
+// main loop (different execution contexts on the same core).
+
+struct BtScanResult {
+    char name[BT_SCAN_NAME_MAX];
+    char mac[18]; // "AA:BB:CC:DD:EE:FF\0"
+};
+
+static portMUX_TYPE s_scanMux = portMUX_INITIALIZER_UNLOCKED;
+static BtScanResult s_scanResults[BT_SCAN_MAX_RESULTS];
+static int s_scanCount = 0;
+static bool s_scanRunning = false;      // user intent: keep scanning
+static bool s_btInquiryActive = false;  // BT stack is actively running an inquiry
+static bool s_controllerInitialized = false;
+static bool s_bluedroidInitialized = false;
+static bool s_bleMemoryReleased = false;
+static bool s_syncWatchdogRegistered = false;
+
+static const int SYNC_RECENT_LOG_SIZE = 48;
+static char s_recentLogBuf[SYNC_RECENT_LOG_SIZE][160];
+// Volatile: written lock-free from any task/callback, readers accept occasional torn line.
+static volatile int s_recentLogTotal = 0;
+
 static void syncLogf(const char *fmt, ...)
 {
     char line[224];
@@ -48,6 +76,24 @@ static void syncLogf(const char *fmt, ...)
     va_end(args);
 
     Serial.println(line);
+
+    int idx = s_recentLogTotal % SYNC_RECENT_LOG_SIZE;
+    strlcpy(s_recentLogBuf[idx], line, sizeof(s_recentLogBuf[0]));
+    s_recentLogTotal++;
+}
+
+// Lightweight log for BT GAP callbacks — NO Serial (Serial mutex blocks BT stack → SW reset).
+static void btGapLogf(const char *fmt, ...)
+{
+    char line[160];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(line, sizeof(line), fmt, args);
+    va_end(args);
+
+    int idx = s_recentLogTotal % SYNC_RECENT_LOG_SIZE;
+    memcpy(s_recentLogBuf[idx], line, sizeof(line));
+    s_recentLogTotal++;
 }
 
 static String buildDeviceId()
@@ -65,11 +111,173 @@ static void clearSyncFlag()
         SD.remove(SYNC_PENDING_PATH);
 }
 
-static void disableBtForSync()
+// Called when BT scan was never used: free BT memory so WiFi gets more SRAM.
+// If BT was initialized for scanning, we skip the release — BT memory stays
+// reserved but that is acceptable since we'll restart before normal playback.
+static void releaseBtMemoryIfUnused()
 {
+    if (s_controllerInitialized)
+        return; // BT was (or is being) used — skip release
     esp_bt_controller_disable();
     esp_bt_controller_deinit();
     esp_bt_mem_release(ESP_BT_MODE_BTDM);
+}
+
+static void releaseBleMemoryForClassicBt()
+{
+    if (s_bleMemoryReleased || s_controllerInitialized)
+        return;
+
+    esp_err_t err = esp_bt_mem_release(ESP_BT_MODE_BLE);
+    if (err == ESP_OK)
+    {
+        s_bleMemoryReleased = true;
+        syncLogf("[BT] released BLE memory");
+    }
+    else
+    {
+        syncLogf("[BT] BLE memory release skipped: %d", err);
+    }
+}
+
+// ── GAP inquiry callback ─────────────────────────────────────────────────────
+
+static void btScanGapCb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
+{
+    if (event == ESP_BT_GAP_DISC_RES_EVT)
+    {
+        char name[BT_SCAN_NAME_MAX] = {};
+
+        // Pass 1: BDNAME property — authoritative, sent by most speakers
+        for (int i = 0; i < param->disc_res.num_prop; i++)
+        {
+            esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
+            if (p->type == ESP_BT_GAP_DEV_PROP_BDNAME && p->len > 0)
+            {
+                size_t copy = p->len < (BT_SCAN_NAME_MAX - 1)
+                    ? p->len : (BT_SCAN_NAME_MAX - 1);
+                memcpy(name, p->val, copy);
+                name[copy] = '\0';
+                break;
+            }
+        }
+
+        // Pass 2: EIR — fallback for devices that omit BDNAME
+        if (name[0] == '\0')
+        {
+            for (int i = 0; i < param->disc_res.num_prop; i++)
+            {
+                esp_bt_gap_dev_prop_t *p = &param->disc_res.prop[i];
+                if (p->type == ESP_BT_GAP_DEV_PROP_EIR)
+                {
+                    uint8_t *rmt = nullptr;
+                    uint8_t rmt_len = 0;
+                    rmt = esp_bt_gap_resolve_eir_data((uint8_t *)p->val,
+                        ESP_BT_EIR_TYPE_CMPL_LOCAL_NAME, &rmt_len);
+                    if (!rmt)
+                        rmt = esp_bt_gap_resolve_eir_data((uint8_t *)p->val,
+                            ESP_BT_EIR_TYPE_SHORT_LOCAL_NAME, &rmt_len);
+                    if (rmt && rmt_len > 0)
+                    {
+                        size_t copy = rmt_len < (BT_SCAN_NAME_MAX - 1)
+                            ? rmt_len : (BT_SCAN_NAME_MAX - 1);
+                        memcpy(name, rmt, copy);
+                        name[copy] = '\0';
+                    }
+                    break;
+                }
+            }
+        }
+
+        if (name[0] == '\0')
+            return; // no name in any property — skip
+
+        // Format MAC address
+        const uint8_t *bda = param->disc_res.bda;
+        char mac[18];
+        snprintf(mac, sizeof(mac), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 bda[0], bda[1], bda[2], bda[3], bda[4], bda[5]);
+
+        portENTER_CRITICAL_SAFE(&s_scanMux);
+        // Dedup by MAC
+        bool duplicate = false;
+        for (int i = 0; i < s_scanCount; i++)
+        {
+            if (strncmp(s_scanResults[i].mac, mac, 17) == 0)
+            {
+                duplicate = true;
+                break;
+            }
+        }
+        if (!duplicate && s_scanCount < BT_SCAN_MAX_RESULTS)
+        {
+            strlcpy(s_scanResults[s_scanCount].name, name, sizeof(s_scanResults[0].name));
+            strlcpy(s_scanResults[s_scanCount].mac,  mac,  sizeof(s_scanResults[0].mac));
+            s_scanCount++;
+            portEXIT_CRITICAL_SAFE(&s_scanMux);
+            btGapLogf("[BT] found: %s %s", name, mac);
+        }
+        else
+        {
+            portEXIT_CRITICAL_SAFE(&s_scanMux);
+        }
+    }
+    else if (event == ESP_BT_GAP_DISC_STATE_CHANGED_EVT)
+    {
+        if (param->disc_st_chg.state == ESP_BT_GAP_DISCOVERY_STOPPED)
+        {
+            btGapLogf("[BT] inquiry cycle done, found=%d total", s_scanCount);
+            s_btInquiryActive = false;
+            // Restart is handled by the main loop — calling esp_bt_gap_start_discovery
+            // from within this callback causes a BT stack assertion / SW reset.
+        }
+    }
+}
+
+static bool initBtForScan()
+{
+    if (s_controllerInitialized)
+        return true;
+
+    releaseBleMemoryForClassicBt();
+
+    syncLogf("[BT] initializing controller...");
+    esp_bt_controller_config_t bt_cfg = BT_CONTROLLER_INIT_CONFIG_DEFAULT();
+    if (esp_bt_controller_init(&bt_cfg) != ESP_OK)
+    {
+        syncLogf("[BT] controller init failed");
+        return false;
+    }
+    esp_task_wdt_reset();
+    s_controllerInitialized = true;
+
+    if (esp_bt_controller_enable(ESP_BT_MODE_CLASSIC_BT) != ESP_OK)
+    {
+        syncLogf("[BT] controller enable failed");
+        return false;
+    }
+    esp_task_wdt_reset();
+
+    syncLogf("[BT] initializing bluedroid...");
+    esp_bluedroid_config_t bd_cfg = BT_BLUEDROID_INIT_CONFIG_DEFAULT();
+    if (esp_bluedroid_init_with_cfg(&bd_cfg) != ESP_OK)
+    {
+        syncLogf("[BT] bluedroid init failed");
+        return false;
+    }
+    esp_task_wdt_reset();
+
+    if (esp_bluedroid_enable() != ESP_OK)
+    {
+        syncLogf("[BT] bluedroid enable failed");
+        return false;
+    }
+    esp_task_wdt_reset();
+    s_bluedroidInitialized = true;
+
+    esp_bt_gap_register_callback(btScanGapCb);
+    syncLogf("[BT] ready for inquiry");
+    return true;
 }
 
 static void configureSyncWatchdog()
@@ -84,12 +292,26 @@ static void configureSyncWatchdog()
 #else
     esp_task_wdt_init(15, false);
 #endif
-    esp_task_wdt_add(NULL);
+    if (!s_syncWatchdogRegistered)
+    {
+        esp_err_t err = esp_task_wdt_add(NULL);
+        if (err == ESP_OK)
+            s_syncWatchdogRegistered = true;
+        else
+            syncLogf("[WDT] add failed: %d", err);
+    }
 }
 
 static void disableSyncWatchdog()
 {
-    esp_task_wdt_delete(NULL);
+    if (!s_syncWatchdogRegistered)
+        return;
+
+    esp_err_t err = esp_task_wdt_delete(NULL);
+    if (err == ESP_OK)
+        s_syncWatchdogRegistered = false;
+    else
+        syncLogf("[WDT] delete failed: %d", err);
 }
 
 static bool isPathSafe(const String &path)
@@ -300,6 +522,11 @@ static SyncSleepAction handleSleepButton()
 static void exitSyncMode(const char *reason)
 {
     syncLogf("[SYNC] exit requested: %s", reason);
+    if (s_scanRunning)
+    {
+        esp_bt_gap_cancel_discovery();
+        s_scanRunning = false;
+    }
     ledFlashResult(true);
     clearSyncFlag();
     delay(500);
@@ -825,6 +1052,148 @@ static void handleUploadStream()
     }
 }
 
+static void handleBtStartScan()
+{
+    if (s_scanRunning)
+    {
+        // Already scanning — return current state instead of starting a second inquiry
+        // (double-calling esp_bt_gap_start_discovery while running crashes the BT stack)
+        JsonDocument doc;
+        doc["scanning"] = true;
+        sendJson(200, doc);
+        return;
+    }
+
+    if (!initBtForScan())
+    {
+        sendError(500, "bt init failed");
+        return;
+    }
+
+    portENTER_CRITICAL_SAFE(&s_scanMux);
+    s_scanCount = 0;
+    portEXIT_CRITICAL_SAFE(&s_scanMux);
+
+    // 30-second inquiry; portal polls /bt/devices and can stop early via /bt/stop-scan
+    esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 30, 0);
+    if (err != ESP_OK)
+    {
+        syncLogf("[BT] start_discovery failed: %d", err);
+        sendError(500, "discovery start failed");
+        return;
+    }
+    s_scanRunning = true;
+    s_btInquiryActive = true;
+    syncLogf("[BT] inquiry started (30s)");
+
+    JsonDocument doc;
+    doc["scanning"] = true;
+    sendJson(200, doc);
+}
+
+static void handleBtStopScan()
+{
+    if (s_scanRunning)
+    {
+        esp_bt_gap_cancel_discovery();
+        s_scanRunning = false;
+        s_btInquiryActive = false;
+    }
+
+    portENTER_CRITICAL_SAFE(&s_scanMux);
+    int count = s_scanCount;
+    portEXIT_CRITICAL_SAFE(&s_scanMux);
+
+    JsonDocument doc;
+    doc["scanning"] = false;
+    doc["count"]    = count;
+    sendJson(200, doc);
+}
+
+static void handleBtDevices()
+{
+    // Copy results under lock, then build JSON outside the critical section
+    BtScanResult local[BT_SCAN_MAX_RESULTS];
+    int count = 0;
+
+    portENTER_CRITICAL_SAFE(&s_scanMux);
+    count = s_scanCount;
+    if (count > 0)
+        memcpy(local, s_scanResults, count * sizeof(BtScanResult));
+    portEXIT_CRITICAL_SAFE(&s_scanMux);
+
+    JsonDocument doc;
+    doc["scanning"] = s_scanRunning;
+    JsonArray arr = doc["devices"].to<JsonArray>();
+    for (int i = 0; i < count; i++)
+    {
+        JsonObject obj = arr.add<JsonObject>();
+        obj["name"] = local[i].name;
+        obj["mac"]  = local[i].mac;
+    }
+    sendJson(200, doc);
+}
+
+static void handleBtSelect()
+{
+    String body = httpServer.arg("plain");
+    if (body.isEmpty())
+    {
+        sendError(400, "missing body");
+        return;
+    }
+
+    JsonDocument doc;
+    if (deserializeJson(doc, body) != DeserializationError::Ok)
+    {
+        sendError(400, "invalid json");
+        return;
+    }
+
+    const char *name = doc["name"] | "";
+    size_t nameLen = strlen(name);
+    if (nameLen == 0 || nameLen > 63)
+    {
+        sendError(400, "invalid name");
+        return;
+    }
+
+    if (s_scanRunning)
+    {
+        esp_bt_gap_cancel_discovery();
+        s_scanRunning = false;
+    }
+
+    Preferences prefs;
+    prefs.begin("zbox", false);
+    prefs.putString(BT_TARGET_NVS_KEY, name);
+    prefs.end();
+    syncLogf("[BT] target saved: %s", name);
+
+    JsonDocument resp;
+    resp["saved"] = true;
+    resp["name"]  = name;
+    sendJson(200, resp);
+}
+
+static void handleRecentLog()
+{
+    int since = httpServer.arg("since").toInt();
+    if (since < 0) since = 0;
+
+    int total = s_recentLogTotal;  // single volatile read — consistent snapshot
+    int stored = total < SYNC_RECENT_LOG_SIZE ? total : SYNC_RECENT_LOG_SIZE;
+    int oldestTotal = total - stored;
+    int from = since < oldestTotal ? oldestTotal : since;
+
+    JsonDocument doc;
+    doc["total"] = total;
+    JsonArray arr = doc["lines"].to<JsonArray>();
+    for (int i = from; i < total; i++)
+        arr.add((const char *)s_recentLogBuf[i % SYNC_RECENT_LOG_SIZE]);
+    sendJson(200, doc);
+}
+
 static void handleNotFound()
 {
     sendError(404, "not found");
@@ -844,6 +1213,11 @@ static void setupHttpRoutes()
     httpServer.on("/diag/config", HTTP_GET, handleGetLedConfig);
     httpServer.on("/diag/config", HTTP_POST, handleSaveLedConfig);
     httpServer.on("/diag/restart", HTTP_POST, handleRestart);
+    httpServer.on("/bt/start-scan", HTTP_POST, handleBtStartScan);
+    httpServer.on("/bt/stop-scan",  HTTP_POST, handleBtStopScan);
+    httpServer.on("/bt/devices",    HTTP_GET,  handleBtDevices);
+    httpServer.on("/bt/select",     HTTP_POST, handleBtSelect);
+    httpServer.on("/diag/recent-log", HTTP_GET, handleRecentLog);
     httpServer.onNotFound(handleNotFound);
     httpServer.begin();
 }
@@ -879,7 +1253,9 @@ void runSyncMode()
 {
     LOGLN("\n=== zBox SYNC MODE ===\n");
     ledSetSyncWifi();
-    disableBtForSync();
+    // BT memory is intentionally NOT released here. Releasing it would prevent
+    // on-demand BT scanning from the web portal. The ~40KB reservation is
+    // acceptable with PSRAM available for heap allocations.
     ensureDataDirs();
 
     syncDeviceId = buildDeviceId();
@@ -937,6 +1313,22 @@ void runSyncMode()
         else if (sleepAction == SYNC_SLEEP_EMERGENCY)
         {
             enterEmergencyDeepSleep();
+        }
+
+        // Restart BT inquiry from the main task if the previous cycle ended naturally.
+        // Must NOT be done from within the GAP callback — that causes a BT stack assert.
+        if (s_scanRunning && !s_btInquiryActive)
+        {
+            esp_err_t err = esp_bt_gap_start_discovery(ESP_BT_INQ_MODE_GENERAL_INQUIRY, 30, 0);
+            if (err == ESP_OK)
+            {
+                s_btInquiryActive = true;
+                syncLogf("[BT] inquiry restarted");
+            }
+            else
+            {
+                syncLogf("[BT] restart failed: %d", err);
+            }
         }
 
         unsigned long now = millis();

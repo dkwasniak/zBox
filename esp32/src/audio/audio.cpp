@@ -12,13 +12,16 @@
 #include "leds.h"
 #include "logging.h"
 #include "persistent_log.h"
+#include "persistence_adapter.h"
 #include "state.h"
 #include "volume_scale.h"
 #include "zbox_config.h"
 
 namespace {
 
-constexpr const char* BT_HEADPHONES_NAME = "zBox Headphones";
+static char s_btTargetName[64] = BT_DEFAULT_NAME;
+
+static void writeSilenceGap(uint16_t durationMs); // forward declaration
 constexpr size_t VOLUME_SCRATCH_SAMPLES = 256;
 constexpr uint16_t TRACK_TRANSITION_SILENCE_MS = 40;
 
@@ -205,7 +208,7 @@ static void ensureLocalTransport() {
 static bool ensureBtTransport() {
     if (btTransportStarted) return true;
     auto cfg = btA2dp.defaultConfig(TX_MODE);
-    cfg.name = BT_HEADPHONES_NAME;
+    cfg.name = s_btTargetName;
     cfg.auto_reconnect = true;
     cfg.wait_for_connection = false;
     // BT headphones mode uses zBox-side PCM attenuation; do not depend on remote AVRCP volume.
@@ -423,6 +426,8 @@ static bool audioSendPlayCmd(const char* path, CmdId cmd_id,
 }  // namespace
 
 void audioInit() {
+    persistenceAdapterLoadBtTarget(s_btTargetName, sizeof(s_btTargetName));
+    LOGI("[AUDIO] BT target: %s\n", s_btTargetName);
     ensureLocalTransport();
     beatTracker.setVolumePercent(outputVolumePercent);
     selectSink(&i2s, false);

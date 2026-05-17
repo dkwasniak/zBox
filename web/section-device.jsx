@@ -1,5 +1,5 @@
 // Device + Sync section
-const { useState: useStateDev, useEffect: useEffectDev, useContext: useContextDev, useRef: useRefDev } = React;
+const { useState: useStateDev, useEffect: useEffectDev, useContext: useContextDev, useRef: useRefDev, useCallback: useCallbackDev } = React;
 
 function DeviceSection({ offline }) {
   const { device, deviceSettings, refresh, refreshDevice, setDeviceSettings, setSyncActive } = useContextDev(AppCtx);
@@ -188,6 +188,10 @@ function DeviceSection({ offline }) {
               onSync={handleSync}
               offline={offline}
             />
+          </div>
+
+          <div style={{ marginTop: 18 }}>
+            <BtPairingCard device={device}/>
           </div>
 
           <div style={{ marginTop: 18 }}>
@@ -751,6 +755,222 @@ function DiagnosticLogsCard({
             {contentLoading ? t("device.loadingLog") : (content || t("device.noLogData"))}
           </pre>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ── BT Pairing Card ──────────────────────────────────────────────────────────
+
+function BtPairingCard({ device }) {
+  const { t } = useI18n();
+  const [btDevices, setBtDevices] = useStateDev([]);
+  const [btScanning, setBtScanning] = useStateDev(false);
+  const [btSaving, setBtSaving] = useStateDev(null); // name being saved, or null
+  const [btSaved, setBtSaved] = useStateDev(null);   // last saved name
+  const [btError, setBtError] = useStateDev("");
+  const [btLog, setBtLog] = useStateDev([]);
+  const btLogSinceRef = useRefDev(0);
+  const logPollRef = useRefDev(null);
+  const logEndRef = useRefDev(null);
+  const pollRef = useRefDev(null);
+
+  const stopPolling = useCallbackDev(() => {
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+    if (logPollRef.current) { clearInterval(logPollRef.current); logPollRef.current = null; }
+  }, []);
+
+  const fetchDevices = useCallbackDev(async () => {
+    try {
+      const data = await apiFetch(`/admin/devices/${device.device_id}/bt/devices`);
+      setBtDevices(prev => {
+        // Merge: keep existing entries, append new ones (dedup by mac)
+        const existingMacs = new Set(prev.map(d => d.mac));
+        const newEntries = (data.devices || []).filter(d => !existingMacs.has(d.mac));
+        return [...prev, ...newEntries];
+      });
+      // Don't auto-stop on scanning=false — firmware restarts inquiry automatically.
+      // User controls stop via the Stop button.
+    } catch {
+      // Poll failures are expected (WiFi+BT radio contention, transient device restarts).
+    }
+  }, [device.device_id]);
+
+  const pollLog = useCallbackDev(async () => {
+    try {
+      const data = await apiFetch(
+        `/admin/devices/${device.device_id}/diag/recent-log?since=${btLogSinceRef.current}`
+      );
+      if (data.total < btLogSinceRef.current) {
+        // Device restarted — reset cursor and show a separator in the log
+        btLogSinceRef.current = 0;
+        setBtLog(prev => [...prev, "── restart urządzenia ──"]);
+      }
+      if (data.lines && data.lines.length > 0) {
+        setBtLog(prev => [...prev, ...data.lines]);
+        btLogSinceRef.current = data.total;
+      }
+    } catch {}
+  }, [device.device_id]);
+
+  useEffectDev(() => {
+    if (logEndRef.current) logEndRef.current.scrollIntoView({ behavior: "smooth" });
+  }, [btLog]);
+
+  useEffectDev(() => {
+    if (btScanning) {
+      pollRef.current = setInterval(fetchDevices, 3000);
+      logPollRef.current = setInterval(pollLog, 2000);
+    }
+    return stopPolling;
+  }, [btScanning, fetchDevices, pollLog, stopPolling]);
+
+  const handleStartScan = async () => {
+    setBtError("");
+    setBtDevices([]);
+    setBtLog([]);
+    btLogSinceRef.current = 0;
+    try {
+      await apiFetch(`/admin/devices/${device.device_id}/bt/start-scan`, { method: "POST" });
+      await Promise.allSettled([fetchDevices(), pollLog()]);
+      setBtScanning(true);
+    } catch (e) {
+      setBtError(e.message || "Nie udało się uruchomić skanowania BT");
+    }
+  };
+
+  const handleStopScan = async () => {
+    stopPolling();
+    setBtScanning(false);
+    try {
+      await apiFetch(`/admin/devices/${device.device_id}/bt/stop-scan`, { method: "POST" });
+    } catch {}
+  };
+
+  const handleSelect = async (name) => {
+    stopPolling();
+    setBtScanning(false);
+    setBtSaving(name);
+    setBtError("");
+    try {
+      await apiFetch(`/admin/devices/${device.device_id}/bt/select`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      setBtSaved(name);
+    } catch (e) {
+      setBtError(e.message || "Nie udało się zapisać urządzenia");
+    } finally {
+      setBtSaving(null);
+    }
+  };
+
+  const currentTarget = btSaved || "zBox Headphones";
+
+  return (
+    <div className="card">
+      <div className="card-head">
+        <h3>Głośnik Bluetooth</h3>
+      </div>
+      <div className="card-body" style={{ display: "grid", gap: 14 }}>
+
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 2 }}>Aktualnie</div>
+            <div style={{ fontWeight: 600, fontSize: 14 }}>
+              {currentTarget}
+              {btSaved && <span style={{ marginLeft: 8, color: "var(--ok)", fontSize: 12 }}>✓ zapisano</span>}
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {btScanning ? (
+              <button className="btn btn-ghost" onClick={handleStopScan}>
+                <I.stop size={14}/> Zatrzymaj
+              </button>
+            ) : (
+              <button className="btn btn-secondary" onClick={handleStartScan} disabled={!!btSaving}>
+                <I.bt size={14}/> Szukaj urządzeń BT
+              </button>
+            )}
+          </div>
+        </div>
+
+        {btScanning && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--ink-2)", fontSize: 13 }}>
+            <I.sync size={14}/> Wyszukiwanie urządzeń w pobliżu...
+            <span style={{ color: "var(--ink-3)", fontSize: 12 }}>Włącz głośnik w trybie parowania</span>
+          </div>
+        )}
+
+        {btError && (
+          <div style={{ padding: "10px 12px", borderRadius: "var(--radius-md)", background: "rgba(174,75,61,0.08)", border: "1px solid rgba(174,75,61,0.2)", color: "var(--err)", fontSize: 13 }}>
+            {btError}
+          </div>
+        )}
+
+        {btDevices.length > 0 && (
+          <div>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--ink-3)", marginBottom: 8 }}>
+              Znalezione urządzenia ({btDevices.length})
+            </div>
+            <div className="row-list">
+              {btDevices.map((d) => {
+                const isCurrent = d.name === currentTarget;
+                const isSaving = btSaving === d.name;
+                return (
+                  <div key={d.mac} className="row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
+                    <div>
+                      <div style={{ fontWeight: 600, fontSize: 13 }}>{d.name}</div>
+                      <div style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--ink-3)" }}>{d.mac}</div>
+                    </div>
+                    {isCurrent ? (
+                      <span className="chip ok"><span className="dot" style={{ marginRight: 4 }}/>aktualny</span>
+                    ) : (
+                      <button className="btn btn-secondary" onClick={() => handleSelect(d.name)} disabled={!!btSaving}>
+                        {isSaving ? <I.sync size={13}/> : <I.bt size={13}/>} Paruj
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!btScanning && btDevices.length === 0 && !btError && (
+          <div style={{ color: "var(--ink-3)", fontSize: 13 }}>
+            Naciśnij „Szukaj urządzeń BT" aby zobaczyć dostępne głośniki.
+            Zmiana aktywna po restarcie urządzenia.
+          </div>
+        )}
+
+        {btLog.length > 0 && (
+          <div style={{ marginTop: 8 }}>
+            <div style={{ fontSize: 11, color: "var(--text-muted)", marginBottom: 4 }}>Log urządzenia</div>
+            <div
+              style={{
+                background: "var(--bg-secondary, #1a1a1a)",
+                borderRadius: 6,
+                padding: "8px 10px",
+                fontFamily: "monospace",
+                fontSize: 11,
+                color: "var(--text-muted, #aaa)",
+                maxHeight: 180,
+                overflowY: "auto",
+                whiteSpace: "pre-wrap",
+                wordBreak: "break-all",
+              }}
+            >
+              {btLog.map((line, i) => (
+                <div key={i} style={{ color: line.includes("[BT]") ? "var(--accent, #4af)" : undefined }}>
+                  {line}
+                </div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

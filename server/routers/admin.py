@@ -21,20 +21,28 @@ from sqlalchemy.orm import Session, joinedload
 from database import get_db, SessionLocal, Track, Figurine, SystemSound
 from device_sync import (
     build_sync_plan,
+    fetch_bt_devices,
     fetch_device_files,
     fetch_device_log_content,
     fetch_device_logs,
     fetch_device_status,
     fetch_led_config,
+    fetch_recent_log,
     get_configured_device,
     get_device_settings,
     push_led_config,
     restart_device,
     save_device_settings,
+    select_bt_device,
+    start_bt_scan,
+    stop_bt_scan,
     sync_device,
     download_device_log,
 )
 from models import (
+    BtDevicesResponse,
+    BtSelectRequest,
+    BtSelectResponse,
     DeviceFilesResponse,
     DeviceLogContentResponse,
     DeviceLogsResponse,
@@ -66,6 +74,11 @@ last_known_device_status: dict | None = None
 
 def _device_error_detail(exc: RequestException) -> str:
     if exc.response is None:
+        msg = str(exc)
+        if "No route to host" in msg or "Failed to establish" in msg or "Connection refused" in msg:
+            return "Nie można połączyć się z urządzeniem. Sprawdź czy jest włączone i w trybie sync."
+        if "timed out" in msg.lower():
+            return "Przekroczono czas oczekiwania na odpowiedź urządzenia."
         return f"Device connection error: {exc}"
 
     text = (exc.response.text or "").strip()
@@ -1044,3 +1057,66 @@ def restart_device_now(device_id: str):
     except RequestException as exc:
         logger.warning("Restarting device failed device_id=%s error=%s", device_id, exc)
         raise HTTPException(status_code=502, detail=f"Device connection error: {exc}") from exc
+
+
+@router.get("/devices/{device_id}/bt/devices", response_model=BtDevicesResponse)
+def get_bt_devices(device_id: str):
+    """Return live BT scan results from the device (device must be in sync mode)."""
+    try:
+        return fetch_bt_devices(_get_device_or_404())
+    except RequestException as exc:
+        logger.warning("Fetching BT devices failed device_id=%s error=%s", device_id, exc)
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+@router.post("/devices/{device_id}/bt/start-scan")
+def bt_start_scan(device_id: str):
+    """Start BT inquiry scan on device (device must be in sync mode)."""
+    try:
+        return start_bt_scan(_get_device_or_404())
+    except RequestException as exc:
+        logger.warning("Starting BT scan failed device_id=%s error=%s", device_id, exc)
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+@router.post("/devices/{device_id}/bt/stop-scan")
+def bt_stop_scan(device_id: str):
+    """Stop ongoing BT scan on device."""
+    try:
+        return stop_bt_scan(_get_device_or_404())
+    except RequestException as exc:
+        logger.warning("Stopping BT scan failed device_id=%s error=%s", device_id, exc)
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+@router.post("/devices/{device_id}/bt/select", response_model=BtSelectResponse)
+def bt_select_device(device_id: str, body: BtSelectRequest):
+    """Save chosen BT speaker name to device NVS (device must be in sync mode)."""
+    try:
+        return select_bt_device(_get_device_or_404(), name=body.name)
+    except RequestException as exc:
+        logger.warning(
+            "Selecting BT device failed device_id=%s name=%s error=%s",
+            device_id, body.name, exc
+        )
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc
+
+
+@router.get("/devices/{device_id}/diag/recent-log")
+def get_recent_log(device_id: str, since: int = 0):
+    """Poll in-memory ESP32 log ring buffer. Returns lines since the given index."""
+    try:
+        return fetch_recent_log(_get_device_or_404(), since=since)
+    except RequestException as exc:
+        logger.warning("Fetching recent log failed device_id=%s error=%s", device_id, exc)
+        detail = _device_error_detail(exc)
+        status = exc.response.status_code if exc.response is not None else 502
+        raise HTTPException(status_code=status, detail=detail) from exc

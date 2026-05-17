@@ -75,6 +75,9 @@ const I = {
   clock: (p) => <Ic {...p}><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></Ic>,
   pin: (p) => <Ic {...p}><path d="M12 22s7-7 7-12a7 7 0 0 0-14 0c0 5 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/></Ic>,
   warning: (p) => <Ic {...p}><path d="M12 3 2 20h20z"/><path d="M12 9v5"/><circle cx="12" cy="17.5" r="0.7" fill="currentColor"/></Ic>,
+  bt: (p) => <Ic {...p}><path d="M6.5 6.5 17 17 12 22V2l5 5-10.5 10.5"/></Ic>,
+  stop: (p) => <Ic {...p}><rect x="4" y="4" width="16" height="16" rx="3" fill="currentColor" stroke="none"/></Ic>,
+  alert: (p) => <Ic {...p}><circle cx="12" cy="12" r="9"/><path d="M12 8v5"/><circle cx="12" cy="16" r=".7" fill="currentColor"/></Ic>,
 };
 
 window.I = I;

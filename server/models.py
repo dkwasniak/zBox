@@ -193,6 +193,26 @@ class DeviceSettings(BaseModel):
     ip: str = ""
 
 
+# BT pairing schemas
+class BtDeviceEntry(BaseModel):
+    name: str
+    mac: str
+
+
+class BtDevicesResponse(BaseModel):
+    scanning: bool
+    devices: list[BtDeviceEntry]
+
+
+class BtSelectRequest(BaseModel):
+    name: str
+
+
+class BtSelectResponse(BaseModel):
+    saved: bool
+    name: str
+
+
 # ESP32 API response
 class PlayResponse(BaseModel):
     stream_url: str
