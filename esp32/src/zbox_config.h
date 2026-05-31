@@ -1,6 +1,7 @@
 #pragma once
 
 #define ENABLE_LEDS true
+#define ENABLE_NFC true
 
 // =============================================================================
 // Pins
@@ -38,15 +39,15 @@
 
 #define LONG_PRESS_MS 2000
 #define DOUBLE_CLICK_WINDOW_MS 350
-#define EMERGENCY_SLEEP_MS 10000
-#define WAKE_ABORT_MS 800
-#define WAKE_NIGHT_LIGHT_MS 1600
+#define WAKE_ABORT_MS 400
 #define NIGHT_LIGHT_SLEEP_HOLD_MS 1000
 #define DEBOUNCE_MS 20
 #define NFC_READ_INTERVAL 1000
+#define NFC_BOOT_INIT_DELAY_MS 250
+#define NFC_BOOT_MAPPING_DELAY_MS 350
 #define NFC_ERROR_THRESHOLD 10
-#define NO_TAG_THRESHOLD 2
-#define NFC_TAG_LOST_MS 3000  // Require a sustained missing read before treating the tag as removed
+#define NFC_TAG_LOST_MS 1500  // Require a sustained missing read before treating the tag as removed
+#define NFC_LOST_POLL_INTERVAL_MS 150
 #define PN532_WAKEUP_SPI 0x20
 #define PN532_WAKE_SETTLE_MS 5
 #define AUDIO_BUF_SIZE 2048
@@ -63,6 +64,7 @@
 #define NIGHT_LIGHT_TIMEOUT_MS (15UL * 60 * 1000)
 
 // Sync / service mode
+#define WIFI_HOSTNAME "zbox"
 #define SYNC_PENDING_PATH "/data/sync_pending"
 #define SYNC_AP_NAME "zBox-Sync"
 #define SYNC_HTTP_PORT 80

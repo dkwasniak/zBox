@@ -81,6 +81,39 @@ void test_boot_init_prescanned_nfc_autostarts() {
     TEST_ASSERT_FALSE(hasEffect(r, EffectType::StartNfcPlaybackByUid));
 }
 
+void test_sleep_hold_warning_starts_sleep_when_audio_idle() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::Idle;
+    auto r = reduce(s, makeEvent(EventType::SleepHoldWarning), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::WaitingPowerOffSound, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_INT((int)RequestedSleepKind::Normal, (int)r.next_state.requested_sleep_kind);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_POWER_OFF, findEffect(r, EffectType::PlaySystemSound)->payload.system_sound.sound_id);
+    TEST_ASSERT_NOT_EQUAL(0, r.next_state.sleep_transition_deadline_ms);
+    TEST_ASSERT_EQUAL_UINT32(0, r.next_state.idle_deadline_ms);
+}
+
+void test_sleep_hold_warning_stops_audio_when_playing() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::PlayingFile;
+    auto r = reduce(s, makeEvent(EventType::SleepHoldWarning), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::PreparingDeepSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_INT((int)RequestedSleepKind::Normal, (int)r.next_state.requested_sleep_kind);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopAudio));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PlaySystemSound));
+}
+
+void test_sleep_hold_warning_ignored_when_already_preparing() {
+    AppState s = defaultState();
+    s.sleep_state = SleepState::PreparingDeepSleep;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    auto r = reduce(s, makeEvent(EventType::SleepHoldWarning), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::PreparingDeepSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_UINT8(0, r.effect_count);
+}
+
 void test_nfc_detected_starts_immediately_on_local_output() {
     AppState s = defaultState();
     s.boot_state = BootState::Ready;
@@ -127,9 +160,8 @@ void test_volume_up_steps_one_level_and_uses_scaled_percent() {
     TEST_ASSERT_EQUAL_UINT8(8, r.next_state.output_volume_level);
     TEST_ASSERT_EQUAL_UINT8(8, r.next_state.volume_overlay_level);
     TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
-    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PersistVolume));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PersistVolume)); // deferred to VolumeOverlayExpired
     TEST_ASSERT_EQUAL_UINT8(25, findEffect(r, EffectType::SetOutputVolume)->payload.volume.level_percent);
-    TEST_ASSERT_EQUAL_UINT8(8, findEffect(r, EffectType::PersistVolume)->payload.volume.level_percent);
 }
 
 void test_volume_down_steps_one_level_and_clamps_at_mute() {
@@ -138,8 +170,8 @@ void test_volume_down_steps_one_level_and_clamps_at_mute() {
     auto r = reduce(s, makeEvent(EventType::VolumeDownPressed), 500);
     TEST_ASSERT_EQUAL_UINT8(0, r.next_state.output_volume_level);
     TEST_ASSERT_EQUAL_UINT8(0, r.next_state.volume_overlay_level);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PersistVolume)); // deferred to VolumeOverlayExpired
     TEST_ASSERT_EQUAL_UINT8(0, findEffect(r, EffectType::SetOutputVolume)->payload.volume.level_percent);
-    TEST_ASSERT_EQUAL_UINT8(0, findEffect(r, EffectType::PersistVolume)->payload.volume.level_percent);
 }
 
 void test_volume_up_clamps_at_max_level() {
@@ -256,6 +288,47 @@ void test_system_sound_failure_restores_user_volume_when_not_sleeping() {
     TEST_ASSERT_EQUAL_UINT8(25, findEffect(r, EffectType::SetOutputVolume)->payload.volume.level_percent);
 }
 
+void test_audio_command_rejected_during_nfc_start_returns_to_idle() {
+    AppState s = defaultState();
+    s.audio_state = AudioState::StartingFile;
+    s.playback_mode = PlaybackMode::Nfc;
+    s.pending_playback.kind = PendingPlaybackKind::NfcUid;
+    strcpy(s.pending_playback.uid, "04:AA:BB");
+    auto r = reduce(s, makeAudioCommandRejectedEvent(17, PlaybackFailReason::AudioCommandRejected), 1000);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::Idle, (int)r.next_state.audio_state);
+    TEST_ASSERT_EQUAL_INT((int)PendingPlaybackKind::None, (int)r.next_state.pending_playback.kind);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::LogDiagnostic));
+}
+
+void test_audio_command_rejected_during_music_start_returns_to_idle() {
+    AppState s = defaultState();
+    s.audio_state = AudioState::StartingFile;
+    s.playback_mode = PlaybackMode::Music;
+    auto r = reduce(s, makeAudioCommandRejectedEvent(18, PlaybackFailReason::AudioCommandRejected), 1000);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::Idle, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::LogDiagnostic));
+}
+
+void test_audio_command_rejected_during_mode_toggle_plays_mode_sound() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::StoppingForModeChange;
+    auto r = reduce(s, makeAudioCommandRejectedEvent(19, PlaybackFailReason::AudioCommandRejected), 1000);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StartingSystemSound, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_MUSIC_MODE, findEffect(r, EffectType::PlaySystemSound)->payload.system_sound.sound_id);
+}
+
+void test_poweroff_system_sound_failure_enters_sleep_path() {
+    AppState s = defaultState();
+    s.sleep_state = SleepState::WaitingPowerOffSound;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    auto r = reduce(s, makeSystemSoundFailedEvent(SOUND_ID_POWER_OFF, SoundFailReason::AudioCommandRejected, 20), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::ReadyToSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::EnterDeepSleep));
+}
+
 void test_system_sound_after_bt_sleep_stops_bt_first() {
     AppState s = defaultState();
     s.sleep_state = SleepState::WaitingPowerOffSound;
@@ -280,10 +353,46 @@ void test_mode_toggle_to_music_plays_mode_sound_and_persists() {
     AppState s = defaultState();
     auto r = reduce(s, makeEvent(EventType::ModeToggleRequested), 0);
     TEST_ASSERT_EQUAL_INT((int)PlaybackMode::Music, (int)r.next_state.playback_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StartingSystemSound, (int)r.next_state.audio_state);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::StopAudio));
     TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
     TEST_ASSERT_TRUE(hasEffect(r, EffectType::PlaySystemSound));
     TEST_ASSERT_TRUE(hasEffect(r, EffectType::PersistPlaybackMode));
     TEST_ASSERT_EQUAL_UINT8(20, findEffect(r, EffectType::SetOutputVolume)->payload.volume.level_percent);
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_MUSIC_MODE, findEffect(r, EffectType::PlaySystemSound)->payload.system_sound.sound_id);
+}
+
+void test_mode_toggle_while_playing_stops_before_mode_sound() {
+    AppState s = defaultState();
+    s.audio_state = AudioState::PlayingFile;
+    auto r = reduce(s, makeEvent(EventType::ModeToggleRequested), 1000);
+    TEST_ASSERT_EQUAL_INT((int)PlaybackMode::Music, (int)r.next_state.playback_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StoppingForModeChange, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopAudio));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PersistPlaybackMode));
+}
+
+void test_audio_stopped_after_mode_toggle_plays_music_mode_sound() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::StoppingForModeChange;
+    auto r = reduce(s, makeAudioStoppedEvent(7), 1000);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StartingSystemSound, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_MUSIC_MODE, findEffect(r, EffectType::PlaySystemSound)->payload.system_sound.sound_id);
+}
+
+void test_audio_stopped_after_mode_toggle_plays_nfc_mode_sound() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Nfc;
+    s.audio_state = AudioState::StoppingForModeChange;
+    auto r = reduce(s, makeAudioStoppedEvent(7), 1000);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StartingSystemSound, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_NFC_MODE, findEffect(r, EffectType::PlaySystemSound)->payload.system_sound.sound_id);
 }
 
 void test_mode_sound_completion_autostarts_music() {
@@ -390,6 +499,137 @@ void test_nfc_reinsertion_after_removal_plays() {
     TEST_ASSERT_TRUE(hasEffect(r, EffectType::StartNfcPlaybackByUid));
 }
 
+// ----- Bug 1: sleep timeout -----
+
+void test_sleep_timeout_in_waiting_bt_stops_forces_ready_to_sleep() {
+    AppState s = defaultState();
+    s.sleep_state = SleepState::WaitingBtHeadphonesStop;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    s.sleep_transition_deadline_ms = 1000;
+    auto r = reduce(s, makeEvent(EventType::SleepTimeoutFired), 5000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::ReadyToSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_UINT32(0, r.next_state.sleep_transition_deadline_ms);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::EnterDeepSleep));
+}
+
+void test_sleep_timeout_in_awake_is_noop() {
+    AppState s = defaultState();
+    s.sleep_state = SleepState::Awake;
+    auto r = reduce(s, makeEvent(EventType::SleepTimeoutFired), 5000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::Awake, (int)r.next_state.sleep_state);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::EnterDeepSleep));
+}
+
+void test_sleep_timeout_in_ready_to_sleep_is_noop() {
+    AppState s = defaultState();
+    s.sleep_state = SleepState::ReadyToSleep;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    auto r = reduce(s, makeEvent(EventType::SleepTimeoutFired), 5000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::ReadyToSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::EnterDeepSleep));
+}
+
+void test_sleep_requested_arms_transition_deadline() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    auto r = reduce(s, makeSleepRequestedEvent(RequestedSleepKind::Normal), 1000);
+    TEST_ASSERT_NOT_EQUAL((int)SleepState::Awake, (int)r.next_state.sleep_state);
+    TEST_ASSERT_NOT_EQUAL(0, r.next_state.sleep_transition_deadline_ms);
+}
+
+void test_idle_timeout_arms_transition_deadline() {
+    AppState s = defaultState();
+    auto r = reduce(s, makeEvent(EventType::IdleTimeoutFired), 2000);
+    TEST_ASSERT_NOT_EQUAL((int)SleepState::Awake, (int)r.next_state.sleep_state);
+    TEST_ASSERT_NOT_EQUAL(0, r.next_state.sleep_transition_deadline_ms);
+}
+
+void test_ready_to_sleep_via_bt_stop_clears_deadline() {
+    AppState s = defaultState();
+    s.sleep_state = SleepState::WaitingBtHeadphonesStop;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    s.bt_headphones_mode_active = true;
+    s.sleep_transition_deadline_ms = 9000;
+    auto r = reduce(s, makeEvent(EventType::BtHeadphonesModeStopped), 5000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::ReadyToSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_UINT32(0, r.next_state.sleep_transition_deadline_ms);
+}
+
+void test_sleep_transition_intermediate_does_not_reset_deadline() {
+    // WaitingPowerOffSound → WaitingBtHeadphonesStop should preserve original budget
+    AppState s = defaultState();
+    s.sleep_state = SleepState::WaitingPowerOffSound;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    s.bt_headphones_mode_active = true;
+    s.sleep_transition_deadline_ms = 5000; // original budget already armed
+    auto r = reduce(s, makeSystemSoundCompletedEvent(SOUND_ID_POWER_OFF, 0), 2000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::WaitingBtHeadphonesStop, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_UINT32(5000, r.next_state.sleep_transition_deadline_ms); // unchanged
+}
+
+// ----- Bug 2: volume persist deferred -----
+
+void test_volume_up_does_not_emit_persist_volume() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    auto r = reduce(s, makeEvent(EventType::VolumeUpPressed), 0);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PersistVolume));
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
+}
+
+void test_volume_down_does_not_emit_persist_volume() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    auto r = reduce(s, makeEvent(EventType::VolumeDownPressed), 0);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PersistVolume));
+}
+
+void test_volume_overlay_expired_emits_persist_and_clears_deadline() {
+    AppState s = defaultState();
+    s.volume_overlay_deadline_ms = 1000;
+    s.output_volume_level = 8;
+    auto r = reduce(s, makeEvent(EventType::VolumeOverlayExpired), 1500); // now >= deadline
+    TEST_ASSERT_EQUAL_UINT32(0, r.next_state.volume_overlay_deadline_ms);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PersistVolume));
+}
+
+void test_volume_overlay_expired_stale_does_nothing() {
+    AppState s = defaultState();
+    s.volume_overlay_deadline_ms = 2000; // deadline in future
+    auto r = reduce(s, makeEvent(EventType::VolumeOverlayExpired), 500); // now < deadline
+    TEST_ASSERT_EQUAL_UINT32(2000, r.next_state.volume_overlay_deadline_ms); // unchanged
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PersistVolume));
+}
+
+void test_volume_overlay_expired_when_deadline_zero_does_nothing() {
+    AppState s = defaultState();
+    s.volume_overlay_deadline_ms = 0; // already cleared
+    auto r = reduce(s, makeEvent(EventType::VolumeOverlayExpired), 5000);
+    TEST_ASSERT_EQUAL_UINT32(0, r.next_state.volume_overlay_deadline_ms);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PersistVolume));
+}
+
+// ----- Additional task: no Playing animation in BT mode -----
+
+void test_led_playing_scene_hidden_in_bt_headphones_mode() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::PlayingFile;
+    s.output_mode = AudioOutputMode::BtHeadphones;
+    auto scene = deriveLedScene(s);
+    TEST_ASSERT_NOT_EQUAL((int)LedSceneType::Playing, (int)scene.type);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::Idle, (int)scene.type);
+}
+
+void test_led_playing_scene_shown_on_local_speaker() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::PlayingFile;
+    s.output_mode = AudioOutputMode::LocalSpeaker;
+    auto scene = deriveLedScene(s);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::Playing, (int)scene.type);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_boot_init_normal_is_ready_without_bt_wait);
@@ -418,13 +658,37 @@ int main() {
     RUN_TEST(test_system_sound_after_local_sleep_enters_deep_sleep_directly);
     RUN_TEST(test_startup_sound_completion_restores_user_volume_and_starts_pending_music);
     RUN_TEST(test_system_sound_failure_restores_user_volume_when_not_sleeping);
+    RUN_TEST(test_audio_command_rejected_during_nfc_start_returns_to_idle);
+    RUN_TEST(test_audio_command_rejected_during_music_start_returns_to_idle);
+    RUN_TEST(test_audio_command_rejected_during_mode_toggle_plays_mode_sound);
+    RUN_TEST(test_poweroff_system_sound_failure_enters_sleep_path);
     RUN_TEST(test_system_sound_after_bt_sleep_stops_bt_first);
     RUN_TEST(test_bt_stop_during_sleep_enters_deep_sleep);
     RUN_TEST(test_mode_toggle_to_music_plays_mode_sound_and_persists);
+    RUN_TEST(test_mode_toggle_while_playing_stops_before_mode_sound);
+    RUN_TEST(test_audio_stopped_after_mode_toggle_plays_music_mode_sound);
+    RUN_TEST(test_audio_stopped_after_mode_toggle_plays_nfc_mode_sound);
     RUN_TEST(test_mode_sound_completion_autostarts_music);
     RUN_TEST(test_battery_check_updates_preview_and_idle_deadline);
     RUN_TEST(test_led_wait_scene_only_in_active_bt_mode);
     RUN_TEST(test_led_volume_overlay_for_mute_shows_zero_leds);
     RUN_TEST(test_led_volume_overlay_for_level_twelve_shows_twelve_leds);
+    RUN_TEST(test_sleep_timeout_in_waiting_bt_stops_forces_ready_to_sleep);
+    RUN_TEST(test_sleep_timeout_in_awake_is_noop);
+    RUN_TEST(test_sleep_timeout_in_ready_to_sleep_is_noop);
+    RUN_TEST(test_sleep_hold_warning_starts_sleep_when_audio_idle);
+    RUN_TEST(test_sleep_hold_warning_stops_audio_when_playing);
+    RUN_TEST(test_sleep_hold_warning_ignored_when_already_preparing);
+    RUN_TEST(test_sleep_requested_arms_transition_deadline);
+    RUN_TEST(test_idle_timeout_arms_transition_deadline);
+    RUN_TEST(test_ready_to_sleep_via_bt_stop_clears_deadline);
+    RUN_TEST(test_sleep_transition_intermediate_does_not_reset_deadline);
+    RUN_TEST(test_volume_up_does_not_emit_persist_volume);
+    RUN_TEST(test_volume_down_does_not_emit_persist_volume);
+    RUN_TEST(test_volume_overlay_expired_emits_persist_and_clears_deadline);
+    RUN_TEST(test_volume_overlay_expired_stale_does_nothing);
+    RUN_TEST(test_volume_overlay_expired_when_deadline_zero_does_nothing);
+    RUN_TEST(test_led_playing_scene_hidden_in_bt_headphones_mode);
+    RUN_TEST(test_led_playing_scene_shown_on_local_speaker);
     return UNITY_END();
 }

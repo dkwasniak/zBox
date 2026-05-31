@@ -11,10 +11,9 @@ enum class WakeDecision : uint8_t {
 
 WakeDecision handleWakeFromDeepSleep();
 
-// Direct deep-sleep entry used by sync / service flows outside the normal
+// Direct deep-sleep entry used by sync / service flow outside the normal
 // dispatcher path.
 void enterDeepSleep();
-void enterEmergencyDeepSleep();
 
 // Dispatcher executor: called by dispatcher when EnterDeepSleep effect fires.
 // BT has already been shut down via btAdapterShutdown() before this is called.

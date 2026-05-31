@@ -9,13 +9,7 @@ LedSceneParams deriveLedScene(const AppState& s) {
         return p;
     }
 
-    // Priority 2: sleep hold warning (button held past threshold, not yet released)
-    if (s.sleep_warn_active) {
-        p.type = LedSceneType::WarningFlash;
-        return p;
-    }
-
-    // Priority 3: sync mode entry
+    // Priority 2: sync mode entry
     if (s.sync_mode) {
         p.type = LedSceneType::SyncEntry;
         return p;
@@ -55,9 +49,10 @@ LedSceneParams deriveLedScene(const AppState& s) {
         return p;
     }
 
-    // Priority 9: playing
-    if (s.audio_state == AudioState::PlayingFile ||
-        s.audio_state == AudioState::StartingFile) {
+    // Priority 9: playing (local speaker only — BT headphones mode shows Idle)
+    if ((s.audio_state == AudioState::PlayingFile ||
+         s.audio_state == AudioState::StartingFile) &&
+        s.output_mode != AudioOutputMode::BtHeadphones) {
         p.type = LedSceneType::Playing;
         return p;
     }

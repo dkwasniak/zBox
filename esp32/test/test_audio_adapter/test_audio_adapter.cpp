@@ -138,11 +138,14 @@ void test_missing_system_sound_mapping_posts_failed() {
     TEST_ASSERT_EQUAL_INT((int)SoundFailReason::FileNotFound, (int)lastEvent()->payload.sound_failed.reason);
 }
 
-void test_system_sound_queue_reject_posts_audio_command_rejected() {
+void test_system_sound_queue_reject_posts_system_sound_failed() {
     s_lookup_sound_ok = true;
     s_play_sound_ok = false;
     TEST_ASSERT_FALSE(audioAdapterPlaySystemSound(SOUND_ID_POWER_OFF, 12));
-    TEST_ASSERT_EQUAL_INT((int)EventType::AudioCommandRejected, (int)lastEvent()->type);
+    TEST_ASSERT_EQUAL_INT((int)EventType::SystemSoundFailed, (int)lastEvent()->type);
+    TEST_ASSERT_EQUAL_INT((int)SoundFailReason::AudioCommandRejected, (int)lastEvent()->payload.sound_failed.reason);
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_POWER_OFF, lastEvent()->payload.sound_failed.sound_id);
+    TEST_ASSERT_EQUAL_UINT16(12, lastEvent()->payload.sound_failed.cmd_id);
 }
 
 void test_stop_queue_reject_posts_best_effort_audio_stopped() {
@@ -159,8 +162,7 @@ int main() {
     RUN_TEST(test_music_index_missing_posts_track_failed);
     RUN_TEST(test_unknown_system_sound_posts_failed);
     RUN_TEST(test_missing_system_sound_mapping_posts_failed);
-    RUN_TEST(test_system_sound_queue_reject_posts_audio_command_rejected);
+    RUN_TEST(test_system_sound_queue_reject_posts_system_sound_failed);
     RUN_TEST(test_stop_queue_reject_posts_best_effort_audio_stopped);
     return UNITY_END();
 }
-

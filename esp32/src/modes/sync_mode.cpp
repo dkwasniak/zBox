@@ -459,58 +459,39 @@ enum SyncSleepAction
 {
     SYNC_SLEEP_NONE = 0,
     SYNC_SLEEP_NORMAL,
-    SYNC_SLEEP_EMERGENCY
 };
 
 static SyncSleepAction handleSleepButton()
 {
-    static bool btnCHeld = false;
+    static bool btnDHeld = false;
     static bool sleepArmed = false;
     static unsigned long holdStart = 0;
 
-    bool cDown = digitalRead(BTN_C) == LOW;
     bool dDown = digitalRead(BTN_D) == LOW;
 
     if (dDown)
     {
-        btnCHeld = false;
-        sleepArmed = false;
-        holdStart = 0;
-        return SYNC_SLEEP_NONE;
-    }
-
-    if (cDown)
-    {
-        if (!btnCHeld)
+        if (!btnDHeld)
         {
-            btnCHeld = true;
+            btnDHeld = true;
             sleepArmed = false;
             holdStart = millis();
         }
 
         unsigned long heldMs = millis() - holdStart;
-        if (heldMs >= EMERGENCY_SLEEP_MS)
-        {
-            btnCHeld = false;
-            sleepArmed = false;
-            holdStart = 0;
-            syncLogf("[SYNC] emergency sleep requested by long BTN_C");
-            return SYNC_SLEEP_EMERGENCY;
-        }
-
-        if (!sleepArmed && heldMs >= LONG_PRESS_MS)
+        if (!sleepArmed && heldMs >= NIGHT_LIGHT_SLEEP_HOLD_MS)
         {
             sleepArmed = true;
-            syncLogf("[SYNC] sleep armed - release BTN_C for deep sleep");
+            syncLogf("[SYNC] sleep armed - release BTN_D for deep sleep");
         }
 
         return SYNC_SLEEP_NONE;
     }
 
-    if (btnCHeld)
+    if (btnDHeld)
     {
-        bool triggerSleep = sleepArmed && (millis() - holdStart >= LONG_PRESS_MS);
-        btnCHeld = false;
+        bool triggerSleep = sleepArmed && (millis() - holdStart >= NIGHT_LIGHT_SLEEP_HOLD_MS);
+        btnDHeld = false;
         sleepArmed = false;
         holdStart = 0;
         return triggerSleep ? SYNC_SLEEP_NORMAL : SYNC_SLEEP_NONE;
@@ -519,9 +500,33 @@ static SyncSleepAction handleSleepButton()
     return SYNC_SLEEP_NONE;
 }
 
+static void handleBatteryCheckButton()
+{
+    static bool fired = false;
+    static unsigned long holdStart = 0;
+
+    bool cDown = digitalRead(BTN_C) == LOW;
+    if (!cDown)
+    {
+        fired = false;
+        holdStart = 0;
+        return;
+    }
+    if (holdStart == 0)
+        holdStart = millis();
+    if (!fired && (millis() - holdStart) >= LONG_PRESS_MS)
+    {
+        fired = true;
+        BatteryReading bat = readBatteryReading();
+        syncLogf("[SYNC] battery check %.2fV %d bars (%s)", bat.batteryVoltage, bat.bars, bat.color);
+    }
+}
+
 static void exitSyncMode(const char *reason)
 {
     syncLogf("[SYNC] exit requested: %s", reason);
+    configureSyncWatchdog();
+    esp_task_wdt_reset();
     if (s_scanRunning)
     {
         esp_bt_gap_cancel_discovery();
@@ -1259,9 +1264,10 @@ void runSyncMode()
     ensureDataDirs();
 
     syncDeviceId = buildDeviceId();
-    syncHostname = String("zbox-") + syncDeviceId.substring(max(0, (int)syncDeviceId.length() - 6));
+    syncHostname = WIFI_HOSTNAME;
 
     WiFiManager wm;
+    wm.setHostname(WIFI_HOSTNAME);
     wm.setConfigPortalTimeout(180);
     wm.setConnectTimeout(10);
     wm.setAPCallback([](WiFiManager *mgr) {
@@ -1277,9 +1283,11 @@ void runSyncMode()
     {
         syncLogf("[SYNC] Config portal timed out - returning to normal mode");
         LOGLN("[SYNC] WiFi not connected");
+        configureSyncWatchdog();
+        esp_task_wdt_reset();
         ledFlashResult(false);
         clearSyncFlag();
-        delay(1000);
+        delay(500);
         ESP.restart();
     }
 
@@ -1307,13 +1315,11 @@ void runSyncMode()
         SyncSleepAction sleepAction = handleSleepButton();
         if (sleepAction == SYNC_SLEEP_NORMAL)
         {
-            syncLogf("[SYNC] deep sleep requested by BTN_C");
+            syncLogf("[SYNC] deep sleep requested by BTN_D");
             enterDeepSleep();
         }
-        else if (sleepAction == SYNC_SLEEP_EMERGENCY)
-        {
-            enterEmergencyDeepSleep();
-        }
+
+        handleBatteryCheckButton();
 
         // Restart BT inquiry from the main task if the previous cycle ended naturally.
         // Must NOT be done from within the GAP callback — that causes a BT stack assert.

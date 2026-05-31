@@ -15,6 +15,7 @@ EventDropPolicy getEventDropPolicy(EventType type) {
         case EventType::VolumeOverlayExpired:
         case EventType::BatteryPreviewExpired:
         case EventType::BrightnessSaveDeadlineFired:
+        case EventType::SleepTimeoutFired:
             return EventDropPolicy::Coalescible;
 
         case EventType::NfcTagDetected:

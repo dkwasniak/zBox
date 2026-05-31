@@ -26,65 +26,23 @@ void enterDeepSleep()
     esp_deep_sleep_start();
 }
 
-void enterEmergencyDeepSleep()
-{
-    LOGC("[SLEEP] enterEmergencyDeepSleep (sync mode path)\n");
-    audioDeleteTaskForSleep();
-    if (nfcIsReady()) nfcPowerDown();
-    ledPowerOff();
-    Serial.flush();
-    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
-    esp_deep_sleep_start();
-}
-
 void sleepExecuteDeepSleep(RequestedSleepKind kind)
 {
     gInSleepExecutorPath = true;
 
-    switch (kind) {
-        case RequestedSleepKind::Emergency:
-            LOGC("[SLEEP] Executing deep sleep (emergency, via dispatcher)\n");
-            audioDeleteTaskForSleep();
-            if (nfcIsReady()) nfcPowerDown();
-            ledPowerOff();
-            Serial.flush();
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
-            esp_deep_sleep_start();
-            break;
-
-        case RequestedSleepKind::NightLightTimeout:
-            LOGC("[SLEEP] Executing deep sleep (night-light timeout, via dispatcher)\n");
-            nightLightFlushPendingSave();
-            audioDeleteTaskForSleep();
-            delay(50);
-            nfcStopTaskForSleep();
-            nfcPowerDown();
-            ledSuspendTask();
-            delay(20);
-            ledShutdownAnim();
-            ledPowerOff();
-            Serial.flush();
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
-            esp_deep_sleep_start();
-            break;
-
-        case RequestedSleepKind::Normal:
-        default:
-            LOGC("[SLEEP] Executing deep sleep (normal, via dispatcher)\n");
-            nightLightFlushPendingSave();
-            audioDeleteTaskForSleep();
-            delay(50);
-            nfcStopTaskForSleep();
-            nfcPowerDown();
-            ledSuspendTask();
-            delay(20);
-            ledShutdownAnim();
-            ledPowerOff();
-            Serial.flush();
-            esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
-            esp_deep_sleep_start();
-            break;
-    }
+    LOGC("[SLEEP] Executing deep sleep (kind=%d, via dispatcher)\n", (int)kind);
+    nightLightFlushPendingSave();
+    audioDeleteTaskForSleep();
+    delay(50);
+    nfcStopTaskForSleep();
+    nfcPowerDown();
+    ledSuspendTask();
+    delay(20);
+    ledShutdownAnim();
+    ledPowerOff();
+    Serial.flush();
+    esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
+    esp_deep_sleep_start();
 }
 
 // Waking from deep sleep requires holding BTN_D for LONG_PRESS_MS.
@@ -98,9 +56,13 @@ WakeDecision handleWakeFromDeepSleep()
     if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_EXT0)
         return WakeDecision::NONE;
 
-    LOGC("[WAKE] BTN_D wake confirm: <1s abort, 1-2s boot, >=2s night light\n");
+    // Hold BTN_D past WAKE_ABORT_MS to confirm boot.
+    // Simultaneously holding BTN_C activates night-light mode.
+    LOGC("[WAKE] BTN_D wake confirm: <%dms abort, >=%dms boot (+ BTN_C = night light)\n",
+         WAKE_ABORT_MS, WAKE_ABORT_MS);
 
     pinMode(BTN_D, INPUT_PULLUP);
+    pinMode(BTN_C, INPUT_PULLUP);
 
     // Minimal FastLED init without an animation task — ZERO FreeRTOS.
     // ledInit() will later detect fastLedInitialized=true and skip re-adding LEDs.
@@ -114,43 +76,34 @@ WakeDecision handleWakeFromDeepSleep()
     while (true)
     {
         unsigned long elapsed = millis() - holdStart;
-        if (elapsed >= WAKE_NIGHT_LIGHT_MS)
+
+        if (elapsed >= WAKE_ABORT_MS)
         {
-            LOGC("[WAKE] Night light hold confirmed\n");
-            ledSetNightLight(100);
-            return WakeDecision::NIGHT_LIGHT;
+            if (digitalRead(BTN_C) == LOW)
+            {
+                LOGC("[WAKE] Night light combo confirmed (C+D)\n");
+                ledSetNightLight(100);
+                return WakeDecision::NIGHT_LIGHT;
+            }
+            LOGC("[WAKE] Hold confirmed for normal boot\n");
+            return WakeDecision::NORMAL_BOOT;
         }
 
         bool pressed = (digitalRead(BTN_D) == LOW);
         if (!pressed)
         {
-            // Confirm release after a short delay (debounce)
             delay(10);
             if (digitalRead(BTN_D) != LOW)
             {
                 if (elapsed < WAKE_ABORT_MS)
                     break;
-
-                LOGC("[WAKE] Hold confirmed for normal boot\n");
-                return WakeDecision::NORMAL_BOOT;
             }
         }
 
-        if (elapsed < WAKE_ABORT_MS)
-        {
-            int lit = (int)((elapsed * (unsigned long)LED_COUNT) / WAKE_ABORT_MS);
-            if (lit < 1)
-                lit = 1;
-            if (lit > LED_COUNT)
-                lit = LED_COUNT;
-            ledSetWakeProgress(lit);
-        }
-        else
-        {
-            // After passing the normal boot threshold, do not yet show the night light colour.
-            // The full night light colour appears only once the NIGHT_LIGHT threshold is reached.
-            ledSetWakeProgress(LED_COUNT);
-        }
+        int lit = (int)((elapsed * (unsigned long)LED_COUNT) / WAKE_ABORT_MS);
+        if (lit < 1) lit = 1;
+        if (lit > LED_COUNT) lit = LED_COUNT;
+        ledSetWakeProgress(lit);
         delay(20);
     }
 

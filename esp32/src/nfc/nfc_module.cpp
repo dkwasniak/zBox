@@ -6,6 +6,7 @@
 #include "leds.h"
 #include "helpers.h"
 #include "persistent_log.h"
+#include "nfc_presence.h"
 
 // =============================================================================
 // Private objects (static — owned by this module)
@@ -19,6 +20,10 @@ static volatile bool nfcTaskStopRequested = false;
 static RTC_DATA_ATTR bool rtcNfcPowerDownSent = false;
 static int nfcErrorCount = 0;
 static bool s_nfcReady = false;
+static constexpr unsigned long NFC_CRITICAL_WARN_MS = 90;
+static constexpr unsigned long NFC_REINIT_BACKOFF_MS = 30000;
+static constexpr uint16_t NFC_READ_TIMEOUT_MS = 60;
+static unsigned long s_lastNfcReinitAttemptMs = 0;
 
 // =============================================================================
 // Private: mutex / bus helpers
@@ -210,6 +215,7 @@ static bool nfcInitSequence()
 
 static void reinitNfc()
 {
+    s_lastNfcReinitAttemptMs = millis();
     LOGW("[NFC] reinit attempt\n");
     if (!nfcCriticalBegin(pdMS_TO_TICKS(1000)))
     {
@@ -231,11 +237,22 @@ static void reinitNfc()
     }
 }
 
-static String readNfcTag()
+static bool nfcReinitDue(unsigned long now)
+{
+    if (nfcErrorCount <= NFC_ERROR_THRESHOLD)
+        return false;
+    if (s_lastNfcReinitAttemptMs == 0)
+        return true;
+    return now - s_lastNfcReinitAttemptMs >= NFC_REINIT_BACKOFF_MS;
+}
+
+static String readNfcTagWithTimeout(uint16_t timeoutMs, bool logFound)
 {
     if (!s_nfcReady)
     {
-        if (++nfcErrorCount > NFC_ERROR_THRESHOLD)
+        unsigned long now = millis();
+        nfcErrorCount++;
+        if (nfcReinitDue(now))
         {
             reinitNfc();
         }
@@ -244,18 +261,30 @@ static String readNfcTag()
 
     uint8_t uid[7];
     uint8_t uidLength;
+    unsigned long criticalStart = millis();
     if (!nfcCriticalBegin(pdMS_TO_TICKS(100)))
         return "";
 
-    bool found = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, 20);
+    bool found = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, timeoutMs);
     nfcCriticalEnd();
+    unsigned long criticalElapsed = millis() - criticalStart;
+    if (criticalElapsed > NFC_CRITICAL_WARN_MS)
+    {
+        LOGW("[NFC] read critical dt=%lu ms found=%d\n", criticalElapsed, (int)found);
+    }
     if (found)
     {
         String uidStr = uidToString(uid, uidLength);
-        LOGI("\nNFC Tag: %s\n", uidStr.c_str());
+        if (logFound)
+            LOGI("\nNFC Tag: %s\n", uidStr.c_str());
         return uidStr;
     }
     return "";
+}
+
+static String readNfcTag()
+{
+    return readNfcTagWithTimeout(NFC_READ_TIMEOUT_MS, true);
 }
 
 // =============================================================================
@@ -264,9 +293,8 @@ static String readNfcTag()
 
 static void nfcTaskFunc(void *param)
 {
-    int localNoTagCount = 0;
-    char localLastUid[30] = {};
-    unsigned long lastTagSeenMs = 0;
+    NfcPresenceState presence{};
+    nfcPresenceReset(presence);
 
     for (;;)
     {
@@ -281,39 +309,25 @@ static void nfcTaskFunc(void *param)
 
         String uid = readNfcTag();
 
-        if (!uid.isEmpty())
-        {
-            localNoTagCount = 0;
-            lastTagSeenMs = millis();
-            if (strcmp(uid.c_str(), localLastUid) != 0)
-            {
-                strlcpy(localLastUid, uid.c_str(), sizeof(localLastUid));
-                NfcEvent evt = {true, {}};
-                strlcpy(evt.uid, uid.c_str(), sizeof(evt.uid));
-                xQueueSend(nfcQueue, &evt, 0);
-            }
+        NfcPresenceResult presenceResult = nfcPresenceUpdate(
+            presence,
+            uid.c_str(),
+            millis(),
+            NFC_TAG_LOST_MS);
+
+        if (presenceResult.action == NfcPresenceAction::Detected) {
+            NfcEvent evt = {true, {}};
+            strlcpy(evt.uid, presenceResult.uid, sizeof(evt.uid));
+            xQueueSend(nfcQueue, &evt, 0);
+        } else if (presenceResult.action == NfcPresenceAction::Removed) {
+            NfcEvent evt = {false, {}};
+            xQueueSend(nfcQueue, &evt, 0);
         }
-        else
-        {
-            if (localLastUid[0] != '\0')
-            {
-                localNoTagCount++;
-                if (localNoTagCount >= NO_TAG_THRESHOLD &&
-                    millis() - lastTagSeenMs >= NFC_TAG_LOST_MS)
-                {
-                    localLastUid[0] = '\0';
-                    localNoTagCount = 0;
-                    lastTagSeenMs = 0;
-                    NfcEvent evt = {false, {}};
-                    xQueueSend(nfcQueue, &evt, 0);
-                }
-            }
-            else
-            {
-                localNoTagCount = 0;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(NFC_READ_INTERVAL));
+
+        const uint32_t delayMs = presence.lost_pending
+            ? NFC_LOST_POLL_INTERVAL_MS
+            : NFC_READ_INTERVAL;
+        vTaskDelay(pdMS_TO_TICKS(delayMs));
     }
 
     nfcTaskHandle = NULL;

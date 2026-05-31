@@ -13,7 +13,8 @@ enum class AudioState : uint8_t {
     PlayingFile,
     PlayingSystemSound,
     Paused,
-    Stopping
+    Stopping,
+    StoppingForModeChange
 };
 enum class AudioOutputMode : uint8_t { LocalSpeaker, BtHeadphones };
 enum class BtHeadphonesState : uint8_t {
@@ -36,7 +37,7 @@ enum class BootState : uint8_t {
     NightLightBootInit,
     Ready
 };
-enum class RequestedSleepKind : uint8_t { None, Normal, Emergency, NightLightTimeout };
+enum class RequestedSleepKind : uint8_t { None, Normal, NightLightTimeout };
 
 enum class PlaybackFailReason : uint8_t {
     MappingNotFound,
@@ -99,7 +100,6 @@ struct AppState {
     uint8_t battery_bars;
     uint8_t volume_overlay_level;
     bool battery_preview_active;
-    bool sleep_warn_active;
     bool nfc_card_played;
     uint16_t total_track_count;
 
@@ -108,6 +108,7 @@ struct AppState {
     uint32_t volume_overlay_deadline_ms;
     uint32_t battery_preview_deadline_ms;
     uint32_t brightness_save_deadline_ms;
+    uint32_t sleep_transition_deadline_ms;
 };
 
 static_assert(sizeof(AppState) <= 128, "AppState too large for stack copy");

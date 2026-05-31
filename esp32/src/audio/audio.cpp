@@ -11,6 +11,7 @@
 #include "events.h"
 #include "leds.h"
 #include "logging.h"
+#include "pcm_volume.h"
 #include "persistent_log.h"
 #include "persistence_adapter.h"
 #include "state.h"
@@ -24,6 +25,8 @@ static char s_btTargetName[64] = BT_DEFAULT_NAME;
 static void writeSilenceGap(uint16_t durationMs); // forward declaration
 constexpr size_t VOLUME_SCRATCH_SAMPLES = 256;
 constexpr uint16_t TRACK_TRANSITION_SILENCE_MS = 40;
+constexpr size_t AUDIO_READ_CHUNK_SIZE = 512;
+static_assert(AUDIO_READ_CHUNK_SIZE <= AUDIO_BUF_SIZE, "audio read chunk exceeds buffer");
 
 enum class AudioCmdType : uint8_t { PLAY, STOP, PAUSE, RESUME, VOLUME };
 
@@ -50,6 +53,7 @@ public:
         hist_index_ = 0;
         hist_count_ = 0;
         last_beat_ms_ = 0;
+        dither_state_ = {};
     }
 
     size_t write(const uint8_t* data, size_t len) override {
@@ -83,10 +87,7 @@ public:
             const size_t samples = bytes / sizeof(int16_t);
             const int16_t* in = reinterpret_cast<const int16_t*>(data + offset);
             for (size_t i = 0; i < samples; ++i) {
-                int32_t scaled = (int32_t)in[i] * percent / 100;
-                if (scaled > INT16_MAX) scaled = INT16_MAX;
-                if (scaled < INT16_MIN) scaled = INT16_MIN;
-                scratch_[i] = (int16_t)scaled;
+                scratch_[i] = scalePcm16Sample(in[i], static_cast<uint8_t>(percent), dither_state_);
             }
             const size_t written = sink_->write(reinterpret_cast<const uint8_t*>(scratch_),
                                                 samples * sizeof(int16_t));
@@ -117,8 +118,8 @@ private:
         avg = hist_count_ > 0 ? avg / hist_count_ : 0;
 
         if (avg > 0) {
-            const uint32_t ratio = (uint32_t)((uint64_t)e * 120 / avg);
-            g_audioEnergy = (uint8_t)(ratio < 40 ? 40 : ratio > 200 ? 200 : ratio);
+            const uint32_t ratio = (uint32_t)((uint64_t)e * 150 / avg);
+            g_audioEnergy = (uint8_t)(ratio < 55 ? 55 : ratio > 240 ? 240 : ratio);
         }
 
         const unsigned long now = millis();
@@ -135,6 +136,7 @@ private:
     int hist_index_ = 0;
     int hist_count_ = 0;
     unsigned long last_beat_ms_ = 0;
+    PcmVolumeDitherState dither_state_{};
     int16_t scratch_[VOLUME_SCRATCH_SAMPLES] = {};
 };
 
@@ -191,6 +193,13 @@ static void resetDecoderForNewTrack() {
     decoderStream.end();
     // Flush any PCM data the decoder pushed to I2S DMA during end(). Without this,
     // residual bytes from the previous track play at the start of the next one.
+    writeSilenceGap(TRACK_TRANSITION_SILENCE_MS);
+    decoderStream.begin();
+}
+
+static void flushStoppedPlayback() {
+    clearActiveTransport();
+    decoderStream.end();
     writeSilenceGap(TRACK_TRANSITION_SILENCE_MS);
     decoderStream.begin();
 }
@@ -252,6 +261,11 @@ static bool audioSendCmd(const AudioCmd& cmd, TickType_t timeout, bool front = f
 }
 
 static void audioTaskFunc(void*) {
+    // Initialize I2S here (core 0) so the DMA ISR is pinned to core 0.
+    // If called from setup() the ISR lands on core 1 — same core as NFC SoftSPI — and
+    // periodic DMA interrupts corrupt bit timing, causing ~1s NFC reads and LED freezes.
+    ensureLocalTransport();
+
     File f;
     static uint8_t audioBuf[AUDIO_BUF_SIZE];
 
@@ -325,7 +339,7 @@ static void audioTaskFunc(void*) {
                 s_isPaused = false;
                 LOGI("[AUDIO] Stopped cmd_id=%u\n", (unsigned)cmd.cmd_id);
                 telWindows = 6;
-                clearActiveTransport();
+                flushStoppedPlayback();
                 s_curCmdId = 0;
                 if (cmd.cmd_id != 0) {
                     postEventFromTask(makeAudioStoppedEvent(cmd.cmd_id));
@@ -353,10 +367,15 @@ static void audioTaskFunc(void*) {
         if (f && s_isPaused) {
             vTaskDelay(pdMS_TO_TICKS(10));
         } else if (f && f.available()) {
-            const int n = f.read(audioBuf, AUDIO_BUF_SIZE);
+            const unsigned long writeStartMs = millis();
+            const int n = f.read(audioBuf, AUDIO_READ_CHUNK_SIZE);
             if (n > 0) {
                 telSdBytes += n;
                 const size_t written = decoderStream.write(audioBuf, n);
+                const unsigned long writeElapsedMs = millis() - writeStartMs;
+                if (writeElapsedMs > 120) {
+                    LOGW("[AUDIO] slow decode/write chunk=%d elapsed_ms=%lu\n", n, writeElapsedMs);
+                }
                 telWrittenBytes += written;
                 if ((int)written < n) telDrops++;
 
@@ -428,15 +447,19 @@ static bool audioSendPlayCmd(const char* path, CmdId cmd_id,
 void audioInit() {
     persistenceAdapterLoadBtTarget(s_btTargetName, sizeof(s_btTargetName));
     LOGI("[AUDIO] BT target: %s\n", s_btTargetName);
-    ensureLocalTransport();
+    // ensureLocalTransport() intentionally deferred to audioTaskFunc() startup so that
+    // the I2S driver (and its DMA ISR) is registered on core 0, not core 1.
+    // Registering I2S from setup() (core 1) pins the ISR to core 1, where the NFC SoftSPI
+    // task also runs — I2S DMA interrupts then corrupt SoftSPI bit timing, making every
+    // NFC read take ~1s instead of ~20ms and freezing the LED task for the entire duration.
     beatTracker.setVolumePercent(outputVolumePercent);
     selectSink(&i2s, false);
     decoderStream.begin();
     mp3Decoder.addNotifyAudioChange(audioInfoLogger);
 
     audioQueue = xQueueCreate(5, sizeof(AudioCmd));
-    xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, nullptr, 2, &audioTaskHandle, 1);
-    LOGI("Audio task started (core 1, prio 2)\n");
+    xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, nullptr, 2, &audioTaskHandle, 0);
+    LOGI("Audio task started (core 0, prio 2)\n");
 }
 
 void audioStartFile(const char* path) {
@@ -511,6 +534,12 @@ bool audioStartBtHeadphonesMode() {
 
 void audioStopBtHeadphonesMode() {
     if (btTransportStarted) {
+        ensureLocalTransport();
+        selectSink(&i2s, false);
+        clearActiveTransport();
+        if (btA2dp.source().is_discovery_active()) {
+            btA2dp.source().cancel_discovery();
+        }
         btA2dp.clear();
         btA2dp.source().end(false);
         btTransportStarted = false;

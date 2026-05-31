@@ -110,8 +110,8 @@ bool audioAdapterPlaySystemSound(uint8_t sound_id, CmdId cmd_id)
 
     if (!audioPlaySystemSound(path, sound_id, cmd_id)) {
         LOGW("[AUDIO_ADAP] Queue full, system sound rejected cmd_id=%u\n", (unsigned)cmd_id);
-        postEventFromTask(makeAudioCommandRejectedEvent(
-            cmd_id, PlaybackFailReason::AudioCommandRejected));
+        postEventFromTask(makeSystemSoundFailedEvent(
+            sound_id, SoundFailReason::AudioCommandRejected, cmd_id));
         return false;
     }
     return true;

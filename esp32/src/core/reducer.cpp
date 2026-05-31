@@ -11,6 +11,7 @@ static constexpr uint32_t REDUCER_NIGHT_LIGHT_TIMEOUT_MS = 15UL * 60 * 1000;
 static constexpr uint32_t REDUCER_BRIGHTNESS_SAVE_MS = 1500;
 static constexpr uint32_t REDUCER_VOLUME_OVERLAY_MS = 1000;
 static constexpr uint32_t REDUCER_BATTERY_PREVIEW_MS = 3000;
+static constexpr uint32_t REDUCER_SLEEP_TRANSITION_TIMEOUT_MS = 8000;
 
 static Effect makeSetOutputVolumeEffect(uint8_t percent) {
     Effect e{};
@@ -68,6 +69,15 @@ static Effect makePlaySystemSoundEffect(uint8_t sound_id) {
 static void addPlaySystemSoundWithFixedVolume(EffectBuilder& fx, uint8_t sound_id) {
     fx.add(makeSetOutputVolumeEffect(SYSTEM_SOUND_VOL_PERCENT));
     fx.add(makePlaySystemSoundEffect(sound_id));
+}
+
+static uint8_t modeSoundIdForPlaybackMode(PlaybackMode mode) {
+    return mode == PlaybackMode::Music ? SOUND_ID_MUSIC_MODE : SOUND_ID_NFC_MODE;
+}
+
+static void startModeAnnouncement(AppState& next, EffectBuilder& fx) {
+    next.audio_state = AudioState::StartingSystemSound;
+    addPlaySystemSoundWithFixedVolume(fx, modeSoundIdForPlaybackMode(next.playback_mode));
 }
 
 static Effect makePersistVolumeEffect(uint8_t percent) {
@@ -139,7 +149,20 @@ static bool isAudioActive(AudioState s) {
            s == AudioState::StartingFile ||
            s == AudioState::PlayingSystemSound ||
            s == AudioState::StartingSystemSound ||
-           s == AudioState::Paused;
+           s == AudioState::Paused ||
+           s == AudioState::StoppingForModeChange;
+}
+
+// Arms the 8s sleep-transition watchdog when entering an intermediate sleep state.
+// Clears it on ReadyToSleep. Checks next.sleep_transition_deadline_ms (not s.)
+// so multiple calls in one reduce flow don't reset the original budget.
+static void updateSleepDeadline(AppState& next, uint32_t now_ms) {
+    if (next.sleep_state == SleepState::ReadyToSleep) {
+        next.sleep_transition_deadline_ms = 0;
+    } else if (next.sleep_state != SleepState::Awake &&
+               next.sleep_transition_deadline_ms == 0) {
+        next.sleep_transition_deadline_ms = now_ms + REDUCER_SLEEP_TRANSITION_TIMEOUT_MS;
+    }
 }
 
 static void startPendingPlaybackIfAny(const AppState& s, AppState& next, EffectBuilder& fx) {
@@ -163,7 +186,7 @@ static void startPendingPlaybackIfAny(const AppState& s, AppState& next, EffectB
     }
 }
 
-static void finishSleepAfterAudioStopped(AppState& next, const AppState& s, EffectBuilder& fx) {
+static void finishSleepAfterAudioStopped(AppState& next, const AppState& s, EffectBuilder& fx, uint32_t now_ms) {
     if (s.requested_sleep_kind == RequestedSleepKind::Normal) {
         next.sleep_state = SleepState::WaitingPowerOffSound;
         next.audio_state = AudioState::StartingSystemSound;
@@ -175,6 +198,7 @@ static void finishSleepAfterAudioStopped(AppState& next, const AppState& s, Effe
         next.sleep_state = SleepState::ReadyToSleep;
         fx.add(makeEnterDeepSleepEffect(s.requested_sleep_kind));
     }
+    updateSleepDeadline(next, now_ms);
 }
 
 ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
@@ -274,6 +298,7 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             if (s.sleep_state == SleepState::WaitingBtHeadphonesStop) {
                 next.sleep_state = SleepState::ReadyToSleep;
                 fx.add(makeEnterDeepSleepEffect(s.requested_sleep_kind));
+                updateSleepDeadline(next, now_ms);
             }
             break;
 
@@ -328,9 +353,27 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             fx.add(makeLogDiagnosticEffect(2));
             break;
 
+        case EventType::AudioCommandRejected:
+            if (s.audio_state == AudioState::StartingFile) {
+                next.audio_state = AudioState::Idle;
+                next.pending_playback.kind = PendingPlaybackKind::None;
+                fx.add(makeLogDiagnosticEffect(
+                    s.playback_mode == PlaybackMode::Music ? 2 : 1));
+            } else if (s.audio_state == AudioState::StoppingForModeChange) {
+                startModeAnnouncement(next, fx);
+            } else if (s.audio_state == AudioState::Stopping) {
+                next.audio_state = AudioState::Idle;
+                if (s.session_mode == SessionMode::Normal) {
+                    next.idle_deadline_ms = now_ms + REDUCER_IDLE_TIMEOUT_MS;
+                }
+            }
+            break;
+
         case EventType::AudioStopped:
             if (s.sleep_state == SleepState::PreparingDeepSleep) {
-                finishSleepAfterAudioStopped(next, s, fx);
+                finishSleepAfterAudioStopped(next, s, fx, now_ms);
+            } else if (s.audio_state == AudioState::StoppingForModeChange) {
+                startModeAnnouncement(next, fx);
             } else {
                 next.audio_state = AudioState::Idle;
                 if (s.session_mode == SessionMode::Normal) {
@@ -353,6 +396,7 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                     next.sleep_state = SleepState::ReadyToSleep;
                     fx.add(makeEnterDeepSleepEffect(s.requested_sleep_kind));
                 }
+                updateSleepDeadline(next, now_ms);
             } else {
                 next.audio_state = AudioState::Idle;
                 fx.add(makeSetOutputVolumeEffect(volumeLevelToPercent(s.output_volume_level)));
@@ -391,15 +435,27 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             break;
 
         case EventType::SleepHoldWarning:
+            // Start the sleep sequence immediately at the hold threshold so the power-off
+            // sound plays at the "you can release" moment. SleepRequested (fired on release)
+            // is a no-op when sleep_state is already PreparingDeepSleep.
             if (s.sleep_state == SleepState::Awake) {
-                next.sleep_warn_active = true;
+                next.sleep_state = SleepState::PreparingDeepSleep;
+                next.requested_sleep_kind = RequestedSleepKind::Normal;
+                next.idle_deadline_ms = 0;
+                next.night_light_deadline_ms = 0;
+                if (isAudioActive(s.audio_state)) {
+                    next.audio_state = AudioState::Stopping;
+                    fx.add(makeStopAudioEffect());
+                    updateSleepDeadline(next, now_ms);
+                } else {
+                    finishSleepAfterAudioStopped(next, next, fx, now_ms);
+                }
             }
             break;
 
         case EventType::SleepRequested: {
             const RequestedSleepKind kind = ev.payload.sleep_requested.kind;
             if (s.sleep_state == SleepState::Awake) {
-                next.sleep_warn_active = false;
                 next.sleep_state = SleepState::PreparingDeepSleep;
                 next.requested_sleep_kind = kind;
                 next.idle_deadline_ms = 0;
@@ -407,12 +463,10 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                 if (isAudioActive(s.audio_state)) {
                     next.audio_state = AudioState::Stopping;
                     fx.add(makeStopAudioEffect());
+                    updateSleepDeadline(next, now_ms);
                 } else {
-                    finishSleepAfterAudioStopped(next, next, fx);
+                    finishSleepAfterAudioStopped(next, next, fx, now_ms);
                 }
-            } else if (s.sleep_state == SleepState::PreparingDeepSleep &&
-                       kind == RequestedSleepKind::Emergency) {
-                next.requested_sleep_kind = RequestedSleepKind::Emergency;
             }
             break;
         }
@@ -425,8 +479,9 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                 if (isAudioActive(s.audio_state)) {
                     next.audio_state = AudioState::Stopping;
                     fx.add(makeStopAudioEffect());
+                    updateSleepDeadline(next, now_ms);
                 } else {
-                    finishSleepAfterAudioStopped(next, next, fx);
+                    finishSleepAfterAudioStopped(next, next, fx, now_ms);
                 }
             }
             break;
@@ -442,11 +497,24 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                 }
                 next.sleep_state = SleepState::ReadyToSleep;
                 fx.add(makeEnterDeepSleepEffect(RequestedSleepKind::NightLightTimeout));
+                updateSleepDeadline(next, now_ms);
+            }
+            break;
+
+        case EventType::SleepTimeoutFired:
+            if (s.sleep_state != SleepState::Awake &&
+                s.sleep_state != SleepState::ReadyToSleep) {
+                next.sleep_state = SleepState::ReadyToSleep;
+                next.sleep_transition_deadline_ms = 0;
+                fx.add(makeEnterDeepSleepEffect(s.requested_sleep_kind));
             }
             break;
 
         case EventType::VolumeOverlayExpired:
+            if (s.volume_overlay_deadline_ms == 0) break;
+            if (now_ms < s.volume_overlay_deadline_ms) break;
             next.volume_overlay_deadline_ms = 0;
+            fx.add(makePersistVolumeEffect(s.output_volume_level));
             break;
 
         case EventType::BatteryPreviewExpired:
@@ -470,7 +538,6 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                     next.volume_overlay_deadline_ms = now_ms + REDUCER_VOLUME_OVERLAY_MS;
                     next.idle_deadline_ms = now_ms + REDUCER_IDLE_TIMEOUT_MS;
                     fx.add(makeSetOutputVolumeEffect(volumeLevelToPercent(next.output_volume_level)));
-                    fx.add(makePersistVolumeEffect(next.output_volume_level));
                 }
             }
             break;
@@ -491,7 +558,6 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                     next.volume_overlay_deadline_ms = now_ms + REDUCER_VOLUME_OVERLAY_MS;
                     next.idle_deadline_ms = now_ms + REDUCER_IDLE_TIMEOUT_MS;
                     fx.add(makeSetOutputVolumeEffect(volumeLevelToPercent(next.output_volume_level)));
-                    fx.add(makePersistVolumeEffect(next.output_volume_level));
                 }
             }
             break;
@@ -550,12 +616,11 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             next.nfc_card_played = false;
             next.idle_deadline_ms = now_ms + REDUCER_IDLE_TIMEOUT_MS;
             if (isAudioActive(s.audio_state)) {
-                next.audio_state = AudioState::Stopping;
+                next.audio_state = AudioState::StoppingForModeChange;
                 fx.add(makeStopAudioEffect());
+            } else {
+                startModeAnnouncement(next, fx);
             }
-            addPlaySystemSoundWithFixedVolume(
-                fx,
-                next.playback_mode == PlaybackMode::Music ? SOUND_ID_MUSIC_MODE : SOUND_ID_NFC_MODE);
             fx.add(makePersistPlaybackModeEffect(next.playback_mode));
             break;
 

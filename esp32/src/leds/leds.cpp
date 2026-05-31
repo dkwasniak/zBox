@@ -19,6 +19,9 @@ static CRGB leds[LED_COUNT];
 static TaskHandle_t ledTaskHandle = NULL;
 static bool fastLedInitialized = false;
 static const char *LED_CONFIG_PATH = "/data/led_config.json";
+static constexpr UBaseType_t LED_TASK_PRIORITY = 1;
+static constexpr unsigned long LED_SHOW_WARN_MS = 30;
+static constexpr unsigned long LED_FRAME_GAP_WARN_MS = 250;
 
 enum LedMode
 {
@@ -42,7 +45,7 @@ static volatile int ledAnimStep = 0;
 
 // Beat animation state (LED_PLAYING)
 static uint8_t beatHue    = 0;   // current rainbow hue, advances with each beat
-static uint8_t beatBright = 60;  // brightness: 255 on beat, decays to 60
+static uint8_t beatBright = 90;  // brightness: 255 on beat, decays to the music floor
 static uint8_t beatRot    = 0;   // slow rainbow rotation
 static volatile int ledBootStep = -1;
 static volatile unsigned long ledVolumeShowTime = 0;
@@ -187,6 +190,57 @@ static void writeColor(JsonObject obj, const char *key, const LedColorConfig &cf
     c["b"] = cfg.b;
 }
 
+static const char *ledModeName(LedMode mode)
+{
+    switch (mode)
+    {
+    case LED_WAIT_BT:
+        return "wait_bt";
+    case LED_IDLE:
+        return "idle";
+    case LED_PLAYING:
+        return "playing";
+    case LED_NIGHT_LIGHT:
+        return "night_light";
+    case LED_SLEEP_READY:
+        return "sleep_ready";
+    case LED_WARN_FLASH:
+        return "warn_flash";
+    case LED_SYNC_ENTRY:
+        return "sync_entry";
+    default:
+        return "other";
+    }
+}
+
+static bool shouldLogFrameGap(LedMode mode)
+{
+    switch (mode)
+    {
+    case LED_WAIT_BT:
+    case LED_IDLE:
+    case LED_PLAYING:
+    case LED_NIGHT_LIGHT:
+    case LED_SLEEP_READY:
+    case LED_WARN_FLASH:
+    case LED_SYNC_ENTRY:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static void showLedsMeasured(const char *modeName)
+{
+    unsigned long start = millis();
+    FastLED.show();
+    unsigned long elapsed = millis() - start;
+    if (elapsed > LED_SHOW_WARN_MS)
+    {
+        LOGW("[LED] FastLED.show mode=%s dt=%lu ms\n", modeName, elapsed);
+    }
+}
+
 static bool applyLedConfigDocument(JsonDocument &doc)
 {
     JsonObject root = doc.as<JsonObject>();
@@ -251,14 +305,9 @@ void ledInit()
     }
 
     // Separate FreeRTOS task - LED animations independent of loop()
-    xTaskCreatePinnedToCore(ledTaskFunc, "led", 4096, NULL, 1, &ledTaskHandle, 1);
+    xTaskCreatePinnedToCore(ledTaskFunc, "led", 4096, NULL, LED_TASK_PRIORITY, &ledTaskHandle, 1);
 
-    // Show that the device is alive — dim blue until the first ledSetBootProgress()
-    if (!preserveNightLight)
-    {
-        fill_solid(leds, LED_COUNT, CRGB(0, 0, 30));
-        FastLED.show();
-    }
+    // Leave LEDs off here; the dispatcher applies the first real scene after boot init.
 }
 
 uint32_t ledGetTaskHWM()
@@ -441,7 +490,7 @@ void ledSetIdle()
 void ledSetPlaying()
 {
     beatHue    = 0;
-    beatBright = 60;
+    beatBright = 90;
     beatRot    = 0;
     ledMode = LED_PLAYING;
     ledAnimStep = 0;
@@ -672,9 +721,15 @@ void ledShowBattery(int bars)
 static void ledTaskFunc(void *param)
 {
     static unsigned long lastLedHeartbeat = 0;
+    static unsigned long lastFrameMs = 0;
     for (;;)
     {
         unsigned long now = millis();
+        LedMode currentMode = ledMode;
+        if (lastFrameMs != 0 && shouldLogFrameGap(currentMode) && now - lastFrameMs > LED_FRAME_GAP_WARN_MS) {
+            LOGW("[LED] %s frame gap=%lu ms\n", ledModeName(currentMode), now - lastFrameMs);
+        }
+        lastFrameMs = now;
         updateLowBatteryWarning(now);
 
         // Heartbeat every 5s — BEFORE FastLED.show(), so the log is visible even if show() hangs
@@ -709,7 +764,7 @@ static void ledTaskFunc(void *param)
             {
                 fill_solid(leds, LED_COUNT, toCRGB(ledConfig.waitBtColor));
             }
-            FastLED.show();
+            showLedsMeasured("wait_bt");
             break;
         }
         case LED_IDLE:
@@ -728,7 +783,7 @@ static void ledTaskFunc(void *param)
                 fill_solid(leds, LED_COUNT, toCRGB(ledConfig.idleColor));
             }
             applyLowBatteryOverlay(now);
-            FastLED.show();
+            showLedsMeasured("idle");
             break;
         }
         case LED_PLAYING:
@@ -736,7 +791,7 @@ static void ledTaskFunc(void *param)
             if (!ledConfig.animatePlaying)
             {
                 fill_solid(leds, LED_COUNT, toCRGB(ledConfig.playingColor));
-                FastLED.show();
+                showLedsMeasured("playing");
                 break;
             }
             // On beat: flash to 255 + colour jump
@@ -744,18 +799,18 @@ static void ledTaskFunc(void *param)
             {
                 g_beatDetected = false;
                 beatBright = 255;
-                beatHue += 21;  // ~12 beats = full spectrum
+                beatHue += 37;  // stronger colour jump on each hit
             }
 
             // Between beats: post-beat flash gently decays to current audio energy.
-            uint8_t target = g_audioEnergy;
+            uint8_t target = max((int)g_audioEnergy, 80);
             if (beatBright > target)
-                beatBright = (uint8_t)max((int)target, (int)beatBright - 30);
+                beatBright = (uint8_t)max((int)target, (int)beatBright - 42);
             else
                 beatBright = target;
 
-            // Rainbow ring — faster rotation
-            beatRot += 2;
+            // Rainbow ring — faster rotation so quiet passages still feel alive.
+            beatRot += 5;
 
             for (int i = 0; i < LED_COUNT; i++)
             {
@@ -763,13 +818,13 @@ static void ledTaskFunc(void *param)
                 leds[i] = CHSV(hue, 230, beatBright);
             }
             applyLowBatteryOverlay(now);
-            FastLED.show();
+            showLedsMeasured("playing");
             break;
         }
         case LED_NIGHT_LIGHT:
         {
             fill_solid(leds, LED_COUNT, scaledNightLightColor(ledNightLightBrightnessPercent));
-            FastLED.show();
+            showLedsMeasured("night_light");
             break;
         }
         case LED_SYNC_WIFI:
@@ -779,7 +834,7 @@ static void ledTaskFunc(void *param)
             if (!ledConfig.animateSync)
                 color = toCRGB(ledConfig.syncColor);
             fill_solid(leds, LED_COUNT, color);
-            FastLED.show();
+            showLedsMeasured("sync_wifi");
             break;
         }
         case LED_SLEEP_READY:
@@ -789,7 +844,7 @@ static void ledTaskFunc(void *param)
             if (!ledConfig.animateSleepReady)
                 color = toCRGB(ledConfig.sleepReadyColor);
             fill_solid(leds, LED_COUNT, color);
-            FastLED.show();
+            showLedsMeasured("sleep_ready");
             break;
         }
         case LED_WARN_FLASH:
@@ -803,7 +858,7 @@ static void ledTaskFunc(void *param)
                 map(breath, 0, 255, lo, base.r),
                 map(breath, 0, 255, lo / 4, base.g),
                 0));
-            FastLED.show();
+            showLedsMeasured("warn_flash");
             break;
         }
         case LED_SYNC_ENTRY:
@@ -838,7 +893,7 @@ static void ledTaskFunc(void *param)
             {
                 fill_solid(leds, LED_COUNT, toCRGB(ledConfig.syncEntryHeadColor));
             }
-            FastLED.show();
+            showLedsMeasured("sync_entry");
             break;
         }
         default:
@@ -848,7 +903,7 @@ static void ledTaskFunc(void *param)
         // Delay depends on current mode
         int delayMs = 15;
         if (ledMode == LED_PLAYING)
-            delayMs = 80;
+            delayMs = 45;
         else if (ledMode == LED_SYNC_WIFI)
             delayMs = 400;
         else if (ledMode == LED_SLEEP_READY)

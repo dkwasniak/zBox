@@ -10,7 +10,7 @@ static constexpr uint8_t OUTPUT_VOL_PERCENT_MIN = 0;
 static constexpr uint8_t OUTPUT_VOL_PERCENT_MAX = 80;
 
 static constexpr std::array<uint8_t, OUTPUT_VOL_LEVEL_MAX + 1> OUTPUT_VOL_LEVEL_TO_PERCENT = {
-    0, 1, 2, 4, 6, 9, 13, 18, 25, 34, 45, 60, 80
+    0, 2, 3, 4, 6, 9, 13, 18, 25, 34, 45, 60, 80
 };
 
 static_assert(OUTPUT_VOL_LEVEL_TO_PERCENT.size() == OUTPUT_VOL_LEVEL_MAX + 1,

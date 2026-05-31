@@ -26,6 +26,66 @@
 #include "volume.h"
 #include "zbox_config.h"
 
+namespace {
+constexpr uint32_t NFC_RETRY_SHORT_DELAYS_MS[] = {500, 1500, 3000};
+constexpr uint32_t NFC_RETRY_BACKOFF_MS = 30000;
+
+void deferredNfcBootTask(void *param)
+{
+    (void)param;
+    vTaskDelay(pdMS_TO_TICKS(NFC_BOOT_INIT_DELAY_MS));
+
+    bool ready = false;
+    uint8_t attempt = 0;
+    for (;;) {
+        attempt++;
+        LOGI("[NFC] deferred init attempt %u wake_cause=%d\n",
+             (unsigned)attempt, (int)esp_sleep_get_wakeup_cause());
+        ready = nfcInit();
+        LOGC("[BOOT] nfc_init=%s deferred=1 attempt=%u\n",
+             ready ? "OK" : "FAIL", (unsigned)attempt);
+
+        if (ready)
+            break;
+
+        uint32_t delayMs = NFC_RETRY_BACKOFF_MS;
+        if (attempt <= (sizeof(NFC_RETRY_SHORT_DELAYS_MS) / sizeof(NFC_RETRY_SHORT_DELAYS_MS[0]))) {
+            delayMs = NFC_RETRY_SHORT_DELAYS_MS[attempt - 1];
+        }
+        LOGW("[NFC] deferred init failed, retry in %lu ms\n", (unsigned long)delayMs);
+        vTaskDelay(pdMS_TO_TICKS(delayMs));
+    }
+
+    vTaskDelay(pdMS_TO_TICKS(NFC_BOOT_MAPPING_DELAY_MS));
+
+    if (sdReady) {
+        loadMappings();
+        postEventFromTask(makeMappingsLoadedEvent(mappingCount()));
+        LOGC("[BOOT] mappings=%d system_sounds=%d deferred=1\n",
+             (int)mappingCount(), (int)systemSoundCount());
+    }
+
+    if (playbackIsNfcMode() && sdReady) {
+        char preUidBuf[30] = {};
+        if (nfcPrescan(preUidBuf, sizeof(preUidBuf))) {
+            LOGI("NFC pre-scan: %s\n", preUidBuf);
+            postEventFromTask(makeNfcPrescanEvent(true, preUidBuf));
+        } else {
+            LOGI("NFC pre-scan: no tag\n");
+            postEventFromTask(makeNfcPrescanEvent(false, nullptr));
+        }
+    }
+
+    nfcStartTask();
+    vTaskDelete(NULL);
+}
+
+void startDeferredNfcBootTask()
+{
+    xTaskCreatePinnedToCore(deferredNfcBootTask, "nfc_boot", 4096, NULL, 1, NULL, 1);
+}
+}
+
 static void configureLoopWatchdog() {
 #if ESP_IDF_VERSION_MAJOR >= 5
     esp_task_wdt_config_t wdt_cfg = {
@@ -105,33 +165,18 @@ void setup() {
 
     LOGI("\n--- Normal mode ---\n");
 
-    LOGI("[NFC] init: wake_cause=%d\n", (int)esp_sleep_get_wakeup_cause());
-    if (!nfcInit()) {
-        LOGE("[NFC] PN532 not found during setup\n");
+    if (!ENABLE_NFC) {
+        LOGC("[BOOT] nfc_init=SKIPPED test_disabled=1\n");
+        LOGI("NFC disabled for test\n");
     }
-    LOGC("[BOOT] nfc_init=%s\n", nfcIsReady() ? "OK" : "FAIL");
-    LOGI("NFC %s\n", nfcIsReady() ? "OK" : "FAIL");
 
     if (sdReady) {
-        loadMappings();
         loadSystemSounds();
-        postEventFromTask(makeMappingsLoadedEvent(mappingCount()));
     }
     playbackInit();
     postEventFromTask(makePlaybackModeLoadedEvent(playbackGetMode()));
-    LOGC("[BOOT] mappings=%d system_sounds=%d\n",
-         (int)mappingCount(), (int)systemSoundCount());
-
-    if (playbackIsNfcMode() && nfcIsReady() && sdReady) {
-        char preUidBuf[30] = {};
-        if (nfcPrescan(preUidBuf, sizeof(preUidBuf))) {
-            LOGI("NFC pre-scan: %s\n", preUidBuf);
-            postEventFromTask(makeNfcPrescanEvent(true, preUidBuf));
-        } else {
-            LOGI("NFC pre-scan: no tag\n");
-            postEventFromTask(makeNfcPrescanEvent(false, nullptr));
-        }
-    }
+    LOGC("[BOOT] system_sounds=%d mappings_deferred=%d\n",
+         (int)systemSoundCount(), ENABLE_NFC ? 1 : 0);
 
     loadOutputVolume();
     postEventFromTask(makeVolumeLoadedEvent(getOutputVolumeLevel()));
@@ -141,11 +186,14 @@ void setup() {
     applyOutputVolume();
     btAdapterInit();
 
-    nfcStartTask();
     buttonAdapterStartTask();
     postEventFromTask(makeEvent(EventType::BootInitCompleted));
     dispatcherStartTask();
     configureLoopWatchdog();
+
+    if (ENABLE_NFC) {
+        startDeferredNfcBootTask();
+    }
 
     LOGC("[BOOT] loop_core=%d setup_ms=%lu\n", xPortGetCoreID(), millis() - bootStart);
     LOGI("Ready! Local audio active.\n");
@@ -157,7 +205,7 @@ void loop() {
     btAdapterPoll();
     vTaskDelay(pdMS_TO_TICKS(5));
 
-    if (!runtimeIsNightLight()) {
+    if (!runtimeIsNightLight() && ENABLE_NFC) {
         nfcAdapterDrain();
     }
 

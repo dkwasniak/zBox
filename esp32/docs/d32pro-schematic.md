@@ -317,3 +317,20 @@ The D32 Pro board has no onboard I2C pull-up resistors. Add 4.7 kΩ to 3.3 V ext
 | Custom PCB pinout, project GPIO assignments | `docs/hardware.md` |
 | Firmware architecture, audio stack, build flags | `docs/esp32-firmware.md` |
 | This file — D32 Pro base board internal schematic | `esp32/docs/d32pro-schematic.md` |
+
+
+
+
+Migracja na hardware spi
+
+  PN532 SCK  -> GPIO22 / prawy 3
+  PN532 MISO -> GPIO21 / prawy 6
+  PN532 MOSI -> GPIO0  / prawy 13
+  PN532 SS   -> GPIO5  / prawy 9
+
+  Po migracji
+
+  PN532 SCK  -> GPIO18 / prawy 8
+  PN532 MISO -> GPIO19 / prawy 7
+  PN532 MOSI -> GPIO23 / prawy 2
+  PN532 SS   -> GPIO5  / prawy 9

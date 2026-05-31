@@ -15,9 +15,7 @@
 static constexpr uint32_t BTN_DEBOUNCE_MS     = DEBOUNCE_MS;             // 50 (from zbox_config.h)
 static constexpr uint32_t DOUBLE_CLICK_MS     = DOUBLE_CLICK_WINDOW_MS;  // 350
 static constexpr uint32_t LONG_PRESS_SLEEP_MS = NIGHT_LIGHT_SLEEP_HOLD_MS; // 1000
-static constexpr uint32_t EMERG_SLEEP_MS      = EMERGENCY_SLEEP_MS;      // 10000
 static constexpr uint32_t COMBO_AB_MS         = LONG_PRESS_MS;           // 2000 (match current)
-static constexpr uint32_t COMBO_CD_SLEEP_MS   = 5000;
 static constexpr uint32_t BT_HEADPHONES_LONG_MS = LONG_PRESS_MS;         // 2000
 static constexpr uint32_t BATTERY_CHECK_LONG_MS = LONG_PRESS_MS;         // 2000
 
@@ -73,10 +71,9 @@ static struct {
     bool     active;
     uint32_t start_ms;
     bool     fired;
-} s_combo_ab = {}, s_combo_cd = {};
+} s_combo_ab = {};
 
 static void resetComboAB() { s_combo_ab = {}; }
-static void resetComboCD() { s_combo_cd = {}; }
 
 // ── Resolve single / double click ─────────────────────────────────────────
 static void resolveClick(uint8_t id, uint8_t clicks)
@@ -132,12 +129,6 @@ void buttonDecoderFeed(RawButtonEvent raw)
                 s_combo_ab = { true, raw.timestamp_ms, false };
             }
         }
-        if (id == 2 || id == 3) {
-            uint8_t other = (id == 2) ? 3 : 2;
-            if (s_btn[other].down && !s_combo_cd.active && !s_combo_cd.fired) {
-                s_combo_cd = { true, raw.timestamp_ms, false };
-            }
-        }
     } else {
         // ── RELEASE ──
         if (!b.down) return;  // spurious
@@ -148,7 +139,6 @@ void buttonDecoderFeed(RawButtonEvent raw)
 
         // Cancel combos if either participant released
         if (id == 0 || id == 1) resetComboAB();
-        if (id == 2 || id == 3) resetComboCD();
 
         if (b.long_handled) {
             b.long_handled = false;
@@ -157,9 +147,9 @@ void buttonDecoderFeed(RawButtonEvent raw)
 
         if (dur >= LONG_PRESS_SLEEP_MS) {
             // Long press on release
-            if (id == 2 && !s_btn[3].down) {
-                // BTN_C long release → normal sleep
-                LOGC("[BTN_ADAPTER] BTN_C long release -> SleepRequested(Normal)\n");
+            if (id == 3) {
+                // BTN_D long release → normal sleep
+                LOGC("[BTN_ADAPTER] BTN_D long release -> SleepRequested(Normal)\n");
                 postEventFromTask(makeSleepRequestedEvent(RequestedSleepKind::Normal));
             }
         } else if (dur < LONG_PRESS_SLEEP_MS) {
@@ -218,8 +208,8 @@ void buttonDecoderTick(uint32_t now_ms)
             } else if (!b.long_handled && dur >= LONG_PRESS_SLEEP_MS && b.sleep_warn_fired) {
                 // sleep_warn_fired guarantees the user actually held ≥ LONG_PRESS_MS
                 // (the warning only fires while GPIO is confirmed LOW)
-                if (id == 2 && !s_btn[3].down) {
-                    LOGC("[BTN_ADAPTER] BTN_C long release (synth) -> SleepRequested(Normal)\n");
+                if (id == 3) {
+                    LOGC("[BTN_ADAPTER] BTN_D long release (synth) -> SleepRequested(Normal)\n");
                     postEventFromTask(makeSleepRequestedEvent(RequestedSleepKind::Normal));
                 }
             }
@@ -243,23 +233,17 @@ void buttonDecoderTick(uint32_t now_ms)
             LOGC("[BTN_ADAPTER] BTN_B long -> ModeToggleRequested\n");
             postEventFromTask(makeEvent(EventType::ModeToggleRequested));
         }
-        if (id == 3 && held >= BATTERY_CHECK_LONG_MS && !s_btn[2].down) {
+        if (id == 3 && held >= LONG_PRESS_SLEEP_MS && !b.sleep_warn_fired && !b.long_handled) {
+            b.sleep_warn_fired = true;
+            LOGI("[BTN_ADAPTER] BTN_D sleep threshold -> SleepHoldWarning\n");
+            postEventFromTask(makeEvent(EventType::SleepHoldWarning));
+        }
+        if (id == 2 && held >= BATTERY_CHECK_LONG_MS && !b.long_handled) {
             b.long_handled = true;
             const float v = readBatteryVoltage();
             const uint8_t bars = (uint8_t)batteryBars(v);
-            LOGC("[BTN_ADAPTER] BTN_D long -> BatteryCheck %.2fV %d bars\n", v, (int)bars);
+            LOGC("[BTN_ADAPTER] BTN_C long -> BatteryCheck %.2fV %d bars\n", v, (int)bars);
             postEventFromTask(makeBatteryCheckEvent(bars));
-        }
-        if (id == 2 && held >= LONG_PRESS_SLEEP_MS && !b.sleep_warn_fired && !b.long_handled && !s_btn[3].down) {
-            b.sleep_warn_fired = true;
-            LOGI("[BTN_ADAPTER] BTN_C sleep threshold -> SleepHoldWarning\n");
-            postEventFromTask(makeEvent(EventType::SleepHoldWarning));
-        }
-        if (id == 2 && held >= EMERG_SLEEP_MS && !s_btn[3].down) {
-            // BTN_C held very long (alone) → emergency sleep
-            b.long_handled = true;
-            LOGC("[BTN_ADAPTER] BTN_C emergency hold -> SleepRequested(Emergency)\n");
-            postEventFromTask(makeSleepRequestedEvent(RequestedSleepKind::Emergency));
         }
     }
 
@@ -275,20 +259,6 @@ void buttonDecoderTick(uint32_t now_ms)
                 s_btn[1].click_count = 0;
                 LOGC("[BTN_ADAPTER] A+B combo -> SyncModeRequested\n");
                 postEventFromTask(makeEvent(EventType::SyncModeRequested));
-            }
-        }
-    }
-
-    // C+D combo → emergency sleep
-    if (s_combo_cd.active && !s_combo_cd.fired) {
-        if (s_btn[2].down && s_btn[3].down) {
-            uint32_t held = now_ms - s_combo_cd.start_ms;
-            if (held >= COMBO_CD_SLEEP_MS) {
-                s_combo_cd.fired = true;
-                s_btn[2].long_handled = true;
-                s_btn[3].long_handled = true;
-                LOGC("[BTN_ADAPTER] C+D combo -> SleepRequested(Emergency)\n");
-                postEventFromTask(makeSleepRequestedEvent(RequestedSleepKind::Emergency));
             }
         }
     }
@@ -315,6 +285,13 @@ void buttonAdapterInit()
         pinMode(BUTTON_PINS[i], buttonPinMode(BUTTON_PINS[i]));
         attachInterruptArg(digitalPinToInterrupt(BUTTON_PINS[i]),
                            buttonAdapterISR, (void *)(uintptr_t)i, CHANGE);
+    }
+    // BTN_D may still be LOW after wake auto-boot. Pre-mark it as long_handled
+    // so buttonDecoderTick skips SleepHoldWarning for this initial press.
+    if (digitalRead(BTN_D) == LOW) {
+        s_btn[3].down         = true;
+        s_btn[3].press_ms     = (uint32_t)millis();
+        s_btn[3].long_handled = true;
     }
 }
 

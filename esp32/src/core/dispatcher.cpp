@@ -41,6 +41,10 @@
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static AppState s_state{};
 
+// ----- LED scene cache (prevent spurious re-application of unchanged scenes) -----
+static bool           s_has_last_led_scene = false;
+static LedSceneParams s_last_led_scene{};
+
 // ----- Transition ring buffer (last 32 transitions) -----
 struct TransitionEntry {
     uint32_t   timestamp_ms;
@@ -145,6 +149,22 @@ static void ringPush(uint32_t ts, const Event& ev, const ReduceResult& r) {
 }
 
 // ----- LED scene application -----
+
+// Compare only scene fields that affect applyLedScene().
+static bool sameLedScene(const LedSceneParams& a, const LedSceneParams& b) {
+    if (a.type != b.type) return false;
+    switch (a.type) {
+        case LedSceneType::VolumeOverlay:
+            return a.params.volume.level == b.params.volume.level;
+        case LedSceneType::BatteryPreview:
+            return a.params.battery.bars == b.params.battery.bars;
+        case LedSceneType::NightLight:
+            return a.params.night_light.percent == b.params.night_light.percent;
+        default:
+            return true;
+    }
+}
+
 static void applyLedScene(const LedSceneParams& scene) {
     switch (scene.type) {
         case LedSceneType::WaitBt:      ledSetWaitBt();   break;
@@ -280,6 +300,8 @@ static void checkDeadlines(const AppState& s) {
         postEventFromTask(makeEvent(EventType::VolumeOverlayExpired));
     if (s.battery_preview_deadline_ms   && now >= s.battery_preview_deadline_ms)
         postEventFromTask(makeEvent(EventType::BatteryPreviewExpired));
+    if (s.sleep_transition_deadline_ms  && now >= s.sleep_transition_deadline_ms)
+        postEventFromTask(makeEvent(EventType::SleepTimeoutFired));
     if (s.brightness_save_deadline_ms   && now >= s.brightness_save_deadline_ms)
         postEventFromTask(makeEvent(EventType::BrightnessSaveDeadlineFired));
 #if DISPATCHER_OWNS_AUDIO
@@ -324,7 +346,12 @@ static void dispatcherTask(void*) {
 #if DISPATCHER_OWNS_BT_NFC
             executeEffects(result);
             if (result.next_state.boot_state == BootState::Ready) {
-                applyLedScene(deriveLedScene(result.next_state));
+                LedSceneParams scene = deriveLedScene(result.next_state);
+                if (!s_has_last_led_scene || !sameLedScene(scene, s_last_led_scene)) {
+                    applyLedScene(scene);
+                    s_last_led_scene = scene;
+                    s_has_last_led_scene = true;
+                }
             }
 #endif
 

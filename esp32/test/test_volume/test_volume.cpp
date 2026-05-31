@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <algorithm>
 #include "helpers.h"
+#include "pcm_volume.h"
 #include "volume_scale.h"
 #define NIGHT_LIGHT_BRIGHTNESS_STEP 10
 #define NIGHT_LIGHT_BRIGHTNESS_MIN 10
@@ -21,7 +22,7 @@ static int nightLightDown(int current)
 
 void test_volume_level_table_matches_expected_percents()
 {
-    const uint8_t expected[] = {0, 1, 2, 4, 6, 9, 13, 18, 25, 34, 45, 60, 80};
+    const uint8_t expected[] = {0, 2, 3, 4, 6, 9, 13, 18, 25, 34, 45, 60, 80};
     for (uint8_t level = OUTPUT_VOL_LEVEL_MIN; level <= OUTPUT_VOL_LEVEL_MAX; ++level) {
         TEST_ASSERT_EQUAL_UINT8(expected[level], volumeLevelToPercent(level));
     }
@@ -37,6 +38,42 @@ void test_volume_level_down_steps_one_level_and_clamps()
 {
     TEST_ASSERT_EQUAL_UINT8(6, stepVolumeLevelDown(7));
     TEST_ASSERT_EQUAL_UINT8(OUTPUT_VOL_LEVEL_MIN, stepVolumeLevelDown(OUTPUT_VOL_LEVEL_MIN));
+}
+
+void test_pcm_volume_zero_percent_mutes_exactly()
+{
+    PcmVolumeDitherState dither{};
+    TEST_ASSERT_EQUAL_INT16(0, scalePcm16Sample(12000, 0, dither));
+    TEST_ASSERT_EQUAL_INT16(0, scalePcm16Sample(-12000, 0, dither));
+}
+
+void test_pcm_volume_full_percent_preserves_samples_exactly()
+{
+    PcmVolumeDitherState dither{};
+    TEST_ASSERT_EQUAL_INT16(12345, scalePcm16Sample(12345, 100, dither));
+    TEST_ASSERT_EQUAL_INT16(-12345, scalePcm16Sample(-12345, 100, dither));
+}
+
+void test_pcm_volume_low_percent_keeps_signal_polarity()
+{
+    PcmVolumeDitherState dither{};
+    TEST_ASSERT_TRUE(scalePcm16Sample(500, 2, dither) > 0);
+    TEST_ASSERT_TRUE(scalePcm16Sample(-500, 2, dither) < 0);
+}
+
+void test_pcm_volume_silence_stays_silent_with_dither()
+{
+    PcmVolumeDitherState dither{};
+    for (int i = 0; i < 16; ++i) {
+        TEST_ASSERT_EQUAL_INT16(0, scalePcm16Sample(0, 2, dither));
+    }
+}
+
+void test_pcm_volume_output_clamps_to_int16_range()
+{
+    PcmVolumeDitherState dither{};
+    TEST_ASSERT_EQUAL_INT16(INT16_MAX, scalePcm16Sample(INT16_MAX, 200, dither));
+    TEST_ASSERT_EQUAL_INT16(INT16_MIN, scalePcm16Sample(INT16_MIN, 200, dither));
 }
 
 void test_night_light_up_normal()
@@ -130,6 +167,11 @@ int main()
     RUN_TEST(test_volume_level_table_matches_expected_percents);
     RUN_TEST(test_volume_level_up_steps_one_level_and_clamps);
     RUN_TEST(test_volume_level_down_steps_one_level_and_clamps);
+    RUN_TEST(test_pcm_volume_zero_percent_mutes_exactly);
+    RUN_TEST(test_pcm_volume_full_percent_preserves_samples_exactly);
+    RUN_TEST(test_pcm_volume_low_percent_keeps_signal_polarity);
+    RUN_TEST(test_pcm_volume_silence_stays_silent_with_dither);
+    RUN_TEST(test_pcm_volume_output_clamps_to_int16_range);
     RUN_TEST(test_night_light_up_normal);
     RUN_TEST(test_night_light_up_clamps);
     RUN_TEST(test_night_light_down_normal);
