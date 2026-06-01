@@ -140,6 +140,69 @@ static void releaseBleMemoryForClassicBt()
     }
 }
 
+static void cleanupBtForSyncExit()
+{
+    if (s_scanRunning || s_btInquiryActive)
+    {
+        esp_bt_gap_cancel_discovery();
+        s_scanRunning = false;
+        s_btInquiryActive = false;
+        delay(100);
+    }
+
+    if (s_bluedroidInitialized)
+    {
+        esp_bluedroid_status_t bdStatus = esp_bluedroid_get_status();
+        if (bdStatus == ESP_BLUEDROID_STATUS_ENABLED)
+        {
+            esp_err_t err = esp_bluedroid_disable();
+            syncLogf("[BT] bluedroid disable: %d", err);
+            unsigned long started = millis();
+            while (esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED &&
+                   millis() - started < 1000)
+            {
+                esp_task_wdt_reset();
+                delay(20);
+            }
+            bdStatus = esp_bluedroid_get_status();
+        }
+
+        if (bdStatus == ESP_BLUEDROID_STATUS_INITIALIZED)
+        {
+            esp_err_t err = esp_bluedroid_deinit();
+            syncLogf("[BT] bluedroid deinit: %d", err);
+            esp_task_wdt_reset();
+        }
+        s_bluedroidInitialized = false;
+    }
+
+    if (s_controllerInitialized)
+    {
+        esp_bt_controller_status_t ctlStatus = esp_bt_controller_get_status();
+        if (ctlStatus == ESP_BT_CONTROLLER_STATUS_ENABLED)
+        {
+            esp_err_t err = esp_bt_controller_disable();
+            syncLogf("[BT] controller disable: %d", err);
+            unsigned long started = millis();
+            while (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED &&
+                   millis() - started < 1000)
+            {
+                esp_task_wdt_reset();
+                delay(20);
+            }
+            ctlStatus = esp_bt_controller_get_status();
+        }
+
+        if (ctlStatus == ESP_BT_CONTROLLER_STATUS_INITED)
+        {
+            esp_err_t err = esp_bt_controller_deinit();
+            syncLogf("[BT] controller deinit: %d", err);
+            esp_task_wdt_reset();
+        }
+        s_controllerInitialized = false;
+    }
+}
+
 // ── GAP inquiry callback ─────────────────────────────────────────────────────
 
 static void btScanGapCb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
@@ -266,6 +329,7 @@ static bool initBtForScan()
         return false;
     }
     esp_task_wdt_reset();
+    s_bluedroidInitialized = true;
 
     if (esp_bluedroid_enable() != ESP_OK)
     {
@@ -273,7 +337,6 @@ static bool initBtForScan()
         return false;
     }
     esp_task_wdt_reset();
-    s_bluedroidInitialized = true;
 
     esp_bt_gap_register_callback(btScanGapCb);
     syncLogf("[BT] ready for inquiry");
@@ -527,11 +590,7 @@ static void exitSyncMode(const char *reason)
     syncLogf("[SYNC] exit requested: %s", reason);
     configureSyncWatchdog();
     esp_task_wdt_reset();
-    if (s_scanRunning)
-    {
-        esp_bt_gap_cancel_discovery();
-        s_scanRunning = false;
-    }
+    cleanupBtForSyncExit();
     ledFlashResult(true);
     clearSyncFlag();
     delay(500);
@@ -1156,10 +1215,17 @@ static void handleBtSelect()
     }
 
     const char *name = doc["name"] | "";
+    const char *mac = doc["mac"] | "";
     size_t nameLen = strlen(name);
     if (nameLen == 0 || nameLen > 63)
     {
         sendError(400, "invalid name");
+        return;
+    }
+    size_t macLen = strlen(mac);
+    if (macLen != 0 && macLen != 17)
+    {
+        sendError(400, "invalid mac");
         return;
     }
 
@@ -1172,12 +1238,15 @@ static void handleBtSelect()
     Preferences prefs;
     prefs.begin("zbox", false);
     prefs.putString(BT_TARGET_NVS_KEY, name);
+    if (macLen == 17)
+        prefs.putString(BT_TARGET_MAC_NVS_KEY, mac);
     prefs.end();
-    syncLogf("[BT] target saved: %s", name);
+    syncLogf("[BT] target saved: %s %s", name, macLen == 17 ? mac : "");
 
     JsonDocument resp;
     resp["saved"] = true;
     resp["name"]  = name;
+    resp["mac"]   = macLen == 17 ? mac : "";
     sendJson(200, resp);
 }
 

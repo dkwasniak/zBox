@@ -86,6 +86,8 @@ constexpr unsigned long LOW_BATTERY_BLINK_STEP_MS = 150UL;
 constexpr uint8_t LOW_BATTERY_LED_INDEX = LED_COUNT - 1;
 }
 
+static void showLedsMeasured(const char *modeName);
+
 static CRGB toCRGB(const LedColorConfig &cfg)
 {
     return CRGB(cfg.r, cfg.g, cfg.b);
@@ -169,6 +171,13 @@ static void applyLowBatteryOverlay(unsigned long now)
         ((blinkElapsed / LOW_BATTERY_BLINK_STEP_MS) % 2 == 0)) {
         leds[LOW_BATTERY_LED_INDEX] = CRGB(140, 0, 0);
     }
+}
+
+static void showLowBatteryWarningOnly(unsigned long now)
+{
+    FastLED.clear();
+    applyLowBatteryOverlay(now);
+    showLedsMeasured("off");
 }
 
 static bool parseColor(JsonObject obj, const char *key, LedColorConfig &out)
@@ -400,6 +409,7 @@ void ledResumeTask()
 
 void ledClear()
 {
+    ledMode = LED_OFF;
     FastLED.clear();
     FastLED.show();
 }
@@ -749,6 +759,13 @@ static void ledTaskFunc(void *param)
 
         switch (ledMode)
         {
+        case LED_OFF:
+        {
+            if (s_lowBatteryWarningEnabled) {
+                showLowBatteryWarningOnly(now);
+            }
+            break;
+        }
         case LED_WAIT_BT:
         {
             if (ledConfig.animateWaitBt)

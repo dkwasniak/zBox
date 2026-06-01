@@ -5,6 +5,7 @@
 static bool s_mode_running = false;
 static bool s_connected = false;
 static bool s_start_ok = true;
+static uint8_t s_start_calls = 0;
 static uint8_t s_stop_calls = 0;
 static Event s_posted[16];
 static uint8_t s_posted_count = 0;
@@ -18,6 +19,7 @@ bool postEventFromTask(const Event& ev) {
 }
 
 bool audioStartBtHeadphonesMode() {
+    s_start_calls++;
     if (!s_start_ok) return false;
     s_mode_running = true;
     return true;
@@ -50,6 +52,7 @@ static void resetState() {
     s_mode_running = false;
     s_connected = false;
     s_start_ok = true;
+    s_start_calls = 0;
     s_stop_calls = 0;
     s_posted_count = 0;
     btAdapterInit();
@@ -72,12 +75,17 @@ void test_start_posts_connected_when_headphones_already_connected() {
     s_connected = true;
 
     btAdapterStartHeadphonesMode(0);
+    TEST_ASSERT_EQUAL_UINT8(0, s_start_calls);
+    TEST_ASSERT_FALSE(hasEvent(EventType::BtConnected));
+
+    TEST_ASSERT_TRUE(btAdapterProcessOneForTest());
 
     TEST_ASSERT_TRUE(hasEvent(EventType::BtConnected));
 }
 
 void test_poll_posts_connected_edge_after_mode_start() {
     btAdapterStartHeadphonesMode(0);
+    TEST_ASSERT_TRUE(btAdapterProcessOneForTest());
     TEST_ASSERT_FALSE(hasEvent(EventType::BtConnected));
 
     s_connected = true;
@@ -93,10 +101,26 @@ void test_stop_posts_mode_stopped_without_disconnect_edge() {
     s_posted_count = 0;
 
     btAdapterStopHeadphonesMode(0);
+    TEST_ASSERT_EQUAL_UINT8(0, s_stop_calls);
+    TEST_ASSERT_FALSE(hasEvent(EventType::BtHeadphonesModeStopped));
+
+    TEST_ASSERT_TRUE(btAdapterProcessOneForTest());
 
     TEST_ASSERT_EQUAL_UINT8(1, s_stop_calls);
     TEST_ASSERT_TRUE(hasEvent(EventType::BtHeadphonesModeStopped));
     TEST_ASSERT_FALSE(hasEvent(EventType::BtDisconnected));
+}
+
+void test_start_failure_posts_start_failed_from_worker() {
+    s_start_ok = false;
+
+    btAdapterStartHeadphonesMode(0);
+    TEST_ASSERT_FALSE(hasEvent(EventType::BtHeadphonesModeStartFailed));
+
+    TEST_ASSERT_TRUE(btAdapterProcessOneForTest());
+
+    TEST_ASSERT_EQUAL_UINT8(1, s_start_calls);
+    TEST_ASSERT_TRUE(hasEvent(EventType::BtHeadphonesModeStartFailed));
 }
 
 int main() {
@@ -104,5 +128,6 @@ int main() {
     RUN_TEST(test_start_posts_connected_when_headphones_already_connected);
     RUN_TEST(test_poll_posts_connected_edge_after_mode_start);
     RUN_TEST(test_stop_posts_mode_stopped_without_disconnect_edge);
+    RUN_TEST(test_start_failure_posts_start_failed_from_worker);
     return UNITY_END();
 }

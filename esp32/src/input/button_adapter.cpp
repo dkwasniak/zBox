@@ -186,7 +186,7 @@ void buttonDecoderTick(uint32_t now_ms)
     // Long-press while held
     for (uint8_t id = 0; id < 4; id++) {
         BtnState &b = s_btn[id];
-        if (!b.down || b.long_handled) continue;
+        if (!b.down) continue;
         // Sanity-check: ISR noise can register a press whose release gets
         // swallowed by the debounce, leaving b.down stuck forever. Verify
         // the GPIO is actually still LOW before acting on held time.
@@ -217,6 +217,7 @@ void buttonDecoderTick(uint32_t now_ms)
             b.sleep_warn_fired = false;
             continue;
         }
+        if (b.long_handled) continue;
         uint32_t held = now_ms - b.press_ms;
 
         if (id == 0 && held >= BT_HEADPHONES_LONG_MS && !s_btn[1].down) {

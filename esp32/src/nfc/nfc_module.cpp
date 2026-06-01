@@ -22,7 +22,7 @@ static int nfcErrorCount = 0;
 static bool s_nfcReady = false;
 static constexpr unsigned long NFC_CRITICAL_WARN_MS = 90;
 static constexpr unsigned long NFC_REINIT_BACKOFF_MS = 30000;
-static constexpr uint16_t NFC_READ_TIMEOUT_MS = 60;
+static constexpr uint16_t NFC_READ_TIMEOUT_MS = 20;
 static unsigned long s_lastNfcReinitAttemptMs = 0;
 
 // =============================================================================

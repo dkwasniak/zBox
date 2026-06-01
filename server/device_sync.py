@@ -220,12 +220,12 @@ def stop_bt_scan(device: dict | None = None) -> dict:
     return response.json()
 
 
-def select_bt_device(device: dict | None = None, name: str = "") -> dict:
+def select_bt_device(device: dict | None = None, name: str = "", mac: str = "") -> dict:
     device = device or get_configured_device()
-    logger.info("Selecting BT target '%s': %s", name, _device_log_ctx(device))
+    logger.info("Selecting BT target '%s' mac='%s': %s", name, mac, _device_log_ctx(device))
     response = requests.post(
         f"{_base_url(device)}/bt/select",
-        json={"name": name},
+        json={"name": name, "mac": mac},
         timeout=BT_TIMEOUT,
     )
     response.raise_for_status()

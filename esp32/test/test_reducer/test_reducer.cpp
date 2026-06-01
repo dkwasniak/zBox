@@ -234,6 +234,97 @@ void test_second_bt_request_exits_headphones_mode() {
     TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopBtHeadphonesMode));
 }
 
+void test_bt_request_while_music_playing_stops_audio_before_output_switch() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::PlayingFile;
+    s.current_track.valid = true;
+    s.current_track.index = 4;
+
+    auto r = reduce(s, makeEvent(EventType::BtHeadphonesModeRequested), 0);
+
+    TEST_ASSERT_TRUE(r.next_state.bt_headphones_mode_active);
+    TEST_ASSERT_EQUAL_INT((int)BtHeadphonesState::WaitingForHeadphones, (int)r.next_state.bt_headphones_state);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StoppingForOutputChange, (int)r.next_state.audio_state);
+    TEST_ASSERT_EQUAL_INT((int)PendingPlaybackKind::MusicSpecificTrack, (int)r.next_state.pending_playback.kind);
+    TEST_ASSERT_EQUAL_UINT16(4, r.next_state.pending_playback.track_index);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopAudio));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::StartBtHeadphonesMode));
+}
+
+void test_audio_stopped_for_output_switch_starts_bt_before_pending_music() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::StoppingForOutputChange;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::WaitingForHeadphones;
+    s.pending_playback.kind = PendingPlaybackKind::MusicSpecificTrack;
+    s.pending_playback.track_index = 4;
+
+    auto r = reduce(s, makeAudioStoppedEvent(7), 0);
+
+    TEST_ASSERT_EQUAL_INT((int)AudioState::Idle, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StartBtHeadphonesMode));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::StartMusicTrackByIndex));
+}
+
+void test_bt_connected_after_output_switch_starts_pending_music() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::Idle;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::WaitingForHeadphones;
+    s.pending_playback.kind = PendingPlaybackKind::MusicSpecificTrack;
+    s.pending_playback.track_index = 4;
+
+    auto r = reduce(s, makeEvent(EventType::BtConnected), 0);
+
+    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::BtHeadphones, (int)r.next_state.output_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StartingFile, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StartMusicTrackByIndex));
+    TEST_ASSERT_EQUAL_UINT16(4, findEffect(r, EffectType::StartMusicTrackByIndex)->payload.music_track.index);
+}
+
+void test_bt_request_to_local_while_nfc_playing_stops_audio_before_bt_stop() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Nfc;
+    s.audio_state = AudioState::PlayingFile;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::Connected;
+    s.output_mode = AudioOutputMode::BtHeadphones;
+    strcpy(s.last_nfc_uid, "04:AA:BB");
+
+    auto r = reduce(s, makeEvent(EventType::BtHeadphonesModeRequested), 0);
+
+    TEST_ASSERT_FALSE(r.next_state.bt_headphones_mode_active);
+    TEST_ASSERT_EQUAL_INT((int)BtHeadphonesState::Stopping, (int)r.next_state.bt_headphones_state);
+    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::LocalSpeaker, (int)r.next_state.output_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StoppingForOutputChange, (int)r.next_state.audio_state);
+    TEST_ASSERT_EQUAL_INT((int)PendingPlaybackKind::NfcUid, (int)r.next_state.pending_playback.kind);
+    TEST_ASSERT_EQUAL_STRING("04:AA:BB", r.next_state.pending_playback.uid);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopAudio));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::StopBtHeadphonesMode));
+}
+
+void test_bt_stopped_after_output_switch_starts_pending_nfc_locally() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Nfc;
+    s.audio_state = AudioState::Idle;
+    s.bt_headphones_mode_active = false;
+    s.bt_headphones_state = BtHeadphonesState::Stopping;
+    s.output_mode = AudioOutputMode::LocalSpeaker;
+    s.pending_playback.kind = PendingPlaybackKind::NfcUid;
+    strcpy(s.pending_playback.uid, "04:AA:BB");
+
+    auto r = reduce(s, makeEvent(EventType::BtHeadphonesModeStopped), 0);
+
+    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::LocalSpeaker, (int)r.next_state.output_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::StartingFile, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StartNfcPlaybackByUid));
+    TEST_ASSERT_EQUAL_STRING("04:AA:BB", findEffect(r, EffectType::StartNfcPlaybackByUid)->payload.nfc_playback.uid);
+}
+
 void test_bt_mode_stopped_completes_exit() {
     AppState s = defaultState();
     s.bt_headphones_mode_active = true;
@@ -429,6 +520,49 @@ void test_led_wait_scene_only_in_active_bt_mode() {
     TEST_ASSERT_NOT_EQUAL((int)LedSceneType::WaitBt, (int)scene.type);
 }
 
+void test_led_scene_off_when_bt_headphones_connected() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::Connected;
+    s.output_mode = AudioOutputMode::BtHeadphones;
+    auto scene = deriveLedScene(s);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::Off, (int)scene.type);
+}
+
+void test_led_scene_off_when_output_is_bt_headphones() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::PlayingFile;
+    s.output_mode = AudioOutputMode::BtHeadphones;
+    auto scene = deriveLedScene(s);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::Off, (int)scene.type);
+}
+
+void test_led_volume_overlay_shown_in_bt_headphones_mode() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::Connected;
+    s.volume_overlay_deadline_ms = 1;
+    s.volume_overlay_level = 12;
+    auto scene = deriveLedScene(s);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::VolumeOverlay, (int)scene.type);
+    TEST_ASSERT_EQUAL_UINT8(12, scene.params.volume.level);
+}
+
+void test_led_battery_preview_shown_in_bt_headphones_mode() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::Connected;
+    s.battery_preview_active = true;
+    s.battery_bars = 4;
+    auto scene = deriveLedScene(s);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::BatteryPreview, (int)scene.type);
+    TEST_ASSERT_EQUAL_UINT8(4, scene.params.battery.bars);
+}
+
 void test_led_volume_overlay_for_mute_shows_zero_leds() {
     AppState s = defaultState();
     s.boot_state = BootState::Ready;
@@ -618,7 +752,7 @@ void test_led_playing_scene_hidden_in_bt_headphones_mode() {
     s.output_mode = AudioOutputMode::BtHeadphones;
     auto scene = deriveLedScene(s);
     TEST_ASSERT_NOT_EQUAL((int)LedSceneType::Playing, (int)scene.type);
-    TEST_ASSERT_EQUAL_INT((int)LedSceneType::Idle, (int)scene.type);
+    TEST_ASSERT_EQUAL_INT((int)LedSceneType::Off, (int)scene.type);
 }
 
 void test_led_playing_scene_shown_on_local_speaker() {
@@ -653,6 +787,11 @@ int main() {
     RUN_TEST(test_bt_connected_switches_output_to_headphones);
     RUN_TEST(test_bt_disconnected_falls_back_to_local_and_keeps_waiting);
     RUN_TEST(test_second_bt_request_exits_headphones_mode);
+    RUN_TEST(test_bt_request_while_music_playing_stops_audio_before_output_switch);
+    RUN_TEST(test_audio_stopped_for_output_switch_starts_bt_before_pending_music);
+    RUN_TEST(test_bt_connected_after_output_switch_starts_pending_music);
+    RUN_TEST(test_bt_request_to_local_while_nfc_playing_stops_audio_before_bt_stop);
+    RUN_TEST(test_bt_stopped_after_output_switch_starts_pending_nfc_locally);
     RUN_TEST(test_bt_mode_stopped_completes_exit);
     RUN_TEST(test_idle_sleep_local_skips_bt_shutdown);
     RUN_TEST(test_system_sound_after_local_sleep_enters_deep_sleep_directly);
@@ -671,6 +810,10 @@ int main() {
     RUN_TEST(test_mode_sound_completion_autostarts_music);
     RUN_TEST(test_battery_check_updates_preview_and_idle_deadline);
     RUN_TEST(test_led_wait_scene_only_in_active_bt_mode);
+    RUN_TEST(test_led_scene_off_when_bt_headphones_connected);
+    RUN_TEST(test_led_scene_off_when_output_is_bt_headphones);
+    RUN_TEST(test_led_volume_overlay_shown_in_bt_headphones_mode);
+    RUN_TEST(test_led_battery_preview_shown_in_bt_headphones_mode);
     RUN_TEST(test_led_volume_overlay_for_mute_shows_zero_leds);
     RUN_TEST(test_led_volume_overlay_for_level_twelve_shows_twelve_leds);
     RUN_TEST(test_sleep_timeout_in_waiting_bt_stops_forces_ready_to_sleep);

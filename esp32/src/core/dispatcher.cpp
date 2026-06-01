@@ -167,6 +167,7 @@ static bool sameLedScene(const LedSceneParams& a, const LedSceneParams& b) {
 
 static void applyLedScene(const LedSceneParams& scene) {
     switch (scene.type) {
+        case LedSceneType::Off:         ledClear();       break;
         case LedSceneType::WaitBt:      ledSetWaitBt();   break;
         case LedSceneType::Idle:        ledSetIdle();     break;
         case LedSceneType::Playing:     ledSetPlaying();  break;
@@ -284,7 +285,18 @@ static void executeEffect(const Effect& eff, uint32_t now) {
 static void executeEffects(const ReduceResult& result) {
     const uint32_t now = millis();
     for (uint8_t i = 0; i < result.effect_count; i++) {
+        const uint32_t start = millis();
         executeEffect(result.effects[i], now);
+        const uint32_t elapsed = millis() - start;
+        if (elapsed > 250) {
+            LOGW("[DISP] slow effect type=%d elapsed_ms=%lu\n",
+                 (int)result.effects[i].type,
+                 (unsigned long)elapsed);
+        } else {
+            LOGI("[DISP] effect type=%d elapsed_ms=%lu\n",
+                 (int)result.effects[i].type,
+                 (unsigned long)elapsed);
+        }
     }
 }
 #endif

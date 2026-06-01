@@ -17,10 +17,13 @@
 #include "state.h"
 #include "volume_scale.h"
 #include "zbox_config.h"
+#include <esp_bt.h>
+#include <esp_bt_main.h>
 
 namespace {
 
 static char s_btTargetName[64] = BT_DEFAULT_NAME;
+static char s_btTargetMac[18] = {};
 
 static void writeSilenceGap(uint16_t durationMs); // forward declaration
 constexpr size_t VOLUME_SCRATCH_SAMPLES = 256;
@@ -159,9 +162,11 @@ static BeatTracker beatTracker;
 static EncodedAudioStream decoderStream(&beatTracker, &mp3Decoder);
 static QueueHandle_t audioQueue = nullptr;
 static TaskHandle_t audioTaskHandle = nullptr;
+static TaskHandle_t localTransportInitRequester = nullptr;
 static Print* activeSink = nullptr;
 static bool localTransportStarted = false;
 static bool btTransportStarted = false;
+static bool activeSinkIsBt = false;
 static bool s_isPlaying = false;
 static bool s_isPaused = false;
 static volatile int outputVolumePercent = volumeLevelToPercent(OUTPUT_VOL_LEVEL_DEFAULT);
@@ -174,9 +179,10 @@ static uint16_t s_curIndex = 0;
 static uint8_t s_curSoundId = 0;
 
 static void selectSink(Print* sink, bool is_bt_output) {
-    (void)is_bt_output;
     activeSink = sink;
+    activeSinkIsBt = is_bt_output;
     beatTracker.setSink(sink);
+    LOGI("[AUDIO] sink=%s core=%d\n", is_bt_output ? "BT" : "NS", xPortGetCoreID());
 }
 
 static void clearActiveTransport() {
@@ -206,25 +212,68 @@ static void flushStoppedPlayback() {
 
 static void ensureLocalTransport() {
     if (localTransportStarted) return;
+    LOGI("[AUDIO] init NS/I2S transport core=%d\n", xPortGetCoreID());
     auto cfg = i2s.defaultConfig(TX_MODE);
     cfg.pin_bck = AUDIO_I2S_BCLK;
     cfg.pin_ws = AUDIO_I2S_LRCK;
     cfg.pin_data = AUDIO_I2S_DOUT;
     i2s.begin(cfg);
     localTransportStarted = true;
+    LOGI("[AUDIO] NS/I2S transport ready core=%d\n", xPortGetCoreID());
+}
+
+static bool parseBtMac(const char* text, esp_bd_addr_t out) {
+    if (!text || strlen(text) != 17) return false;
+
+    unsigned int bytes[ESP_BD_ADDR_LEN] = {};
+    if (sscanf(text, "%02x:%02x:%02x:%02x:%02x:%02x",
+               &bytes[0], &bytes[1], &bytes[2],
+               &bytes[3], &bytes[4], &bytes[5]) != ESP_BD_ADDR_LEN) {
+        return false;
+    }
+
+    for (int i = 0; i < ESP_BD_ADDR_LEN; ++i) {
+        if (bytes[i] > 0xFF) return false;
+        out[i] = static_cast<uint8_t>(bytes[i]);
+    }
+    return true;
 }
 
 static bool ensureBtTransport() {
     if (btTransportStarted) return true;
+    LOGI("[BT] start transport target=%s mac=%s ctl=%d bd=%d core=%d\n",
+         s_btTargetName,
+         s_btTargetMac[0] ? s_btTargetMac : "-",
+         (int)esp_bt_controller_get_status(),
+         (int)esp_bluedroid_get_status(),
+         xPortGetCoreID());
     auto cfg = btA2dp.defaultConfig(TX_MODE);
     cfg.name = s_btTargetName;
     cfg.auto_reconnect = true;
     cfg.wait_for_connection = false;
+    cfg.delay_ms = 1;
+    cfg.silence_on_nodata = true;
     // BT headphones mode uses zBox-side PCM attenuation; do not depend on remote AVRCP volume.
     btA2dp.source().set_avrc_rn_events({});
+    esp_bd_addr_t targetAddr{};
+    if (parseBtMac(s_btTargetMac, targetAddr)) {
+        btA2dp.source().set_auto_reconnect(targetAddr);
+        LOGI("[BT] using saved target MAC for reconnect: %s\n", s_btTargetMac);
+    }
     btA2dp.begin(cfg);
+    if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
+        LOGE("[BT] transport start failed bd=%d ctl=%d\n",
+             (int)esp_bluedroid_get_status(),
+             (int)esp_bt_controller_get_status());
+        return false;
+    }
     btTransportStarted = true;
     delay(100);
+    LOGI("[BT] transport started connected=%d bd=%d ctl=%d core=%d\n",
+         (int)btA2dp.source().is_connected(),
+         (int)esp_bluedroid_get_status(),
+         (int)esp_bt_controller_get_status(),
+         xPortGetCoreID());
     return true;
 }
 
@@ -260,12 +309,15 @@ static bool audioSendCmd(const AudioCmd& cmd, TickType_t timeout, bool front = f
     return true;
 }
 
-static void audioTaskFunc(void*) {
-    // Initialize I2S here (core 0) so the DMA ISR is pinned to core 0.
-    // If called from setup() the ISR lands on core 1 — same core as NFC SoftSPI — and
-    // periodic DMA interrupts corrupt bit timing, causing ~1s NFC reads and LED freezes.
+static void localTransportInitTask(void*) {
     ensureLocalTransport();
+    if (localTransportInitRequester) {
+        xTaskNotifyGive(localTransportInitRequester);
+    }
+    vTaskDelete(nullptr);
+}
 
+static void audioTaskFunc(void*) {
     File f;
     static uint8_t audioBuf[AUDIO_BUF_SIZE];
 
@@ -374,7 +426,12 @@ static void audioTaskFunc(void*) {
                 const size_t written = decoderStream.write(audioBuf, n);
                 const unsigned long writeElapsedMs = millis() - writeStartMs;
                 if (writeElapsedMs > 120) {
-                    LOGW("[AUDIO] slow decode/write chunk=%d elapsed_ms=%lu\n", n, writeElapsedMs);
+                    LOGW("[AUDIO] slow decode/write sink=%s chunk=%d elapsed_ms=%lu bt_free=%d core=%d\n",
+                         activeSinkIsBt ? "BT" : "NS",
+                         n,
+                         writeElapsedMs,
+                         activeSinkIsBt ? btA2dp.availableForWrite() : -1,
+                         xPortGetCoreID());
                 }
                 telWrittenBytes += written;
                 if ((int)written < n) telDrops++;
@@ -393,7 +450,11 @@ static void audioTaskFunc(void*) {
                     }
                 }
             }
-            vTaskDelay(pdMS_TO_TICKS(1));
+            if (activeSinkIsBt) {
+                taskYIELD();
+            } else {
+                vTaskDelay(pdMS_TO_TICKS(1));
+            }
         } else if (f && !f.available()) {
             const CmdId endedCmdId = s_curCmdId;
             const bool endedIsSystem = s_curIsSystem;
@@ -446,20 +507,22 @@ static bool audioSendPlayCmd(const char* path, CmdId cmd_id,
 
 void audioInit() {
     persistenceAdapterLoadBtTarget(s_btTargetName, sizeof(s_btTargetName));
-    LOGI("[AUDIO] BT target: %s\n", s_btTargetName);
-    // ensureLocalTransport() intentionally deferred to audioTaskFunc() startup so that
-    // the I2S driver (and its DMA ISR) is registered on core 0, not core 1.
-    // Registering I2S from setup() (core 1) pins the ISR to core 1, where the NFC SoftSPI
-    // task also runs — I2S DMA interrupts then corrupt SoftSPI bit timing, making every
-    // NFC read take ~1s instead of ~20ms and freezing the LED task for the entire duration.
+    persistenceAdapterLoadBtTargetMac(s_btTargetMac, sizeof(s_btTargetMac));
+    LOGI("[AUDIO] BT target: %s mac=%s\n", s_btTargetName, s_btTargetMac[0] ? s_btTargetMac : "-");
+    // I2S must be installed from core 0 so its DMA ISR stays away from NFC SoftSPI on core 1.
+    localTransportInitRequester = xTaskGetCurrentTaskHandle();
+    xTaskCreatePinnedToCore(localTransportInitTask, "i2s_init", 2048, nullptr, 3, nullptr, 0);
+    ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+    localTransportInitRequester = nullptr;
+
     beatTracker.setVolumePercent(outputVolumePercent);
     selectSink(&i2s, false);
     decoderStream.begin();
     mp3Decoder.addNotifyAudioChange(audioInfoLogger);
 
     audioQueue = xQueueCreate(5, sizeof(AudioCmd));
-    xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, nullptr, 2, &audioTaskHandle, 0);
-    LOGI("Audio task started (core 0, prio 2)\n");
+    xTaskCreatePinnedToCore(audioTaskFunc, "audio", 8192, nullptr, 2, &audioTaskHandle, 1);
+    LOGI("Audio task started (core 1, prio 2)\n");
 }
 
 void audioStartFile(const char* path) {

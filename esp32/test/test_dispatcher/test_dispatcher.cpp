@@ -9,6 +9,7 @@
 
 static Event s_posted[16];
 static uint8_t s_posted_count = 0;
+static uint8_t s_led_clear_count = 0;
 
 QueueHandle_t g_dispatcherQueue = nullptr;
 
@@ -37,6 +38,7 @@ void ledSetNightLight(uint8_t) {}
 void ledShowVolume(uint8_t) {}
 void ledShowBattery(uint8_t) {}
 void ledSetSyncEntry() {}
+void ledClear() { s_led_clear_count++; }
 uint32_t ledGetTaskHWM() { return 0; }
 
 uint32_t audioGetTaskHWM() { return 0; }
@@ -63,6 +65,7 @@ ReduceResult reduce(const AppState& s, const Event&, uint32_t) { return {s, {}, 
 
 static void resetState() {
     s_posted_count = 0;
+    s_led_clear_count = 0;
     for (auto& p : s_pending) p = {};
 }
 
@@ -101,11 +104,19 @@ void test_audio_feedback_completes_pending_before_timeout() {
     TEST_ASSERT_EQUAL_UINT8(0, s_posted_count);
 }
 
+void test_off_led_scene_clears_leds() {
+    LedSceneParams scene{};
+    scene.type = LedSceneType::Off;
+    applyLedScene(scene);
+    TEST_ASSERT_EQUAL_UINT8(1, s_led_clear_count);
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_nfc_pending_timeout_posts_start_failed);
     RUN_TEST(test_system_sound_pending_timeout_posts_failed);
     RUN_TEST(test_stop_pending_timeout_posts_audio_stopped);
     RUN_TEST(test_audio_feedback_completes_pending_before_timeout);
+    RUN_TEST(test_off_led_scene_clears_leds);
     return UNITY_END();
 }

@@ -73,6 +73,7 @@
 
 // Bluetooth target speaker (NVS-backed, changeable from web portal)
 #define BT_TARGET_NVS_KEY   "bt_target"
+#define BT_TARGET_MAC_NVS_KEY "bt_mac"
 #define BT_DEFAULT_NAME     "zBox Headphones"
 #define BT_SCAN_MAX_RESULTS 12
 #define BT_SCAN_NAME_MAX    64

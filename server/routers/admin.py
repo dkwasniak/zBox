@@ -1097,13 +1097,13 @@ def bt_stop_scan(device_id: str):
 
 @router.post("/devices/{device_id}/bt/select", response_model=BtSelectResponse)
 def bt_select_device(device_id: str, body: BtSelectRequest):
-    """Save chosen BT speaker name to device NVS (device must be in sync mode)."""
+    """Save chosen BT speaker name/address to device NVS (device must be in sync mode)."""
     try:
-        return select_bt_device(_get_device_or_404(), name=body.name)
+        return select_bt_device(_get_device_or_404(), name=body.name, mac=body.mac)
     except RequestException as exc:
         logger.warning(
-            "Selecting BT device failed device_id=%s name=%s error=%s",
-            device_id, body.name, exc
+            "Selecting BT device failed device_id=%s name=%s mac=%s error=%s",
+            device_id, body.name, body.mac, exc
         )
         detail = _device_error_detail(exc)
         status = exc.response.status_code if exc.response is not None else 502

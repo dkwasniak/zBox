@@ -91,11 +91,11 @@ static void configureLoopWatchdog() {
     esp_task_wdt_config_t wdt_cfg = {
         .timeout_ms = 15000,
         .idle_core_mask = 0,
-        .trigger_panic = false
+        .trigger_panic = true
     };
     esp_task_wdt_reconfigure(&wdt_cfg);
 #else
-    esp_task_wdt_init(15, false);
+    esp_task_wdt_init(15, true);
 #endif
     esp_task_wdt_add(nullptr);
 }

@@ -766,7 +766,7 @@ function BtPairingCard({ device }) {
   const { t } = useI18n();
   const [btDevices, setBtDevices] = useStateDev([]);
   const [btScanning, setBtScanning] = useStateDev(false);
-  const [btSaving, setBtSaving] = useStateDev(null); // name being saved, or null
+  const [btSaving, setBtSaving] = useStateDev(null); // mac being saved, or null
   const [btSaved, setBtSaved] = useStateDev(null);   // last saved name
   const [btError, setBtError] = useStateDev("");
   const [btLog, setBtLog] = useStateDev([]);
@@ -847,16 +847,18 @@ function BtPairingCard({ device }) {
     } catch {}
   };
 
-  const handleSelect = async (name) => {
+  const handleSelect = async (deviceEntry) => {
+    const name = deviceEntry.name;
+    const mac = deviceEntry.mac || "";
     stopPolling();
     setBtScanning(false);
-    setBtSaving(name);
+    setBtSaving(mac || name);
     setBtError("");
     try {
       await apiFetch(`/admin/devices/${device.device_id}/bt/select`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
+        body: JSON.stringify({ name, mac }),
       });
       setBtSaved(name);
     } catch (e) {
@@ -917,7 +919,7 @@ function BtPairingCard({ device }) {
             <div className="row-list">
               {btDevices.map((d) => {
                 const isCurrent = d.name === currentTarget;
-                const isSaving = btSaving === d.name;
+                const isSaving = btSaving === (d.mac || d.name);
                 return (
                   <div key={d.mac} className="row" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 0" }}>
                     <div>
@@ -927,7 +929,7 @@ function BtPairingCard({ device }) {
                     {isCurrent ? (
                       <span className="chip ok"><span className="dot" style={{ marginRight: 4 }}/>aktualny</span>
                     ) : (
-                      <button className="btn btn-secondary" onClick={() => handleSelect(d.name)} disabled={!!btSaving}>
+                      <button className="btn btn-secondary" onClick={() => handleSelect(d)} disabled={!!btSaving}>
                         {isSaving ? <I.sync size={13}/> : <I.bt size={13}/>} Paruj
                       </button>
                     )}

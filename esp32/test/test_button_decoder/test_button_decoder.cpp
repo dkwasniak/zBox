@@ -6,6 +6,7 @@
 
 #define LOW  0
 #define HIGH 1
+static constexpr uint32_t EMERG_SLEEP_MS = 10000;
 
 static int s_gpio[40];
 inline int digitalRead(int pin) { return s_gpio[pin]; }
@@ -200,12 +201,12 @@ void test_a_long_hold_posts_bt_headphones_request() {
     TEST_ASSERT_FALSE(hasEvent(EventType::PlayPausePressed));
 }
 
-void test_d_long_hold_posts_battery_check() {
-    gpioSet(PIN[3], true);
-    buttonDecoderFeed({3, true, 1000});
+void test_c_long_hold_posts_battery_check() {
+    gpioSet(PIN[2], true);
+    buttonDecoderFeed({2, true, 1000});
     buttonDecoderTick(1000 + LONG_PRESS_MS + 10);
     TEST_ASSERT_TRUE(hasEvent(EventType::BatteryCheckRequested));
-    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeUpPressed));
+    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeDownPressed));
     TEST_ASSERT_EQUAL_UINT8(5, s_posted[0].payload.battery_check.bars);
 }
 
@@ -228,15 +229,15 @@ void test_b_long_hold_suppresses_playpause() {
     TEST_ASSERT_FALSE(hasEvent(EventType::PlayPausePressed));
 }
 
-// ── C long release → SleepRequested ──────────────────────────────────────────
+// ── D long release → SleepRequested ──────────────────────────────────────────
 
-void test_c_long_release_posts_sleep() {
-    gpioSet(PIN[2], true);
-    buttonDecoderFeed({2, true,  1000});
-    gpioSet(PIN[2], false);
-    buttonDecoderFeed({2, false, 1000 + LONG_PRESS_MS + 10});
+void test_d_long_release_posts_sleep() {
+    gpioSet(PIN[3], true);
+    buttonDecoderFeed({3, true,  1000});
+    gpioSet(PIN[3], false);
+    buttonDecoderFeed({3, false, 1000 + LONG_PRESS_MS + 10});
     TEST_ASSERT_TRUE(hasEvent(EventType::SleepRequested));
-    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeDownPressed));
+    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeUpPressed));
 }
 
 void test_c_short_does_not_post_sleep() {
@@ -308,13 +309,28 @@ void test_b_stuck_down_past_long_press_no_mode_toggle() {
     TEST_ASSERT_TRUE(hasEvent(EventType::PlayPausePressed));
 }
 
-// ── Bug fix: hold C past warning threshold, release ISR dropped → tick synthesizes sleep ──
-// This is the exact bug: user holds C, SleepHoldWarning fires, user releases, but the
+void test_a_long_handled_swallowed_release_clears_state_for_next_press() {
+    gpioSet(PIN[0], true);
+    buttonDecoderFeed({0, true, 1000});
+    buttonDecoderTick(1000 + LONG_PRESS_MS + 10);
+    TEST_ASSERT_TRUE(hasEvent(EventType::BtHeadphonesModeRequested));
+
+    gpioSet(PIN[0], false); // physical release, ISR event swallowed
+    buttonDecoderTick(1000 + LONG_PRESS_MS + 100);
+
+    s_posted_count = 0;
+    uint32_t rel = shortPress(0, 5000);
+    buttonDecoderTick(rel + DOUBLE_CLICK_MS + 10);
+    TEST_ASSERT_TRUE(hasEvent(EventType::PlayPausePressed));
+}
+
+// ── Bug fix: hold D past warning threshold, release ISR dropped → tick synthesizes sleep ──
+// This is the exact bug: user holds D, SleepHoldWarning fires, user releases, but the
 // release ISR event is dropped. Tick must still deliver SleepRequested(Normal).
 
-void test_c_long_hold_with_warning_synth_posts_sleep() {
-    gpioSet(PIN[2], true);
-    buttonDecoderFeed({2, true, 1000});
+void test_d_long_hold_with_warning_synth_posts_sleep() {
+    gpioSet(PIN[3], true);
+    buttonDecoderFeed({3, true, 1000});
 
     // Tick fires after 2s: GPIO still LOW, sleep_warn_fired = true
     buttonDecoderTick(1000 + LONG_PRESS_MS + 10);
@@ -323,12 +339,12 @@ void test_c_long_hold_with_warning_synth_posts_sleep() {
 
     // User releases but ISR event dropped — simulate by setting GPIO HIGH
     // without calling buttonDecoderFeed for the release
-    gpioSet(PIN[2], false);
+    gpioSet(PIN[3], false);
 
     // Tick fires: GPIO HIGH, sleep_warn_fired=true → should synthesize SleepRequested
     buttonDecoderTick(1000 + LONG_PRESS_MS + 500);
     TEST_ASSERT_TRUE(hasEvent(EventType::SleepRequested));
-    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeDownPressed));
+    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeUpPressed));
 }
 
 void test_c_stuck_down_past_emergency_sleep_no_sleep() {
@@ -359,26 +375,26 @@ void test_stuck_reset_clears_state_for_next_real_press() {
 
 // ── Sleep threshold: 1000 ms (NIGHT_LIGHT_SLEEP_HOLD_MS), not 2000 ms ────────
 
-// SleepHoldWarning fires when C held for LONG_PRESS_SLEEP_MS (1000ms).
-void test_c_sleep_warning_fires_at_1000ms() {
-    gpioSet(PIN[2], true);
-    buttonDecoderFeed({2, true, 1000});
+// SleepHoldWarning fires when D held for LONG_PRESS_SLEEP_MS (1000ms).
+void test_d_sleep_warning_fires_at_1000ms() {
+    gpioSet(PIN[3], true);
+    buttonDecoderFeed({3, true, 1000});
     buttonDecoderTick(1000 + LONG_PRESS_SLEEP_MS + 10);
     TEST_ASSERT_TRUE(hasEvent(EventType::SleepHoldWarning));
 }
 
 // Held 1500 ms (past 1000ms threshold, still below old 2000ms threshold) and released
-// → SleepRequested, not VolumeDownPressed.  Regression: proves threshold is 1000ms.
-void test_c_held_1500ms_release_posts_sleep() {
-    gpioSet(PIN[2], true);
-    buttonDecoderFeed({2, true, 1000});
+// → SleepRequested, not VolumeUpPressed.  Regression: proves threshold is 1000ms.
+void test_d_held_1500ms_release_posts_sleep() {
+    gpioSet(PIN[3], true);
+    buttonDecoderFeed({3, true, 1000});
     buttonDecoderTick(1000 + LONG_PRESS_SLEEP_MS + 10); // fires SleepHoldWarning
 
-    gpioSet(PIN[2], false);
-    buttonDecoderFeed({2, false, 2500}); // held 1500ms >= 1000ms
+    gpioSet(PIN[3], false);
+    buttonDecoderFeed({3, false, 2500}); // held 1500ms >= 1000ms
 
     TEST_ASSERT_TRUE(hasEvent(EventType::SleepRequested));
-    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeDownPressed));
+    TEST_ASSERT_FALSE(hasEvent(EventType::VolumeUpPressed));
 }
 
 // Held 999 ms (just under threshold) and released → VolumeDownPressed, no sleep.
@@ -411,25 +427,26 @@ int main() {
     RUN_TEST(test_b_double_click_posts_next_track);
     RUN_TEST(test_a_debounced_release_tick_accumulates_click);
     RUN_TEST(test_a_long_hold_posts_bt_headphones_request);
-    RUN_TEST(test_d_long_hold_posts_battery_check);
+    RUN_TEST(test_c_long_hold_posts_battery_check);
 
     RUN_TEST(test_b_long_hold_posts_mode_toggle);
     RUN_TEST(test_b_long_hold_suppresses_playpause);
-    RUN_TEST(test_c_long_release_posts_sleep);
+    RUN_TEST(test_d_long_release_posts_sleep);
     RUN_TEST(test_c_short_does_not_post_sleep);
 
     RUN_TEST(test_debounce_rejects_rapid_second_press_on_d);
     RUN_TEST(test_d_multiple_quick_presses_each_produce_volume_up);
 
-    RUN_TEST(test_c_long_hold_with_warning_synth_posts_sleep);
+    RUN_TEST(test_d_long_hold_with_warning_synth_posts_sleep);
 
     RUN_TEST(test_d_stuck_down_past_long_press_no_phantom_event);
     RUN_TEST(test_b_stuck_down_past_long_press_no_mode_toggle);
+    RUN_TEST(test_a_long_handled_swallowed_release_clears_state_for_next_press);
     RUN_TEST(test_c_stuck_down_past_emergency_sleep_no_sleep);
     RUN_TEST(test_stuck_reset_clears_state_for_next_real_press);
 
-    RUN_TEST(test_c_sleep_warning_fires_at_1000ms);
-    RUN_TEST(test_c_held_1500ms_release_posts_sleep);
+    RUN_TEST(test_d_sleep_warning_fires_at_1000ms);
+    RUN_TEST(test_d_held_1500ms_release_posts_sleep);
     RUN_TEST(test_c_held_999ms_release_posts_volume_down);
 
     return UNITY_END();

@@ -35,17 +35,22 @@ LedSceneParams deriveLedScene(const AppState& s) {
         return p;
     }
 
-    // Priority 7: battery preview overlay
+    // Priority 7: temporary overlays remain visible in BT headphones mode.
+    if (s.volume_overlay_deadline_ms != 0) {
+        p.type = LedSceneType::VolumeOverlay;
+        p.params.volume.level = s.volume_overlay_level;
+        return p;
+    }
     if (s.battery_preview_active) {
         p.type = LedSceneType::BatteryPreview;
         p.params.battery.bars = s.battery_bars;
         return p;
     }
 
-    // Priority 8: volume overlay (active while deadline is non-zero)
-    if (s.volume_overlay_deadline_ms != 0) {
-        p.type = LedSceneType::VolumeOverlay;
-        p.params.volume.level = s.volume_overlay_level;
+    // Active BT headphones mode should stay dark after the waiting indicator.
+    if (s.bt_headphones_mode_active ||
+        s.output_mode == AudioOutputMode::BtHeadphones) {
+        p.type = LedSceneType::Off;
         return p;
     }
 

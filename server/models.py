@@ -206,11 +206,13 @@ class BtDevicesResponse(BaseModel):
 
 class BtSelectRequest(BaseModel):
     name: str
+    mac: str = ""
 
 
 class BtSelectResponse(BaseModel):
     saved: bool
     name: str
+    mac: str = ""
 
 
 # ESP32 API response

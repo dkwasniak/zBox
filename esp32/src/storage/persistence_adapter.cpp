@@ -46,10 +46,26 @@ void persistenceAdapterSaveBtTarget(const char* name) {
     LOGI("[PERSIST] BT target saved: %s\n", name);
 }
 
+void persistenceAdapterSaveBtTargetMac(const char* mac) {
+    Preferences prefs;
+    prefs.begin(PREF_NS, false);
+    prefs.putString(BT_TARGET_MAC_NVS_KEY, mac);
+    prefs.end();
+    LOGI("[PERSIST] BT target MAC saved: %s\n", mac);
+}
+
 void persistenceAdapterLoadBtTarget(char* buf, size_t len) {
     Preferences prefs;
     prefs.begin(PREF_NS, true);
     String val = prefs.getString(BT_TARGET_NVS_KEY, BT_DEFAULT_NAME);
+    prefs.end();
+    strlcpy(buf, val.c_str(), len);
+}
+
+void persistenceAdapterLoadBtTargetMac(char* buf, size_t len) {
+    Preferences prefs;
+    prefs.begin(PREF_NS, true);
+    String val = prefs.getString(BT_TARGET_MAC_NVS_KEY, "");
     prefs.end();
     strlcpy(buf, val.c_str(), len);
 }

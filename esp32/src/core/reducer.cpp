@@ -150,6 +150,7 @@ static bool isAudioActive(AudioState s) {
            s == AudioState::PlayingSystemSound ||
            s == AudioState::StartingSystemSound ||
            s == AudioState::Paused ||
+           s == AudioState::StoppingForOutputChange ||
            s == AudioState::StoppingForModeChange;
 }
 
@@ -183,6 +184,18 @@ static void startPendingPlaybackIfAny(const AppState& s, AppState& next, EffectB
         next.audio_state = AudioState::StartingFile;
         next.pending_playback.kind = PendingPlaybackKind::None;
         fx.add(makeStartMusicTrackEffect(s.pending_playback.track_index));
+    }
+}
+
+static void storeCurrentPlaybackAsPending(const AppState& s, AppState& next) {
+    if (s.playback_mode == PlaybackMode::Nfc && s.last_nfc_uid[0] != '\0') {
+        next.pending_playback.kind = PendingPlaybackKind::NfcUid;
+        copyUid(next.pending_playback.uid, s.last_nfc_uid, sizeof(next.pending_playback.uid));
+    } else if (s.playback_mode == PlaybackMode::Music) {
+        next.pending_playback.kind = PendingPlaybackKind::MusicSpecificTrack;
+        next.pending_playback.track_index = s.current_track.valid ? s.current_track.index : 0;
+    } else {
+        next.pending_playback.kind = PendingPlaybackKind::None;
     }
 }
 
@@ -268,12 +281,24 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             if (!s.bt_headphones_mode_active) {
                 next.bt_headphones_mode_active = true;
                 next.bt_headphones_state = BtHeadphonesState::WaitingForHeadphones;
-                fx.add(makeStartBtHeadphonesModeEffect());
+                if (isAudioActive(s.audio_state)) {
+                    storeCurrentPlaybackAsPending(s, next);
+                    next.audio_state = AudioState::StoppingForOutputChange;
+                    fx.add(makeStopAudioEffect());
+                } else {
+                    fx.add(makeStartBtHeadphonesModeEffect());
+                }
             } else {
                 next.bt_headphones_mode_active = false;
                 next.bt_headphones_state = BtHeadphonesState::Stopping;
                 next.output_mode = AudioOutputMode::LocalSpeaker;
-                fx.add(makeStopBtHeadphonesModeEffect());
+                if (isAudioActive(s.audio_state)) {
+                    storeCurrentPlaybackAsPending(s, next);
+                    next.audio_state = AudioState::StoppingForOutputChange;
+                    fx.add(makeStopAudioEffect());
+                } else {
+                    fx.add(makeStopBtHeadphonesModeEffect());
+                }
             }
             break;
 
@@ -282,6 +307,9 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             next.bt_headphones_state = BtHeadphonesState::Connected;
             next.output_mode = AudioOutputMode::BtHeadphones;
             fx.add(makeSetOutputVolumeEffect(volumeLevelToPercent(s.output_volume_level)));
+            if (s.audio_state == AudioState::Idle) {
+                startPendingPlaybackIfAny(s, next, fx);
+            }
             break;
 
         case EventType::BtDisconnected:
@@ -299,6 +327,8 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                 next.sleep_state = SleepState::ReadyToSleep;
                 fx.add(makeEnterDeepSleepEffect(s.requested_sleep_kind));
                 updateSleepDeadline(next, now_ms);
+            } else if (s.audio_state == AudioState::Idle) {
+                startPendingPlaybackIfAny(s, next, fx);
             }
             break;
 
@@ -361,6 +391,16 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
                     s.playback_mode == PlaybackMode::Music ? 2 : 1));
             } else if (s.audio_state == AudioState::StoppingForModeChange) {
                 startModeAnnouncement(next, fx);
+            } else if (s.audio_state == AudioState::StoppingForOutputChange) {
+                next.audio_state = AudioState::Idle;
+                if (s.bt_headphones_state == BtHeadphonesState::Stopping) {
+                    fx.add(makeStopBtHeadphonesModeEffect());
+                } else if (s.bt_headphones_mode_active &&
+                           s.bt_headphones_state == BtHeadphonesState::WaitingForHeadphones) {
+                    fx.add(makeStartBtHeadphonesModeEffect());
+                } else {
+                    startPendingPlaybackIfAny(s, next, fx);
+                }
             } else if (s.audio_state == AudioState::Stopping) {
                 next.audio_state = AudioState::Idle;
                 if (s.session_mode == SessionMode::Normal) {
@@ -372,6 +412,16 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
         case EventType::AudioStopped:
             if (s.sleep_state == SleepState::PreparingDeepSleep) {
                 finishSleepAfterAudioStopped(next, s, fx, now_ms);
+            } else if (s.audio_state == AudioState::StoppingForOutputChange) {
+                next.audio_state = AudioState::Idle;
+                if (s.bt_headphones_state == BtHeadphonesState::Stopping) {
+                    fx.add(makeStopBtHeadphonesModeEffect());
+                } else if (s.bt_headphones_mode_active &&
+                           s.bt_headphones_state == BtHeadphonesState::WaitingForHeadphones) {
+                    fx.add(makeStartBtHeadphonesModeEffect());
+                } else {
+                    startPendingPlaybackIfAny(s, next, fx);
+                }
             } else if (s.audio_state == AudioState::StoppingForModeChange) {
                 startModeAnnouncement(next, fx);
             } else {

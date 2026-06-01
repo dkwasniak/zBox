@@ -14,6 +14,7 @@ enum class AudioState : uint8_t {
     PlayingSystemSound,
     Paused,
     Stopping,
+    StoppingForOutputChange,
     StoppingForModeChange
 };
 enum class AudioOutputMode : uint8_t { LocalSpeaker, BtHeadphones };
