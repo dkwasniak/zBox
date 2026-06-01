@@ -28,8 +28,11 @@ static char s_btTargetMac[18] = {};
 static void writeSilenceGap(uint16_t durationMs); // forward declaration
 constexpr size_t VOLUME_SCRATCH_SAMPLES = 256;
 constexpr uint16_t TRACK_TRANSITION_SILENCE_MS = 40;
-constexpr size_t AUDIO_READ_CHUNK_SIZE = 512;
-static_assert(AUDIO_READ_CHUNK_SIZE <= AUDIO_BUF_SIZE, "audio read chunk exceeds buffer");
+constexpr size_t LOCAL_AUDIO_READ_CHUNK_SIZE = AUDIO_BUF_SIZE;
+constexpr size_t BT_AUDIO_READ_CHUNK_SIZE = 512;
+constexpr size_t BT_A2DP_WRITE_FRAME_SIZE = 512;
+static_assert(LOCAL_AUDIO_READ_CHUNK_SIZE <= AUDIO_BUF_SIZE, "local audio read chunk exceeds buffer");
+static_assert(BT_AUDIO_READ_CHUNK_SIZE <= AUDIO_BUF_SIZE, "BT audio read chunk exceeds buffer");
 
 enum class AudioCmdType : uint8_t { PLAY, STOP, PAUSE, RESUME, VOLUME };
 
@@ -143,6 +146,52 @@ private:
     int16_t scratch_[VOLUME_SCRATCH_SAMPLES] = {};
 };
 
+class BtFrameAlignedSink : public Print {
+public:
+    void setSink(Print* sink) { sink_ = sink; }
+
+    void reset() {
+        pending_len_ = 0;
+        memset(pending_, 0, sizeof(pending_));
+    }
+
+    size_t write(uint8_t value) override {
+        return write(&value, 1);
+    }
+
+    size_t write(const uint8_t* data, size_t len) override {
+        if (!sink_) return len;
+
+        size_t consumed = 0;
+        while (consumed < len) {
+            const size_t room = sizeof(pending_) - pending_len_;
+            const size_t take = (len - consumed) < room ? (len - consumed) : room;
+            memcpy(pending_ + pending_len_, data + consumed, take);
+            pending_len_ += take;
+            consumed += take;
+
+            if (pending_len_ == sizeof(pending_)) {
+                const size_t written = sink_->write(pending_, sizeof(pending_));
+                if (written != sizeof(pending_)) {
+                    pending_len_ = 0;
+                    return consumed;
+                }
+                pending_len_ = 0;
+            }
+        }
+        return len;
+    }
+
+    int availableForWrite() override {
+        return sink_ ? sink_->availableForWrite() : 0;
+    }
+
+private:
+    Print* sink_ = nullptr;
+    uint8_t pending_[BT_A2DP_WRITE_FRAME_SIZE] = {};
+    size_t pending_len_ = 0;
+};
+
 struct AudioInfoLogger : public AudioInfoSupport {
     AudioInfo lastInfo{};
 
@@ -157,8 +206,10 @@ struct AudioInfoLogger : public AudioInfoSupport {
 
 static I2SStream i2s;
 static A2DPStream btA2dp;
+static A2DPNoVolumeControl btNoVolumeControl;
 static MP3DecoderHelix mp3Decoder;
 static BeatTracker beatTracker;
+static BtFrameAlignedSink btFrameSink;
 static EncodedAudioStream decoderStream(&beatTracker, &mp3Decoder);
 static QueueHandle_t audioQueue = nullptr;
 static TaskHandle_t audioTaskHandle = nullptr;
@@ -186,6 +237,7 @@ static void selectSink(Print* sink, bool is_bt_output) {
 }
 
 static void clearActiveTransport() {
+    btFrameSink.reset();
     if (btTransportStarted) {
         btA2dp.clear();
     }
@@ -252,9 +304,9 @@ static bool ensureBtTransport() {
     cfg.auto_reconnect = true;
     cfg.wait_for_connection = false;
     cfg.delay_ms = 1;
-    cfg.silence_on_nodata = true;
     // BT headphones mode uses zBox-side PCM attenuation; do not depend on remote AVRCP volume.
     btA2dp.source().set_avrc_rn_events({});
+    btA2dp.source().set_volume_control(&btNoVolumeControl);
     esp_bd_addr_t targetAddr{};
     if (parseBtMac(s_btTargetMac, targetAddr)) {
         btA2dp.source().set_auto_reconnect(targetAddr);
@@ -326,6 +378,7 @@ static void audioTaskFunc(void*) {
     uint32_t telDrops = 0;
     unsigned long telWindowStart = 0;
     int telWindows = 0;
+    int btStartupWrites = 0;
 
     for (;;) {
         static unsigned long lastAudioHb = 0;
@@ -360,6 +413,7 @@ static void audioTaskFunc(void*) {
                     telSdBytes = telWrittenBytes = telDrops = 0;
                     telWindowStart = millis();
                     telWindows = 0;
+                    btStartupWrites = 0;
                     if (s_curCmdId != 0) {
                         if (s_curIsNfc) {
                             postEventFromTask(makeNfcPlaybackStartedEvent(s_curUid, s_curCmdId));
@@ -420,11 +474,23 @@ static void audioTaskFunc(void*) {
             vTaskDelay(pdMS_TO_TICKS(10));
         } else if (f && f.available()) {
             const unsigned long writeStartMs = millis();
-            const int n = f.read(audioBuf, AUDIO_READ_CHUNK_SIZE);
+            const size_t readChunkSize = activeSinkIsBt
+                ? BT_AUDIO_READ_CHUNK_SIZE
+                : LOCAL_AUDIO_READ_CHUNK_SIZE;
+            const int n = f.read(audioBuf, readChunkSize);
             if (n > 0) {
                 telSdBytes += n;
                 const size_t written = decoderStream.write(audioBuf, n);
                 const unsigned long writeElapsedMs = millis() - writeStartMs;
+                if (activeSinkIsBt && btStartupWrites < 8) {
+                    LOGI("[AUDIO_BT_START] write=%d read=%d dec_in=%u bt_free=%d elapsed_ms=%lu\n",
+                         btStartupWrites,
+                         n,
+                         (unsigned)written,
+                         btA2dp.availableForWrite(),
+                         writeElapsedMs);
+                    btStartupWrites++;
+                }
                 if (writeElapsedMs > 120) {
                     LOGW("[AUDIO] slow decode/write sink=%s chunk=%d elapsed_ms=%lu bt_free=%d core=%d\n",
                          activeSinkIsBt ? "BT" : "NS",
@@ -589,7 +655,8 @@ void audioSetOutputVolumePercent(int percent) {
 bool audioStartBtHeadphonesMode() {
     ensureLocalTransport();
     if (!ensureBtTransport()) return false;
-    selectSink(&btA2dp, true);
+    btFrameSink.setSink(&btA2dp);
+    selectSink(&btFrameSink, true);
     clearActiveTransport();
     LOGI("[BT] Headphones mode started\n");
     return true;

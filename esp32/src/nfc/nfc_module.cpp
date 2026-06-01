@@ -307,7 +307,8 @@ static void nfcTaskFunc(void *param)
             LOGI("[NFC] alive hwm=%u err=%d\n", uxTaskGetStackHighWaterMark(NULL), nfcErrorCount);
         }
 
-        String uid = readNfcTag();
+        const bool hadStableTag = presence.current_uid[0] != '\0' && !presence.lost_pending;
+        String uid = readNfcTagWithTimeout(NFC_READ_TIMEOUT_MS, !hadStableTag);
 
         NfcPresenceResult presenceResult = nfcPresenceUpdate(
             presence,
@@ -324,9 +325,12 @@ static void nfcTaskFunc(void *param)
             xQueueSend(nfcQueue, &evt, 0);
         }
 
-        const uint32_t delayMs = presence.lost_pending
-            ? NFC_LOST_POLL_INTERVAL_MS
-            : NFC_READ_INTERVAL;
+        uint32_t delayMs = NFC_READ_INTERVAL;
+        if (presence.lost_pending) {
+            delayMs = NFC_LOST_POLL_INTERVAL_MS;
+        } else if (presence.current_uid[0] != '\0') {
+            delayMs = NFC_PRESENT_POLL_INTERVAL_MS;
+        }
         vTaskDelay(pdMS_TO_TICKS(delayMs));
     }
 

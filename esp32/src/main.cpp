@@ -29,15 +29,24 @@
 namespace {
 constexpr uint32_t NFC_RETRY_SHORT_DELAYS_MS[] = {500, 1500, 3000};
 constexpr uint32_t NFC_RETRY_BACKOFF_MS = 30000;
+static volatile bool s_nfcWanted = false;
+static volatile bool s_nfcRuntimeStarted = false;
+static TaskHandle_t s_nfcBootTaskHandle = nullptr;
 
 void deferredNfcBootTask(void *param)
 {
     (void)param;
+    s_nfcBootTaskHandle = xTaskGetCurrentTaskHandle();
     vTaskDelay(pdMS_TO_TICKS(NFC_BOOT_INIT_DELAY_MS));
+    if (!s_nfcWanted) {
+        s_nfcBootTaskHandle = nullptr;
+        vTaskDelete(NULL);
+        return;
+    }
 
     bool ready = false;
     uint8_t attempt = 0;
-    for (;;) {
+    while (s_nfcWanted) {
         attempt++;
         LOGI("[NFC] deferred init attempt %u wake_cause=%d\n",
              (unsigned)attempt, (int)esp_sleep_get_wakeup_cause());
@@ -56,7 +65,22 @@ void deferredNfcBootTask(void *param)
         vTaskDelay(pdMS_TO_TICKS(delayMs));
     }
 
+    if (!s_nfcWanted) {
+        if (ready) {
+            nfcPowerDown();
+        }
+        s_nfcBootTaskHandle = nullptr;
+        vTaskDelete(NULL);
+        return;
+    }
+
     vTaskDelay(pdMS_TO_TICKS(NFC_BOOT_MAPPING_DELAY_MS));
+    if (!s_nfcWanted) {
+        nfcPowerDown();
+        s_nfcBootTaskHandle = nullptr;
+        vTaskDelete(NULL);
+        return;
+    }
 
     if (sdReady) {
         loadMappings();
@@ -77,12 +101,37 @@ void deferredNfcBootTask(void *param)
     }
 
     nfcStartTask();
+    s_nfcRuntimeStarted = true;
+    s_nfcBootTaskHandle = nullptr;
     vTaskDelete(NULL);
 }
 
 void startDeferredNfcBootTask()
 {
-    xTaskCreatePinnedToCore(deferredNfcBootTask, "nfc_boot", 4096, NULL, 1, NULL, 1);
+    if (!ENABLE_NFC) return;
+    s_nfcWanted = true;
+    if (s_nfcRuntimeStarted || s_nfcBootTaskHandle) return;
+    xTaskCreatePinnedToCore(deferredNfcBootTask, "nfc_boot", 4096, NULL, 1, &s_nfcBootTaskHandle, 1);
+}
+
+void stopNfcForMusicMode()
+{
+    if (!ENABLE_NFC) return;
+    if (!s_nfcWanted && !s_nfcRuntimeStarted && !nfcIsReady()) return;
+    s_nfcWanted = false;
+    nfcStopTaskForSleep();
+    s_nfcRuntimeStarted = false;
+    nfcPowerDown();
+}
+
+void syncNfcToPlaybackMode(PlaybackMode mode)
+{
+    if (!ENABLE_NFC || runtimeIsNightLight()) return;
+    if (mode == PlaybackMode::Nfc) {
+        startDeferredNfcBootTask();
+    } else {
+        stopNfcForMusicMode();
+    }
 }
 }
 
@@ -176,7 +225,7 @@ void setup() {
     playbackInit();
     postEventFromTask(makePlaybackModeLoadedEvent(playbackGetMode()));
     LOGC("[BOOT] system_sounds=%d mappings_deferred=%d\n",
-         (int)systemSoundCount(), ENABLE_NFC ? 1 : 0);
+         (int)systemSoundCount(), (ENABLE_NFC && playbackIsNfcMode()) ? 1 : 0);
 
     loadOutputVolume();
     postEventFromTask(makeVolumeLoadedEvent(getOutputVolumeLevel()));
@@ -191,8 +240,10 @@ void setup() {
     dispatcherStartTask();
     configureLoopWatchdog();
 
-    if (ENABLE_NFC) {
+    if (ENABLE_NFC && playbackIsNfcMode()) {
         startDeferredNfcBootTask();
+    } else if (ENABLE_NFC) {
+        LOGC("[BOOT] nfc_init=SKIPPED playback_mode=music\n");
     }
 
     LOGC("[BOOT] loop_core=%d setup_ms=%lu\n", xPortGetCoreID(), millis() - bootStart);
@@ -201,18 +252,22 @@ void setup() {
 
 void loop() {
     esp_task_wdt_reset();
+    const AppState snap = getDiagnosticSnapshot();
+    if (snap.boot_state == BootState::Ready) {
+        syncNfcToPlaybackMode(snap.playback_mode);
+    }
 
     btAdapterPoll();
     vTaskDelay(pdMS_TO_TICKS(5));
 
-    if (!runtimeIsNightLight() && ENABLE_NFC) {
+    if (!runtimeIsNightLight() && ENABLE_NFC &&
+        snap.playback_mode == PlaybackMode::Nfc && s_nfcRuntimeStarted) {
         nfcAdapterDrain();
     }
 
     static unsigned long lastHeartbeat = 0;
     if (millis() - lastHeartbeat > 5000) {
         lastHeartbeat = millis();
-        const AppState snap = getDiagnosticSnapshot();
         LOGI("[LOOP] alive audio=%d bt=%d out=%d\n",
              (int)snap.audio_state,
              (int)snap.bt_headphones_state,
