@@ -5,7 +5,7 @@
 #include <cstring>
 #include "AudioTools.h"
 #include "AudioTools/AudioCodecs/CodecMP3Helix.h"
-#include "AudioTools/Communication/A2DPStream.h"
+#include "BluetoothA2DPSource.h"
 #include "dispatcher.h"
 #include "event_queue.h"
 #include "events.h"
@@ -18,7 +18,10 @@
 #include "volume_scale.h"
 #include "zbox_config.h"
 #include <esp_bt.h>
+#include <esp_heap_caps.h>
 #include <esp_bt_main.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/portmacro.h>
 
 namespace {
 
@@ -31,6 +34,8 @@ constexpr uint16_t TRACK_TRANSITION_SILENCE_MS = 40;
 constexpr size_t LOCAL_AUDIO_READ_CHUNK_SIZE = AUDIO_BUF_SIZE;
 constexpr size_t BT_AUDIO_READ_CHUNK_SIZE = 512;
 constexpr size_t BT_A2DP_WRITE_FRAME_SIZE = 512;
+constexpr size_t BT_PCM_BUFFER_SIZE = 512 * 30;
+constexpr uint16_t BT_PCM_WRITE_TIMEOUT_MS = 12;
 static_assert(LOCAL_AUDIO_READ_CHUNK_SIZE <= AUDIO_BUF_SIZE, "local audio read chunk exceeds buffer");
 static_assert(BT_AUDIO_READ_CHUNK_SIZE <= AUDIO_BUF_SIZE, "BT audio read chunk exceeds buffer");
 
@@ -192,6 +197,130 @@ private:
     size_t pending_len_ = 0;
 };
 
+class BtPcmBufferSink : public Print {
+public:
+    bool begin() {
+        if (buffer_) return true;
+        buffer_ = static_cast<uint8_t*>(
+            heap_caps_malloc(BT_PCM_BUFFER_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        if (!buffer_) {
+            buffer_ = static_cast<uint8_t*>(
+                heap_caps_malloc(BT_PCM_BUFFER_SIZE, MALLOC_CAP_8BIT));
+        }
+        if (!buffer_) {
+            LOGE("[BT] PCM buffer allocation failed size=%u\n", (unsigned)BT_PCM_BUFFER_SIZE);
+            return false;
+        }
+        clear();
+        LOGI("[BT] PCM buffer ready size=%u\n", (unsigned)BT_PCM_BUFFER_SIZE);
+        return true;
+    }
+
+    size_t write(uint8_t value) override {
+        return write(&value, 1);
+    }
+
+    size_t write(const uint8_t* data, size_t len) override {
+        if (!buffer_ || !data || len == 0) return 0;
+
+        size_t consumed = 0;
+        const unsigned long started = millis();
+        while (consumed < len) {
+            const size_t written = writeSome(data + consumed, len - consumed);
+            consumed += written;
+            if (consumed == len) break;
+
+            if (millis() - started >= BT_PCM_WRITE_TIMEOUT_MS) {
+                break;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+        return consumed;
+    }
+
+    int availableForWrite() override {
+        if (!buffer_) return 0;
+        portENTER_CRITICAL(&mux_);
+        const size_t free_bytes = freeLocked();
+        portEXIT_CRITICAL(&mux_);
+        return (int)free_bytes;
+    }
+
+    int32_t readForA2dp(uint8_t* data, int32_t len) {
+        if (!data || len <= 0) {
+            clear();
+            return 0;
+        }
+        if (!buffer_) {
+            memset(data, 0, (size_t)len);
+            return len;
+        }
+
+        const size_t requested = (size_t)len;
+        const size_t copied = readSome(data, requested);
+        if (copied < requested) {
+            memset(data + copied, 0, requested - copied);
+        }
+        return len;
+    }
+
+    void clear() {
+        portENTER_CRITICAL(&mux_);
+        read_pos_ = 0;
+        write_pos_ = 0;
+        used_ = 0;
+        portEXIT_CRITICAL(&mux_);
+    }
+
+private:
+    size_t writeSome(const uint8_t* data, size_t len) {
+        portENTER_CRITICAL(&mux_);
+        const size_t free_bytes = freeLocked();
+        const size_t to_write = len < free_bytes ? len : free_bytes;
+        size_t first = to_write;
+        if (first > BT_PCM_BUFFER_SIZE - write_pos_) first = BT_PCM_BUFFER_SIZE - write_pos_;
+        if (first > 0) {
+            memcpy(buffer_ + write_pos_, data, first);
+        }
+        const size_t second = to_write - first;
+        if (second > 0) {
+            memcpy(buffer_, data + first, second);
+        }
+        write_pos_ = (write_pos_ + to_write) % BT_PCM_BUFFER_SIZE;
+        used_ += to_write;
+        portEXIT_CRITICAL(&mux_);
+        return to_write;
+    }
+
+    size_t readSome(uint8_t* data, size_t len) {
+        portENTER_CRITICAL(&mux_);
+        const size_t to_read = len < used_ ? len : used_;
+        size_t first = to_read;
+        if (first > BT_PCM_BUFFER_SIZE - read_pos_) first = BT_PCM_BUFFER_SIZE - read_pos_;
+        if (first > 0) {
+            memcpy(data, buffer_ + read_pos_, first);
+        }
+        const size_t second = to_read - first;
+        if (second > 0) {
+            memcpy(data + first, buffer_, second);
+        }
+        read_pos_ = (read_pos_ + to_read) % BT_PCM_BUFFER_SIZE;
+        used_ -= to_read;
+        portEXIT_CRITICAL(&mux_);
+        return to_read;
+    }
+
+    size_t freeLocked() const {
+        return BT_PCM_BUFFER_SIZE - used_;
+    }
+
+    portMUX_TYPE mux_ = portMUX_INITIALIZER_UNLOCKED;
+    uint8_t* buffer_ = nullptr;
+    size_t read_pos_ = 0;
+    size_t write_pos_ = 0;
+    size_t used_ = 0;
+};
+
 struct AudioInfoLogger : public AudioInfoSupport {
     AudioInfo lastInfo{};
 
@@ -205,10 +334,11 @@ struct AudioInfoLogger : public AudioInfoSupport {
 } audioInfoLogger;
 
 static I2SStream i2s;
-static A2DPStream btA2dp;
+static BluetoothA2DPSource btA2dp;
 static A2DPNoVolumeControl btNoVolumeControl;
 static MP3DecoderHelix mp3Decoder;
 static BeatTracker beatTracker;
+static BtPcmBufferSink btPcmSink;
 static BtFrameAlignedSink btFrameSink;
 static EncodedAudioStream decoderStream(&beatTracker, &mp3Decoder);
 static QueueHandle_t audioQueue = nullptr;
@@ -229,6 +359,10 @@ static char s_curUid[24] = {};
 static uint16_t s_curIndex = 0;
 static uint8_t s_curSoundId = 0;
 
+static int32_t btAudioDataCallback(uint8_t* data, int32_t len) {
+    return btPcmSink.readForA2dp(data, len);
+}
+
 static void selectSink(Print* sink, bool is_bt_output) {
     activeSink = sink;
     activeSinkIsBt = is_bt_output;
@@ -239,7 +373,7 @@ static void selectSink(Print* sink, bool is_bt_output) {
 static void clearActiveTransport() {
     btFrameSink.reset();
     if (btTransportStarted) {
-        btA2dp.clear();
+        btPcmSink.clear();
     }
     g_audioEnergy = 0;
     g_beatDetected = false;
@@ -293,26 +427,24 @@ static bool parseBtMac(const char* text, esp_bd_addr_t out) {
 
 static bool ensureBtTransport() {
     if (btTransportStarted) return true;
+    if (!btPcmSink.begin()) return false;
     LOGI("[BT] start transport target=%s mac=%s ctl=%d bd=%d core=%d\n",
          s_btTargetName,
          s_btTargetMac[0] ? s_btTargetMac : "-",
          (int)esp_bt_controller_get_status(),
          (int)esp_bluedroid_get_status(),
          xPortGetCoreID());
-    auto cfg = btA2dp.defaultConfig(TX_MODE);
-    cfg.name = s_btTargetName;
-    cfg.auto_reconnect = true;
-    cfg.wait_for_connection = false;
-    cfg.delay_ms = 1;
     // BT headphones mode uses zBox-side PCM attenuation; do not depend on remote AVRCP volume.
-    btA2dp.source().set_avrc_rn_events({});
-    btA2dp.source().set_volume_control(&btNoVolumeControl);
+    btA2dp.set_avrc_rn_events({});
+    btA2dp.set_volume_control(&btNoVolumeControl);
+    btA2dp.set_auto_reconnect(true);
     esp_bd_addr_t targetAddr{};
     if (parseBtMac(s_btTargetMac, targetAddr)) {
-        btA2dp.source().set_auto_reconnect(targetAddr);
+        btA2dp.set_auto_reconnect(targetAddr);
         LOGI("[BT] using saved target MAC for reconnect: %s\n", s_btTargetMac);
     }
-    btA2dp.begin(cfg);
+    btPcmSink.clear();
+    btA2dp.start_raw(s_btTargetName, btAudioDataCallback);
     if (esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_ENABLED) {
         LOGE("[BT] transport start failed bd=%d ctl=%d\n",
              (int)esp_bluedroid_get_status(),
@@ -322,7 +454,7 @@ static bool ensureBtTransport() {
     btTransportStarted = true;
     delay(100);
     LOGI("[BT] transport started connected=%d bd=%d ctl=%d core=%d\n",
-         (int)btA2dp.source().is_connected(),
+         (int)btA2dp.is_connected(),
          (int)esp_bluedroid_get_status(),
          (int)esp_bt_controller_get_status(),
          xPortGetCoreID());
@@ -487,7 +619,7 @@ static void audioTaskFunc(void*) {
                          btStartupWrites,
                          n,
                          (unsigned)written,
-                         btA2dp.availableForWrite(),
+                         btPcmSink.availableForWrite(),
                          writeElapsedMs);
                     btStartupWrites++;
                 }
@@ -496,7 +628,7 @@ static void audioTaskFunc(void*) {
                          activeSinkIsBt ? "BT" : "NS",
                          n,
                          writeElapsedMs,
-                         activeSinkIsBt ? btA2dp.availableForWrite() : -1,
+                         activeSinkIsBt ? btPcmSink.availableForWrite() : -1,
                          xPortGetCoreID());
                 }
                 telWrittenBytes += written;
@@ -575,6 +707,7 @@ void audioInit() {
     persistenceAdapterLoadBtTarget(s_btTargetName, sizeof(s_btTargetName));
     persistenceAdapterLoadBtTargetMac(s_btTargetMac, sizeof(s_btTargetMac));
     LOGI("[AUDIO] BT target: %s mac=%s\n", s_btTargetName, s_btTargetMac[0] ? s_btTargetMac : "-");
+    btPcmSink.begin();
     // I2S must be installed from core 0 so its DMA ISR stays away from NFC SoftSPI on core 1.
     localTransportInitRequester = xTaskGetCurrentTaskHandle();
     xTaskCreatePinnedToCore(localTransportInitTask, "i2s_init", 2048, nullptr, 3, nullptr, 0);
@@ -655,7 +788,7 @@ void audioSetOutputVolumePercent(int percent) {
 bool audioStartBtHeadphonesMode() {
     ensureLocalTransport();
     if (!ensureBtTransport()) return false;
-    btFrameSink.setSink(&btA2dp);
+    btFrameSink.setSink(&btPcmSink);
     selectSink(&btFrameSink, true);
     clearActiveTransport();
     LOGI("[BT] Headphones mode started\n");
@@ -667,11 +800,11 @@ void audioStopBtHeadphonesMode() {
         ensureLocalTransport();
         selectSink(&i2s, false);
         clearActiveTransport();
-        if (btA2dp.source().is_discovery_active()) {
-            btA2dp.source().cancel_discovery();
+        if (btA2dp.is_discovery_active()) {
+            btA2dp.cancel_discovery();
         }
-        btA2dp.clear();
-        btA2dp.source().end(false);
+        btPcmSink.clear();
+        btA2dp.end(false);
         btTransportStarted = false;
     }
     ensureLocalTransport();
@@ -681,7 +814,7 @@ void audioStopBtHeadphonesMode() {
 }
 
 bool audioBtHeadphonesAreConnected() {
-    return btTransportStarted && btA2dp.source().is_connected();
+    return btTransportStarted && btA2dp.is_connected();
 }
 
 bool audioBtHeadphonesModeIsRunning() {

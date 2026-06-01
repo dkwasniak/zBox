@@ -212,14 +212,56 @@ void test_bt_connected_switches_output_to_headphones() {
     TEST_ASSERT_EQUAL_UINT8(45, findEffect(r, EffectType::SetOutputVolume)->payload.volume.level_percent);
 }
 
-void test_bt_disconnected_falls_back_to_local_and_keeps_waiting() {
+void test_bt_disconnected_keeps_bt_output_and_waits() {
     AppState s = defaultState();
     s.bt_headphones_mode_active = true;
     s.bt_headphones_state = BtHeadphonesState::Connected;
     s.output_mode = AudioOutputMode::BtHeadphones;
     auto r = reduce(s, makeEvent(EventType::BtDisconnected), 0);
     TEST_ASSERT_EQUAL_INT((int)BtHeadphonesState::WaitingForHeadphones, (int)r.next_state.bt_headphones_state);
-    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::LocalSpeaker, (int)r.next_state.output_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::BtHeadphones, (int)r.next_state.output_mode);
+    TEST_ASSERT_TRUE(r.next_state.bt_headphones_mode_active);
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::StopAudio));
+}
+
+void test_bt_disconnected_while_playing_stops_without_pending_resume() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::PlayingFile;
+    s.current_track.valid = true;
+    s.current_track.index = 4;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::Connected;
+    s.output_mode = AudioOutputMode::BtHeadphones;
+    s.pending_playback.kind = PendingPlaybackKind::MusicSpecificTrack;
+    s.pending_playback.track_index = 4;
+
+    auto r = reduce(s, makeEvent(EventType::BtDisconnected), 0);
+
+    TEST_ASSERT_TRUE(r.next_state.bt_headphones_mode_active);
+    TEST_ASSERT_EQUAL_INT((int)BtHeadphonesState::WaitingForHeadphones, (int)r.next_state.bt_headphones_state);
+    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::BtHeadphones, (int)r.next_state.output_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::Stopping, (int)r.next_state.audio_state);
+    TEST_ASSERT_EQUAL_INT((int)PendingPlaybackKind::None, (int)r.next_state.pending_playback.kind);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopAudio));
+}
+
+void test_bt_reconnected_after_disconnect_does_not_resume_stopped_track() {
+    AppState s = defaultState();
+    s.playback_mode = PlaybackMode::Music;
+    s.audio_state = AudioState::Idle;
+    s.bt_headphones_mode_active = true;
+    s.bt_headphones_state = BtHeadphonesState::WaitingForHeadphones;
+    s.output_mode = AudioOutputMode::BtHeadphones;
+    s.pending_playback.kind = PendingPlaybackKind::None;
+
+    auto r = reduce(s, makeEvent(EventType::BtConnected), 0);
+
+    TEST_ASSERT_EQUAL_INT((int)BtHeadphonesState::Connected, (int)r.next_state.bt_headphones_state);
+    TEST_ASSERT_EQUAL_INT((int)AudioOutputMode::BtHeadphones, (int)r.next_state.output_mode);
+    TEST_ASSERT_EQUAL_INT((int)AudioState::Idle, (int)r.next_state.audio_state);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::SetOutputVolume));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::StartMusicTrackByIndex));
 }
 
 void test_second_bt_request_exits_headphones_mode() {
@@ -785,7 +827,9 @@ int main() {
     RUN_TEST(test_volume_down_at_mute_is_noop);
     RUN_TEST(test_long_a_request_enters_bt_headphones_wait_state);
     RUN_TEST(test_bt_connected_switches_output_to_headphones);
-    RUN_TEST(test_bt_disconnected_falls_back_to_local_and_keeps_waiting);
+    RUN_TEST(test_bt_disconnected_keeps_bt_output_and_waits);
+    RUN_TEST(test_bt_disconnected_while_playing_stops_without_pending_resume);
+    RUN_TEST(test_bt_reconnected_after_disconnect_does_not_resume_stopped_track);
     RUN_TEST(test_second_bt_request_exits_headphones_mode);
     RUN_TEST(test_bt_request_while_music_playing_stops_audio_before_output_switch);
     RUN_TEST(test_audio_stopped_for_output_switch_starts_bt_before_pending_music);

@@ -315,7 +315,16 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
         case EventType::BtDisconnected:
             if (!s.bt_headphones_mode_active) break;
             next.bt_headphones_state = BtHeadphonesState::WaitingForHeadphones;
-            next.output_mode = AudioOutputMode::LocalSpeaker;
+            next.output_mode = AudioOutputMode::BtHeadphones;
+            next.pending_playback.kind = PendingPlaybackKind::None;
+            if (s.audio_state == AudioState::PlayingFile ||
+                s.audio_state == AudioState::StartingFile ||
+                s.audio_state == AudioState::PlayingSystemSound ||
+                s.audio_state == AudioState::StartingSystemSound ||
+                s.audio_state == AudioState::Paused) {
+                next.audio_state = AudioState::Stopping;
+                fx.add(makeStopAudioEffect());
+            }
             break;
 
         case EventType::BtHeadphonesModeStopped:
