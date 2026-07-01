@@ -246,8 +246,10 @@ static bool nfcReinitDue(unsigned long now)
     return now - s_lastNfcReinitAttemptMs >= NFC_REINIT_BACKOFF_MS;
 }
 
-static String readNfcTagWithTimeout(uint16_t timeoutMs, bool logFound)
+// Writes the UID string into buf on success, leaves buf[0]=='\0' on miss.
+static void readNfcTagWithTimeout(uint16_t timeoutMs, bool logFound, char *buf, size_t bufSize)
 {
+    if (buf && bufSize > 0) buf[0] = '\0';
     if (!s_nfcReady)
     {
         unsigned long now = millis();
@@ -256,14 +258,14 @@ static String readNfcTagWithTimeout(uint16_t timeoutMs, bool logFound)
         {
             reinitNfc();
         }
-        return "";
+        return;
     }
 
     uint8_t uid[7];
     uint8_t uidLength;
     unsigned long criticalStart = millis();
     if (!nfcCriticalBegin(pdMS_TO_TICKS(100)))
-        return "";
+        return;
 
     bool found = nfc.readPassiveTargetID(PN532_MIFARE_ISO14443A, uid, &uidLength, timeoutMs);
     nfcCriticalEnd();
@@ -272,19 +274,12 @@ static String readNfcTagWithTimeout(uint16_t timeoutMs, bool logFound)
     {
         LOGW("[NFC] read critical dt=%lu ms found=%d\n", criticalElapsed, (int)found);
     }
-    if (found)
+    if (found && buf && bufSize > 0)
     {
-        String uidStr = uidToString(uid, uidLength);
+        uidToBuffer(uid, uidLength, buf, bufSize);
         if (logFound)
-            LOGI("\nNFC Tag: %s\n", uidStr.c_str());
-        return uidStr;
+            LOGI("\nNFC Tag: %s\n", buf);
     }
-    return "";
-}
-
-static String readNfcTag()
-{
-    return readNfcTagWithTimeout(NFC_READ_TIMEOUT_MS, true);
 }
 
 // =============================================================================
@@ -304,15 +299,18 @@ static void nfcTaskFunc(void *param)
         static unsigned long lastNfcHb = 0;
         if (millis() - lastNfcHb > 5000) {
             lastNfcHb = millis();
-            LOGI("[NFC] alive hwm=%u err=%d\n", uxTaskGetStackHighWaterMark(NULL), nfcErrorCount);
+            LOGI("[NFC] alive hwm=%u err=%d heap=%u largest=%u\n",
+                 uxTaskGetStackHighWaterMark(NULL), nfcErrorCount,
+                 ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         }
 
         const bool hadStableTag = presence.current_uid[0] != '\0' && !presence.lost_pending;
-        String uid = readNfcTagWithTimeout(NFC_READ_TIMEOUT_MS, !hadStableTag);
+        char uid[24] = {};
+        readNfcTagWithTimeout(NFC_READ_TIMEOUT_MS, !hadStableTag, uid, sizeof(uid));
 
         NfcPresenceResult presenceResult = nfcPresenceUpdate(
             presence,
-            uid.c_str(),
+            uid,
             millis(),
             NFC_TAG_LOST_MS);
 
@@ -373,8 +371,7 @@ bool nfcPrescan(char *uidBuf, size_t len)
     }
     if (found)
     {
-        String uidStr = uidToString(uid, uidLength);
-        strlcpy(uidBuf, uidStr.c_str(), len);
+        uidToBuffer(uid, uidLength, uidBuf, len);
         return true;
     }
     return false;

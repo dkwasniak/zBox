@@ -695,16 +695,16 @@
       {
         "filename": "zbox.kicad_sch",
         "name": "zbox",
-        "uuid": "00000000-0000-0000-0000-000000000000"
+        "uuid": "21fb7fcf-cd46-4b28-896d-941e9ca15fc1"
       }
     ],
-    "used_designators": "",
+    "used_designators": "J13,#PWR13-16,R9-10",
     "variants": []
   },
   "sheets": [
     [
       "21fb7fcf-cd46-4b28-896d-941e9ca15fc1",
-      "Root"
+      "zbox"
     ]
   ],
   "text_variables": {},

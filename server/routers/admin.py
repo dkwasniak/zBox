@@ -340,11 +340,15 @@ async def upload_track(
         temp_input_path = temp_input.name
 
     try:
-        # Convert to 64 kbps with ffmpeg.
+        # Convert to 64 kbps with ffmpeg. Force libmp3lame: re-encoding through
+        # LAME produces a frame layout the ESP32's libhelix decoder syncs on
+        # reliably. Some otherwise-valid MP3s make libhelix lose sync mid-track
+        # (mis-reads sample rate -> audible stutter); a LAME re-encode fixes it.
         result = subprocess.run(
             [
                 "ffmpeg",
                 "-i", temp_input_path,
+                "-c:a", "libmp3lame",
                 "-b:a", "64k",
                 "-ar", "44100",
                 "-ac", "2",
@@ -458,6 +462,7 @@ def download_youtube_task(task_id: str, title: str, youtube_url: str):
                 [
                     "ffmpeg",
                     "-i", downloaded_file,
+                    "-c:a", "libmp3lame",
                     "-b:a", "64k",
                     "-ar", "44100",
                     "-ac", "2",
@@ -575,6 +580,7 @@ async def trim_track(
                 "-i", str(original_path),
                 "-ss", str(start_time),
                 "-t", str(duration),
+                "-c:a", "libmp3lame",
                 "-b:a", "64k",
                 "-ar", "44100",
                 "-ac", "2",
@@ -763,6 +769,7 @@ async def upload_system_sound(
             [
                 "ffmpeg",
                 "-i", temp_input_path,
+                "-c:a", "libmp3lame",
                 "-b:a", "64k",
                 "-ar", "44100",
                 "-ac", "2",

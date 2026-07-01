@@ -29,8 +29,10 @@ ESP32 + SD + NFC + LEDs + buttons
 | `4` | SD card chip select |
 | `5` | PN532 chip select |
 | `0` | PN532 MOSI |
+| `12` | PN532 power enable (NFC_EN, low-side, active HIGH) |
 | `13` | NS4168 I2S data out |
 | `14` | WS2812B data |
+| `15` | NS4168 power enable (NS_EN, high-side, active LOW) |
 | `21` | PN532 MISO |
 | `22` | PN532 SCK |
 | `25` | Button C |
@@ -114,6 +116,59 @@ The old JBL-specific control wiring is no longer part of the active firmware des
 - `GPIO13` is reused for I2S data.
 - `GPIO34` is free from audio duties.
 - There is no firmware dependency on a speaker power transistor or speaker status ADC.
+
+## Power switching (load switches)
+
+Goal: the NS4168 amplifier and the PN532 NFC reader are powered only while the ESP32 is
+awake, each on its own transistor. They stay off in deep sleep and default off at
+power-on/flash.
+
+Pin choice is constrained by ESP32 strapping: the only free output-capable GPIOs are
+`2`, `12`, `15` (`16/17` are PSRAM on the D32 Pro, `34` is input-only, the rest are used).
+- `NS_EN = GPIO15` — high-side P-FET, gate pull-up to `+3V3` (default OFF); HIGH at boot is
+  safe. **Active LOW** (LOW = on).
+- `NFC_EN = GPIO12` — MTDI must be LOW at boot, so PN532 uses a **low-side N-FET** with a
+  gate pull-down. **Active HIGH** (HIGH = on).
+- `GPIO2` was rejected: a pull-up to `+3V3` (HIGH at boot) can block USB flashing.
+
+### NS4168 amplifier — high-side P-FET (Q3), `GPIO15`
+
+| Part | Value | Connection |
+|---|---|---|
+| Q3 | AO3401A (P-MOSFET, SOT-23) | S -> `+3V3`, D -> `+3V3_NS`, G -> `NS_EN_G` |
+| R11 | 100k | `NS_EN_G` <-> `+3V3` (gate pull-up, default OFF) |
+| R12 | 100R | `GPIO15` <-> `NS_EN_G` (series gate) |
+| C2 | 100uF | `+3V3_NS` <-> `GND` (bulk near J13) |
+| C3 | 100nF | `+3V3_NS` <-> `GND` (HF decoupling near J13) |
+
+Net change: **J13 (NS4168) VDD pin `+3V3` -> `+3V3_NS`**.
+
+### PN532 NFC reader — low-side N-FET (Q4), `GPIO12`
+
+| Part | Value | Connection |
+|---|---|---|
+| Q4 | AO3400A (N-MOSFET, SOT-23) | D -> `NFC_GND_SW`, S -> `GND`, G -> `NFC_EN_G` |
+| R13 | 100k | `NFC_EN_G` <-> `GND` (gate pull-down, default OFF + strap LOW) |
+| R14 | 100R | `GPIO12` <-> `NFC_EN_G` (series gate) |
+| C4 | 1uF | `+3V3` <-> `NFC_GND_SW` (bulk near J3) |
+| C5 | 100nF | `+3V3` <-> `NFC_GND_SW` (HF decoupling near J3) |
+
+Net change: **J3 (PN532) GND pin `GND` -> `NFC_GND_SW`** (VDD pin stays `+3V3`).
+
+Firmware (`esp32/src/zbox_config.h`): add `NS_EN 15` (active LOW) and `NFC_EN 12`
+(active HIGH). On wake: enable, wait ~20-50 ms, then init SPI/NFC and `i2s.begin()`. Before
+sleep: deinit I2S/SPI (lines LOW), then disable. Pull-up/pull-down hold both off in sleep
+and at cold boot.
+
+### Status
+
+- [x] Audio path I2S -> NS4168 (`GPIO32/33/13`), speaker via NS4168 module (J13)
+- [x] Buttons A/B moved to L3/L4 (`GPIO36/39`) with 10k external pull-ups (R9/R10)
+- [x] JBL circuit removed (Q1, R3/R6/R7, J10, J12, all `JBL_*` nets)
+- [ ] NS4168 load switch: Q3, R11, R12, C2, C3; J13 VDD -> `+3V3_NS`
+- [ ] PN532 load switch: Q4, R13, R14, C4, C5; J3 GND -> `NFC_GND_SW`
+- [ ] Correct `C1` value in the schematic to the fitted `470uF`
+- [ ] Firmware: add `NS_EN` / `NFC_EN` and the wake/sleep power sequencing
 
 ## Notes
 
