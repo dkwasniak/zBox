@@ -48,6 +48,7 @@ enum class EventType : uint8_t {
     BatteryPreviewExpired,
     BrightnessSaveDeadlineFired,
     SleepTimeoutFired,
+    BatteryCriticalFired,
 
     BrightnessLoaded,
     BrightnessPersisted,

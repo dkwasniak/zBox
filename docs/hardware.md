@@ -138,7 +138,7 @@ Pin choice is constrained by ESP32 strapping: the only free output-capable GPIOs
 | Q3 | AO3401A (P-MOSFET, SOT-23) | S -> `+3V3`, D -> `+3V3_NS`, G -> `NS_EN_G` |
 | R11 | 100k | `NS_EN_G` <-> `+3V3` (gate pull-up, default OFF) |
 | R12 | 100R | `GPIO15` <-> `NS_EN_G` (series gate) |
-| C2 | 100uF | `+3V3_NS` <-> `GND` (bulk near J13) |
+| C2 | 220uF | `+3V3_NS` <-> `GND` (bulk near J13) |
 | C3 | 100nF | `+3V3_NS` <-> `GND` (HF decoupling near J13) |
 
 Net change: **J13 (NS4168) VDD pin `+3V3` -> `+3V3_NS`**.
@@ -150,15 +150,21 @@ Net change: **J13 (NS4168) VDD pin `+3V3` -> `+3V3_NS`**.
 | Q4 | AO3400A (N-MOSFET, SOT-23) | D -> `NFC_GND_SW`, S -> `GND`, G -> `NFC_EN_G` |
 | R13 | 100k | `NFC_EN_G` <-> `GND` (gate pull-down, default OFF + strap LOW) |
 | R14 | 100R | `GPIO12` <-> `NFC_EN_G` (series gate) |
-| C4 | 1uF | `+3V3` <-> `NFC_GND_SW` (bulk near J3) |
+| C4 | 10uF | `+3V3` <-> `NFC_GND_SW` (bulk near J3) |
 | C5 | 100nF | `+3V3` <-> `NFC_GND_SW` (HF decoupling near J3) |
 
 Net change: **J3 (PN532) GND pin `GND` -> `NFC_GND_SW`** (VDD pin stays `+3V3`).
 
 Firmware (`esp32/src/zbox_config.h`): add `NS_EN 15` (active LOW) and `NFC_EN 12`
 (active HIGH). On wake: enable, wait ~20-50 ms, then init SPI/NFC and `i2s.begin()`. Before
-sleep: deinit I2S/SPI (lines LOW), then disable. Pull-up/pull-down hold both off in sleep
-and at cold boot.
+sleep:
+- NS (high-side): deinit I2S -> lines **LOW** -> `NS_EN = HIGH` (off). LOW is safe because
+  the module VDD is 0.
+- NFC (low-side): deinit SPI -> lines **hi-Z (INPUT)** -> `NFC_EN = LOW` (off). Not LOW! The
+  module ground floats toward `+3V3`, so driving the lines LOW would forward-bias the module
+  ESD diodes (GND->pin) and back-power the ESP. Hi-Z lets the lines float with the module.
+
+Pull-up/pull-down hold both off in sleep and at cold boot.
 
 ### Status
 

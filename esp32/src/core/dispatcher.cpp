@@ -11,6 +11,8 @@
 #include "nfc_module.h"
 #include "logging.h"
 #include "musicbox_assert.h"
+#include "battery.h"
+#include "zbox_config.h"
 
 #if DISPATCHER_OWNS_BT_NFC
 #include "volume.h"
@@ -301,6 +303,40 @@ static void executeEffects(const ReduceResult& result) {
 }
 #endif
 
+// ----- Active low-voltage cutoff -----
+// Samples the battery at a slow cadence while the device is awake and running.
+// After BAT_CRITICAL_CONSECUTIVE readings below BAT_CRITICAL_VOLTAGE (debounce
+// against amp/LED load sag) it posts BatteryCriticalFired, which the reducer
+// turns into a forced deep sleep. Hysteresis (BAT_CRITICAL_RELEASE_V) clears the
+// counter so a single recovered reading cancels a pending cutoff.
+static void checkBatteryCritical(const AppState& s) {
+    static uint32_t lastPollMs = 0;
+    static uint8_t lowCount = 0;
+
+    if (s.boot_state != BootState::Ready || s.sleep_state != SleepState::Awake) {
+        lowCount = 0;
+        return;
+    }
+
+    uint32_t now = millis();
+    if (lastPollMs != 0 && now - lastPollMs < BAT_CRITICAL_POLL_MS)
+        return;
+    lastPollMs = now;
+
+    const float vBat = readBatteryVoltage();
+    if (vBat < BAT_CRITICAL_VOLTAGE) {
+        if (++lowCount >= BAT_CRITICAL_CONSECUTIVE) {
+            LOGW("[BAT] Critical %.2fV x%u -> forcing deep sleep\n", vBat, (unsigned)lowCount);
+            lowCount = 0;
+            postEventFromTask(makeEvent(EventType::BatteryCriticalFired));
+        } else {
+            LOGW("[BAT] Low %.2fV (%u/%u)\n", vBat, (unsigned)lowCount, (unsigned)BAT_CRITICAL_CONSECUTIVE);
+        }
+    } else if (vBat > BAT_CRITICAL_RELEASE_V) {
+        lowCount = 0;
+    }
+}
+
 // ----- Deadline polling -----
 static void checkDeadlines(const AppState& s) {
     uint32_t now = millis();
@@ -368,6 +404,7 @@ static void dispatcherTask(void*) {
 #endif
 
             checkDeadlines(result.next_state);
+            checkBatteryCritical(result.next_state);
         } else {
             // No event in window — still poll deadlines
             AppState snap;
@@ -375,6 +412,7 @@ static void dispatcherTask(void*) {
             snap = s_state;
             portEXIT_CRITICAL(&s_mux);
             checkDeadlines(snap);
+            checkBatteryCritical(snap);
         }
 
         uint32_t now = millis();

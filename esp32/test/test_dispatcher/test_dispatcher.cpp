@@ -43,6 +43,7 @@ uint32_t ledGetTaskHWM() { return 0; }
 
 uint32_t audioGetTaskHWM() { return 0; }
 uint32_t nfcGetTaskHWM() { return 0; }
+float readBatteryVoltage() { return 4.0f; }
 void setOutputVolumeAndApply(uint8_t) {}
 void applyOutputVolume() {}
 void persistenceAdapterSaveVolume(uint8_t) {}

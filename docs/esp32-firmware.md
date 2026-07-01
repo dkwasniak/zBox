@@ -6,15 +6,22 @@ Firmware for the zBox NFC audio device, built with PlatformIO on the ESP32 Lolin
 
 | Environment | Purpose |
 |-------------|---------|
-| `lolin_d32_pro` | Main firmware for the device |
+| `lolin_d32_pro` | Main firmware for the device — **logging compiled out** (default) |
+| `lolin_d32_pro_debug` | Main firmware **with logging enabled** (`LOG_ENABLED`) |
+| `lolin_d32_pro_ota` | `lolin_d32_pro` flashed over the air (espota) |
+| `lolin_d32_pro_debug_ota` | `lolin_d32_pro_debug` flashed over the air (espota) |
 | `native` | Unit tests (reducer, state logic) — runs on the host |
 | `native_btndec` | Unit tests for the button decoder module |
 
 ```bash
-pio run                    # build firmware
-pio run -t upload          # flash to device
-pio device monitor         # serial monitor at 115200 baud
-pio test -e native         # run native unit tests
+pio run                              # build release firmware (no logs)
+pio run -t upload                    # flash to device
+pio device monitor                   # serial monitor at 115200 baud
+
+pio run -e lolin_d32_pro_debug       # build with logging enabled
+pio device monitor -b 921600         # serial monitor for the debug build
+
+pio test -e native                   # run native unit tests
 ```
 
 ## Compile-time configuration
@@ -29,6 +36,16 @@ All device-specific constants live in [`esp32/src/zbox_config.h`](../esp32/src/z
 | `ENABLE_LEDS` | `true` | Enable or disable the WS2812B LED panel |
 
 GPIO assignments and tuning constants (timeouts, ADC factors, volume steps) are also defined there.
+
+## Logging
+
+Logging is controlled by the compile-time flag `LOG_ENABLED`, defined only in the `_debug` environments. The macros and persistent-log backend live in [`esp32/src/util/logging.h`](../esp32/src/util/logging.h) and [`esp32/src/util/persistent_log.cpp`](../esp32/src/util/persistent_log.cpp); the flag is wired up in [`esp32/platformio.ini`](../esp32/platformio.ini).
+
+**Release** (`lolin_d32_pro`, the default env) — logging is compiled out entirely. The `LOGI/LOGW/LOGE/LOGC` macros expand to `((void)0)` (arguments are never evaluated) and `plog*`/`logWritef` early-return. No `Serial`/`vsnprintf` cost, no RTC/SD persistence, and about 12 KB less flash. The trade-off is losing the post-crash "RECOVERED FROM RTC" dump.
+
+**Debug** (`lolin_d32_pro_debug`) — logging is on. Serial runs at 921600 baud with an enlarged TX buffer, and writes are **non-blocking**: a line is dropped rather than stalling a task when the TX buffer is full, so bursts of logs can't add jitter to the audio/BT path. Persistent lines are still kept in the RTC ring even when the Serial print is skipped.
+
+Sync mode is separate: the `/diag/logs` HTTP ring buffer stays populated in every build, and only its `Serial` output is gated behind `LOG_ENABLED`.
 
 ## Architecture
 

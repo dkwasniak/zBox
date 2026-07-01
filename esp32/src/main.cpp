@@ -151,7 +151,14 @@ static void configureLoopWatchdog() {
 
 void setup() {
     bootStart = millis();
+#if defined(LOG_ENABLED)
+    // Debug: larger TX buffer + faster UART so log bursts drain quickly and
+    // rarely stall a task waiting on Serial.
+    Serial.setTxBufferSize(1024);
+    Serial.begin(921600);
+#else
     Serial.begin(115200);
+#endif
     plogInit(false);
     LOGI("\n\n=== zBox ===\n");
     LOGI("Boot start\n");

@@ -20,12 +20,12 @@ na boot (pull-down = zgodne). GPIO2 odrzucony (pull-up→HIGH blokuje wgrywanie 
 | R12 | 100R | `Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal` | szereg bramki Q3 |
 | R13 | 100k | `Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal` | pull-down bramki Q4 |
 | R14 | 100R | `Resistor_THT:R_Axial_DIN0207_L6.3mm_D2.5mm_P10.16mm_Horizontal` | szereg bramki Q4 |
-| C2 | 100uF | `Capacitor_THT:CP_Radial_D8.0mm_P3.50mm` | bulk NS |
+| C2 | 220uF | `Capacitor_THT:CP_Radial_D8.0mm_P3.50mm` | bulk NS |
 | C3 | 100nF | `Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm` | HF NS |
-| C4 | 1uF | `Capacitor_THT:CP_Radial_D5.0mm_P2.50mm` | bulk NFC |
+| C4 | 10uF | `Capacitor_THT:CP_Radial_D5.0mm_P2.50mm` | bulk NFC |
 | C5 | 100nF | `Capacitor_THT:C_Disc_D5.0mm_W2.5mm_P5.00mm` | HF NFC |
 
-BOM: 1× AO3401A · 1× AO3400A · 2× 100k · 2× 100R · 2× 100nF · 1× 100uF · 1× 1uF.
+BOM: 1× AO3401A · 1× AO3400A · 2× 100k · 2× 100R · 2× 100nF · 1× 220uF · 1× 10uF.
 
 ## Połączenia — NS4168 (Q3, high-side, GPIO15, aktywne LOW)
 
@@ -61,4 +61,6 @@ Masa PN532 unosi się o kilka mV (Rds×prąd) — dla software-SPI bez znaczenia
 
 - `#define NS_EN 15` (aktywne LOW), `#define NFC_EN 12` (aktywne HIGH).
 - Wybudzenie: OUTPUT → włącz → zwłoka ~20–50 ms → init SPI/NFC i `i2s.begin()`.
-- Przed snem: deinit I2S/SPI (linie LOW) → wyłącz EN.
+- Przed snem:
+  - NS (high-side): deinit I2S → linie **LOW** → `NS_EN = HIGH` (off). LOW nie otwiera nic, bo VDD modułu = 0.
+  - NFC (low-side): deinit SPI → linie w **hi-Z (INPUT)** → `NFC_EN = LOW` (off). Nie LOW! Masa modułu unosi się ku +3V3; linie na LOW forward-biasowałyby diody ESD (GND→pin) i back-powerowały ESP. Hi-Z pływa razem z masą modułu.

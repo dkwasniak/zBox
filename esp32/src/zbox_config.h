@@ -33,6 +33,15 @@
 #define BAT_ADC_DIVIDER_RATIO 2.0f // D32 Pro: VBAT --100k-- GPIO35 --100k-- GND
 #define BAT_ADC_CALIBRATION 0.983f // Per-device ADC calibration factor
 
+// Active low-voltage cutoff: while the device is running, a sustained critical
+// voltage forces a normal deep sleep (power-off sound + shutdown) instead of
+// discharging the cell down to the pack's PCM cutoff (~2.5 V). No hardware latch
+// exists, so deep sleep is the lowest state firmware can reach.
+#define BAT_CRITICAL_VOLTAGE 3.30f    // force deep sleep below this
+#define BAT_CRITICAL_RELEASE_V 3.40f  // hysteresis: reset the low counter above this
+#define BAT_CRITICAL_POLL_MS 15000UL  // sampling cadence while awake
+#define BAT_CRITICAL_CONSECUTIVE 3    // consecutive lows before sleeping (~45 s debounce)
+
 // =============================================================================
 // Configuration
 // =============================================================================

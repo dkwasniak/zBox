@@ -20,6 +20,19 @@ static bool plogRtcInitialized = false;
 static bool plogSdAttached = false;
 static bool plogRecoveredSession = false;
 
+// Non-blocking Serial: skip the line if the TX buffer can't take it, so a full
+// UART FIFO never stalls a time-sensitive task (audio/BT). Persistent lines are
+// still kept in the RTC ring even when the Serial print is dropped.
+#ifdef LOG_ENABLED
+static inline void plogSerialLine(const char* s)
+{
+    size_t len = strlen(s);
+    if ((size_t)Serial.availableForWrite() >= len + 2) {
+        Serial.println(s);
+    }
+}
+#endif
+
 void formatUptime(char* out, size_t outSize, unsigned long ms)
 {
     unsigned long totalSeconds = ms / 1000UL;
@@ -73,6 +86,10 @@ static void plogRotateIfNeeded()
 
 void plogInit(bool sdAvailable)
 {
+#ifndef LOG_ENABLED
+    (void)sdAvailable;
+    return;
+#else
     if (!plogMutex) plogMutex = xSemaphoreCreateMutex();
 
     if (!plogRtcInitialized) {
@@ -110,36 +127,54 @@ void plogInit(bool sdAvailable)
     }
     lastFlushedCount = rtcWriteCount;
     plogSdAttached = true;
+#endif
 }
 
 void plogWrite(const char* line)
 {
+#ifndef LOG_ENABLED
+    (void)line;
+    return;
+#else
     char normalized[PLOG_LINE_LEN];
     strlcpy(normalized, line, sizeof(normalized));
     normalizeLogLine(normalized);
 
     if (plogMutex && xSemaphoreTake(plogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-        Serial.println(normalized);
+        plogSerialLine(normalized);
         strlcpy(rtcRing[rtcWriteIdx], normalized, PLOG_LINE_LEN);
         rtcWriteIdx = (rtcWriteIdx + 1) % PLOG_LINES;
         rtcWriteCount++;
         xSemaphoreGive(plogMutex);
     } else {
-        Serial.println(normalized);  // fallback - tylko Serial
+        plogSerialLine(normalized);  // fallback - tylko Serial
     }
+#endif
 }
 
 void plogMark(const char* level, const char* tag)
 {
+#ifndef LOG_ENABLED
+    (void)level;
+    (void)tag;
+    return;
+#else
     char uptime[16];
     char b[PLOG_LINE_LEN];
     formatUptime(uptime, sizeof(uptime), millis());
     snprintf(b, sizeof(b), "[%s] [%s] ===== %s =====", uptime, level, tag);
     plogWrite(b);
+#endif
 }
 
 void logWritef(const char* level, bool persistent, const char* fmt, ...)
 {
+#ifndef LOG_ENABLED
+    (void)level;
+    (void)persistent;
+    (void)fmt;
+    return;
+#else
     char msg[PLOG_LINE_LEN];
     va_list args;
     va_start(args, fmt);
@@ -151,7 +186,7 @@ void logWritef(const char* level, bool persistent, const char* fmt, ...)
     formatUptime(uptime, sizeof(uptime), millis());
     snprintf(line, sizeof(line), "[%s] [%s] %s", uptime, level, msg);
     normalizeLogLine(line);
-    Serial.println(line);
+    plogSerialLine(line);
 
     if (persistent) {
         if (plogMutex && xSemaphoreTake(plogMutex, pdMS_TO_TICKS(50)) == pdTRUE) {
@@ -161,10 +196,14 @@ void logWritef(const char* level, bool persistent, const char* fmt, ...)
             xSemaphoreGive(plogMutex);
         }
     }
+#endif
 }
 
 void plogFlushToSd()
 {
+#ifndef LOG_ENABLED
+    return;
+#else
     if (!plogSdAttached) return;
     unsigned long now = millis();
     if (now - lastFlushMs < 10000) return;
@@ -178,4 +217,5 @@ void plogFlushToSd()
         xSemaphoreGive(plogMutex);
     }
     f.close();
+#endif
 }

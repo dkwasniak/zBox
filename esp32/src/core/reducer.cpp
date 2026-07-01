@@ -214,6 +214,26 @@ static void finishSleepAfterAudioStopped(AppState& next, const AppState& s, Effe
     updateSleepDeadline(next, now_ms);
 }
 
+// Shared entry point for every "start the deep-sleep sequence" trigger
+// (sleep hold, sleep request, idle timeout, critical battery). No-op unless
+// currently Awake. Stops audio first if playing, then hands off to
+// finishSleepAfterAudioStopped once it is idle.
+static void beginSleep(AppState& next, const AppState& s, EffectBuilder& fx, uint32_t now_ms, RequestedSleepKind kind) {
+    if (s.sleep_state != SleepState::Awake)
+        return;
+    next.sleep_state = SleepState::PreparingDeepSleep;
+    next.requested_sleep_kind = kind;
+    next.idle_deadline_ms = 0;
+    next.night_light_deadline_ms = 0;
+    if (isAudioActive(s.audio_state)) {
+        next.audio_state = AudioState::Stopping;
+        fx.add(makeStopAudioEffect());
+        updateSleepDeadline(next, now_ms);
+    } else {
+        finishSleepAfterAudioStopped(next, next, fx, now_ms);
+    }
+}
+
 ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
     AppState next = s;
     EffectBuilder fx;
@@ -497,52 +517,23 @@ ReduceResult reduce(const AppState& s, const Event& ev, uint32_t now_ms) {
             // Start the sleep sequence immediately at the hold threshold so the power-off
             // sound plays at the "you can release" moment. SleepRequested (fired on release)
             // is a no-op when sleep_state is already PreparingDeepSleep.
-            if (s.sleep_state == SleepState::Awake) {
-                next.sleep_state = SleepState::PreparingDeepSleep;
-                next.requested_sleep_kind = RequestedSleepKind::Normal;
-                next.idle_deadline_ms = 0;
-                next.night_light_deadline_ms = 0;
-                if (isAudioActive(s.audio_state)) {
-                    next.audio_state = AudioState::Stopping;
-                    fx.add(makeStopAudioEffect());
-                    updateSleepDeadline(next, now_ms);
-                } else {
-                    finishSleepAfterAudioStopped(next, next, fx, now_ms);
-                }
-            }
+            beginSleep(next, s, fx, now_ms, RequestedSleepKind::Normal);
             break;
 
-        case EventType::SleepRequested: {
-            const RequestedSleepKind kind = ev.payload.sleep_requested.kind;
-            if (s.sleep_state == SleepState::Awake) {
-                next.sleep_state = SleepState::PreparingDeepSleep;
-                next.requested_sleep_kind = kind;
-                next.idle_deadline_ms = 0;
-                next.night_light_deadline_ms = 0;
-                if (isAudioActive(s.audio_state)) {
-                    next.audio_state = AudioState::Stopping;
-                    fx.add(makeStopAudioEffect());
-                    updateSleepDeadline(next, now_ms);
-                } else {
-                    finishSleepAfterAudioStopped(next, next, fx, now_ms);
-                }
-            }
+        case EventType::SleepRequested:
+            beginSleep(next, s, fx, now_ms, ev.payload.sleep_requested.kind);
             break;
-        }
 
         case EventType::IdleTimeoutFired:
-            if (s.sleep_state == SleepState::Awake) {
-                next.sleep_state = SleepState::PreparingDeepSleep;
-                next.requested_sleep_kind = RequestedSleepKind::Normal;
-                next.idle_deadline_ms = 0;
-                if (isAudioActive(s.audio_state)) {
-                    next.audio_state = AudioState::Stopping;
-                    fx.add(makeStopAudioEffect());
-                    updateSleepDeadline(next, now_ms);
-                } else {
-                    finishSleepAfterAudioStopped(next, next, fx, now_ms);
-                }
-            }
+            beginSleep(next, s, fx, now_ms, RequestedSleepKind::Normal);
+            break;
+
+        case EventType::BatteryCriticalFired:
+            // Sustained low battery while running: force a normal deep sleep so we stop
+            // draining the cell. Reuses the Normal sleep path (power-off sound + shutdown
+            // animation) as the user-facing signal; the red low-battery LED blink is
+            // already active below LOW_BATTERY_WARNING_VOLTAGE.
+            beginSleep(next, s, fx, now_ms, RequestedSleepKind::Normal);
             break;
 
         case EventType::NightLightTimeoutFired:

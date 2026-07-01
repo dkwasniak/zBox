@@ -720,6 +720,39 @@ void test_idle_timeout_arms_transition_deadline() {
     TEST_ASSERT_NOT_EQUAL(0, r.next_state.sleep_transition_deadline_ms);
 }
 
+void test_battery_critical_stops_audio_when_playing() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::PlayingFile;
+    auto r = reduce(s, makeEvent(EventType::BatteryCriticalFired), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::PreparingDeepSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_INT((int)RequestedSleepKind::Normal, (int)r.next_state.requested_sleep_kind);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::StopAudio));
+    TEST_ASSERT_FALSE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_EQUAL_UINT32(0, r.next_state.idle_deadline_ms);
+}
+
+void test_battery_critical_plays_power_off_when_idle() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.audio_state = AudioState::Idle;
+    auto r = reduce(s, makeEvent(EventType::BatteryCriticalFired), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::WaitingPowerOffSound, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_INT((int)RequestedSleepKind::Normal, (int)r.next_state.requested_sleep_kind);
+    TEST_ASSERT_TRUE(hasEffect(r, EffectType::PlaySystemSound));
+    TEST_ASSERT_EQUAL_UINT8(SOUND_ID_POWER_OFF, findEffect(r, EffectType::PlaySystemSound)->payload.system_sound.sound_id);
+}
+
+void test_battery_critical_ignored_when_not_awake() {
+    AppState s = defaultState();
+    s.boot_state = BootState::Ready;
+    s.sleep_state = SleepState::PreparingDeepSleep;
+    s.requested_sleep_kind = RequestedSleepKind::Normal;
+    auto r = reduce(s, makeEvent(EventType::BatteryCriticalFired), 1000);
+    TEST_ASSERT_EQUAL_INT((int)SleepState::PreparingDeepSleep, (int)r.next_state.sleep_state);
+    TEST_ASSERT_EQUAL_UINT8(0, r.effect_count);
+}
+
 void test_ready_to_sleep_via_bt_stop_clears_deadline() {
     AppState s = defaultState();
     s.sleep_state = SleepState::WaitingBtHeadphonesStop;
@@ -868,6 +901,9 @@ int main() {
     RUN_TEST(test_sleep_hold_warning_ignored_when_already_preparing);
     RUN_TEST(test_sleep_requested_arms_transition_deadline);
     RUN_TEST(test_idle_timeout_arms_transition_deadline);
+    RUN_TEST(test_battery_critical_stops_audio_when_playing);
+    RUN_TEST(test_battery_critical_plays_power_off_when_idle);
+    RUN_TEST(test_battery_critical_ignored_when_not_awake);
     RUN_TEST(test_ready_to_sleep_via_bt_stop_clears_deadline);
     RUN_TEST(test_sleep_transition_intermediate_does_not_reset_deadline);
     RUN_TEST(test_volume_up_does_not_emit_persist_volume);

@@ -75,8 +75,12 @@ static void syncLogf(const char *fmt, ...)
     vsnprintf(line, sizeof(line), fmt, args);
     va_end(args);
 
+#if defined(LOG_ENABLED)
     Serial.println(line);
+#endif
 
+    // Ring stays live in all builds — it backs the /diag/logs HTTP endpoint used
+    // during sync mode, which is not part of the normal-playback log stream.
     int idx = s_recentLogTotal % SYNC_RECENT_LOG_SIZE;
     strlcpy(s_recentLogBuf[idx], line, sizeof(s_recentLogBuf[0]));
     s_recentLogTotal++;
