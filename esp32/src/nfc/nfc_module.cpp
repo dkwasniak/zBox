@@ -7,6 +7,7 @@
 #include "helpers.h"
 #include "persistent_log.h"
 #include "nfc_presence.h"
+#include "peripheral_power.h"
 
 // =============================================================================
 // Private objects (static — owned by this module)
@@ -17,7 +18,6 @@ static QueueHandle_t nfcQueue = NULL;
 static TaskHandle_t nfcTaskHandle = NULL;
 static SemaphoreHandle_t nfcMutex = NULL;
 static volatile bool nfcTaskStopRequested = false;
-static RTC_DATA_ATTR bool rtcNfcPowerDownSent = false;
 static int nfcErrorCount = 0;
 static bool s_nfcReady = false;
 static constexpr unsigned long NFC_CRITICAL_WARN_MS = 90;
@@ -64,7 +64,7 @@ static void nfcCriticalEnd()
 }
 
 // =============================================================================
-// Private: raw SPI wake (PN532 cold-wake after PowerDown)
+// Private: raw SPI recovery
 // =============================================================================
 
 static uint8_t nfcRawSpiTransferByte(uint8_t value)
@@ -173,19 +173,12 @@ static bool nfcRawSpiWakeWithFirmwareCommand()
 // Private: init sequence
 // =============================================================================
 
-// Initialises the PN532: optional raw SPI wake + begin + getFirmwareVersion with retry.
-// Safe for all paths: cold boot, deep sleep wake, software reset,
-// reinit during operation. If RTC indicates a PowerDown was last sent,
-// the PN532 is woken first with a raw SPI frame while NSS is held low.
+// Initialises the PN532 with begin + getFirmwareVersion retry.
+// Safe for all paths: cold boot, deep sleep wake, software reset, reinit during operation.
 // Assumes the caller holds nfcMutex and has suspended the LED task.
 static bool nfcInitSequence()
 {
     bool rawWakeAttempted = false;
-    if (rtcNfcPowerDownSent)
-    {
-        rawWakeAttempted = true;
-        nfcRawSpiWakeWithFirmwareCommand();
-    }
 
     nfc.begin();
 
@@ -204,7 +197,6 @@ static bool nfcInitSequence()
 
     if (ver)
     {
-        rtcNfcPowerDownSent = false;
         LOGC("[BOOT] nfc_fw=0x%08lX raw_wake=%d\n", (unsigned long)ver, (int)rawWakeAttempted);
         nfc.SAMConfig();
         nfc.setPassiveActivationRetries(0x10);
@@ -342,6 +334,8 @@ static void nfcTaskFunc(void *param)
 
 bool nfcInit()
 {
+    nfcPowerSwitchOn();
+    delay(30);
     if (nfcCriticalBegin(portMAX_DELAY))
     {
         s_nfcReady = nfcInitSequence();
@@ -399,34 +393,27 @@ void nfcStopTaskForSleep()
         while (nfcTaskHandle && millis() - stopStart < (NFC_READ_INTERVAL + 250))
             delay(10);
         if (nfcTaskHandle)
-            LOGW("[NFC] task stop timeout - PowerDown will wait for bus\n");
+            LOGW("[NFC] task stop timeout - shutdown will wait for bus\n");
     }
 }
 
-void nfcPowerDown()
+void nfcPrepareForPowerOff()
 {
     if (!s_nfcReady)
     {
-        LOGW("[NFC] PowerDown skipped - not ready\n");
-        rtcNfcPowerDownSent = false;
+        LOGW("[NFC] shutdown state reset - not ready\n");
+        s_nfcReady = false;
         return;
     }
     if (!nfcCriticalBegin(pdMS_TO_TICKS(1000)))
     {
-        LOGW("[NFC] PowerDown skipped - bus busy\n");
-        rtcNfcPowerDownSent = false;
+        LOGW("[NFC] shutdown state reset - bus busy\n");
+        s_nfcReady = false;
         return;
     }
-    // PN532 PowerDown — draws ~1 mA instead of ~100 mA during deep sleep.
-    // ESP32 performs a full boot on wake-up and calls nfc.begin() again.
-    uint8_t cmd[] = {PN532_COMMAND_POWERDOWN, PN532_WAKEUP_SPI};
-    bool ack = nfc.sendCommandCheckAck(cmd, sizeof(cmd), 100);
-    rtcNfcPowerDownSent = ack;
     s_nfcReady = false;
     nfcCriticalEnd();
-    LOGC("[SLEEP] NFC PowerDown wake=SPI(0x%02X) ack=%d\n", PN532_WAKEUP_SPI, (int)ack);
-    if (ack)
-        delay(2); // PN532 needs ~1 ms to actually enter PowerDown.
+    LOGC("[SLEEP] NFC shutdown for load switch\n");
 }
 
 uint32_t nfcGetTaskHWM()

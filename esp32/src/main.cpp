@@ -19,6 +19,7 @@
 #include "night_light.h"
 #include "persistent_log.h"
 #include "playback.h"
+#include "peripheral_power.h"
 #include "sleep.h"
 #include "sd_storage.h"
 #include "state.h"
@@ -37,8 +38,11 @@ void deferredNfcBootTask(void *param)
 {
     (void)param;
     s_nfcBootTaskHandle = xTaskGetCurrentTaskHandle();
+    nfcPowerSwitchOn();
     vTaskDelay(pdMS_TO_TICKS(NFC_BOOT_INIT_DELAY_MS));
     if (!s_nfcWanted) {
+        nfcBusHiZForPowerOff();
+        nfcPowerSwitchOff();
         s_nfcBootTaskHandle = nullptr;
         vTaskDelete(NULL);
         return;
@@ -67,8 +71,10 @@ void deferredNfcBootTask(void *param)
 
     if (!s_nfcWanted) {
         if (ready) {
-            nfcPowerDown();
+            nfcPrepareForPowerOff();
         }
+        nfcBusHiZForPowerOff();
+        nfcPowerSwitchOff();
         s_nfcBootTaskHandle = nullptr;
         vTaskDelete(NULL);
         return;
@@ -76,7 +82,9 @@ void deferredNfcBootTask(void *param)
 
     vTaskDelay(pdMS_TO_TICKS(NFC_BOOT_MAPPING_DELAY_MS));
     if (!s_nfcWanted) {
-        nfcPowerDown();
+        nfcPrepareForPowerOff();
+        nfcBusHiZForPowerOff();
+        nfcPowerSwitchOff();
         s_nfcBootTaskHandle = nullptr;
         vTaskDelete(NULL);
         return;
@@ -121,7 +129,9 @@ void stopNfcForMusicMode()
     s_nfcWanted = false;
     nfcStopTaskForSleep();
     s_nfcRuntimeStarted = false;
-    nfcPowerDown();
+    nfcPrepareForPowerOff();
+    nfcBusHiZForPowerOff();
+    nfcPowerSwitchOff();
 }
 
 void syncNfcToPlaybackMode(PlaybackMode mode)
@@ -152,16 +162,17 @@ static void configureLoopWatchdog() {
 void setup() {
     bootStart = millis();
 #if defined(LOG_ENABLED)
-    // Debug: larger TX buffer + faster UART so log bursts drain quickly and
-    // rarely stall a task waiting on Serial.
+    // Keep debug UART at the ROM/ESP-IDF boot baud so early boot and app logs
+    // stay readable in one monitor session.
     Serial.setTxBufferSize(1024);
-    Serial.begin(921600);
+    Serial.begin(115200);
 #else
     Serial.begin(115200);
 #endif
     plogInit(false);
     LOGI("\n\n=== zBox ===\n");
     LOGI("Boot start\n");
+    peripheralPowerInitEarly();
 
     const WakeDecision wakeDecision = handleWakeFromDeepSleep();
     runtimeSetSessionMode(wakeDecision == WakeDecision::NIGHT_LIGHT

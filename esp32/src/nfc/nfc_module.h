@@ -8,5 +8,5 @@ bool nfcPrescan(char *uidBuf, size_t len);
 void nfcStartTask();
 bool nfcGetEvent(NfcEvent *e, TickType_t timeout);
 void nfcStopTaskForSleep();
-void nfcPowerDown();
+void nfcPrepareForPowerOff();
 uint32_t nfcGetTaskHWM();

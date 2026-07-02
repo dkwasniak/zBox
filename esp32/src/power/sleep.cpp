@@ -6,6 +6,7 @@
 #include "nfc_module.h"
 #include "leds.h"
 #include "night_light.h"
+#include "peripheral_power.h"
 #include "musicbox_assert.h"
 #include <esp_sleep.h>
 
@@ -16,7 +17,9 @@ void enterDeepSleep()
     audioDeleteTaskForSleep();
     delay(50);
     nfcStopTaskForSleep();
-    nfcPowerDown();
+    nfcPrepareForPowerOff();
+    nfcBusHiZForPowerOff();
+    nfcPowerSwitchOff();
     ledSuspendTask();
     delay(20);
     ledShutdownAnim();
@@ -35,7 +38,9 @@ void sleepExecuteDeepSleep(RequestedSleepKind kind)
     audioDeleteTaskForSleep();
     delay(50);
     nfcStopTaskForSleep();
-    nfcPowerDown();
+    nfcPrepareForPowerOff();
+    nfcBusHiZForPowerOff();
+    nfcPowerSwitchOff();
     ledSuspendTask();
     delay(20);
     ledShutdownAnim();
@@ -110,6 +115,9 @@ WakeDecision handleWakeFromDeepSleep()
     // Released too early - silently go back to deep sleep.
     LOGC("[WAKE] Released too early - back to deep sleep\n");
     Serial.flush();
+    nfcBusHiZForPowerOff();
+    nfcPowerSwitchOff();
+    nsPowerOff();
     ledPowerOff(); // clear + disable LED power supply
     esp_sleep_enable_ext0_wakeup((gpio_num_t)BTN_D, LOW);
     esp_deep_sleep_start();

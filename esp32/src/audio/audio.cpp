@@ -14,6 +14,7 @@
 #include "pcm_volume.h"
 #include "persistent_log.h"
 #include "persistence_adapter.h"
+#include "peripheral_power.h"
 #include "state.h"
 #include "volume_scale.h"
 #include "zbox_config.h"
@@ -399,6 +400,8 @@ static void flushStoppedPlayback() {
 static void ensureLocalTransport() {
     if (localTransportStarted) return;
     LOGI("[AUDIO] init NS/I2S transport core=%d\n", xPortGetCoreID());
+    nsPowerOn();
+    delay(30);
     auto cfg = i2s.defaultConfig(TX_MODE);
     cfg.pin_bck = AUDIO_I2S_BCLK;
     cfg.pin_ws = AUDIO_I2S_LRCK;
@@ -772,6 +775,18 @@ void audioDeleteTaskForSleep() {
         vTaskDelete(audioTaskHandle);
         audioTaskHandle = nullptr;
     }
+    if (localTransportStarted) {
+        decoderStream.end();
+        i2s.end();
+        localTransportStarted = false;
+    }
+    pinMode(AUDIO_I2S_BCLK, OUTPUT);
+    pinMode(AUDIO_I2S_LRCK, OUTPUT);
+    pinMode(AUDIO_I2S_DOUT, OUTPUT);
+    digitalWrite(AUDIO_I2S_BCLK, LOW);
+    digitalWrite(AUDIO_I2S_LRCK, LOW);
+    digitalWrite(AUDIO_I2S_DOUT, LOW);
+    nsPowerOff();
 }
 
 void audioSetOutputVolumePercent(int percent) {

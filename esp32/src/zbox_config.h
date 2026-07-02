@@ -14,6 +14,7 @@
 #define PN532_MISO 21
 #define PN532_MOSI 0
 #define PN532_SS 5
+#define NFC_EN 12  // Low-side N-MOSFET gate: HIGH = PN532 on, LOW = off
 
 #define LED_PIN 14  // WS2812B DIN
 #define LED_EN  27  // P-MOSFET gate (AO3415A): LOW = LEDs on, HIGH = off
@@ -29,6 +30,7 @@
 #define AUDIO_I2S_BCLK 32
 #define AUDIO_I2S_LRCK 33
 #define AUDIO_I2S_DOUT 13
+#define NS_EN 15 // High-side P-MOSFET gate: LOW = NS4168 on, HIGH = off
 #define BAT_ADC_PIN 35 // GPIO35 (I35) reads the onboard D32 Pro battery divider
 #define BAT_ADC_DIVIDER_RATIO 2.0f // D32 Pro: VBAT --100k-- GPIO35 --100k-- GND
 #define BAT_ADC_CALIBRATION 0.983f // Per-device ADC calibration factor
@@ -58,7 +60,6 @@
 #define NFC_ERROR_THRESHOLD 10
 #define NFC_TAG_LOST_MS 1500  // Require a sustained missing read before treating the tag as removed
 #define NFC_LOST_POLL_INTERVAL_MS 150
-#define PN532_WAKEUP_SPI 0x20
 #define PN532_WAKE_SETTLE_MS 5
 #define AUDIO_BUF_SIZE 2048
 
