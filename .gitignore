@@ -35,6 +35,7 @@ esp32/.pio/
 esp32/.vscode/
 esp32/.clang_complete
 esp32/.gcc-flags.json
+esp32/compile_commands.json
 esp32/managed_components/
 
 # =============================================================================
@@ -43,6 +44,7 @@ esp32/managed_components/
 .claude/settings.local.json
 .claude/skills/
 .claude/worktrees/
+**/.claude/settings.local.json
 
 # =============================================================================
 # Docker runtime data
@@ -71,8 +73,14 @@ _autosave-*
 *.kicad_pcb.lck
 freerouting.ses
 gerbers.zip
+*.f3d
 hardware/pcb/kicad/zbox-backups/
 hardware/pcb/kicad/.history/
+
+# =============================================================================
+# Public documentation screenshots with real local device data
+# =============================================================================
+assets/photos/admin-nfc-tags.png
 
 # =============================================================================
 # Local snapshots / temporary worktrees

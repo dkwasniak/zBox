@@ -258,8 +258,6 @@ The Tracks section is the music library. You can add tracks by dragging and drop
 
 ### NFC Tags
 
-![NFC Tags](assets/photos/admin-nfc-tags.png)
-
 The NFC Tags section lists every registered tag with its name, UID, and assigned track. The quick assign panel on the right lets you pick a tag and a track and save the mapping in one click. You can also add a tag manually by typing its name and UID hex string — useful when you want to register a tag without having the physical device connected.
 
 **Reading a tag UID with an Android phone**
